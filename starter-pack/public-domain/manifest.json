@@ -1,0 +1,152 @@
+{
+  "schema": "paperlibrary.public-domain-starter.v1",
+  "name": "PaperLibrary Public Domain Starter Pack",
+  "rights_note": "Project Gutenberg records these works as public domain in the USA. Public-domain status differs by jurisdiction; release packaging should keep this note visible.",
+  "source_policy_url": "https://www.gutenberg.org/policy/permission.html",
+  "items": [
+    {
+      "slug": "austen-pride-and-prejudice",
+      "title": "Pride and Prejudice",
+      "authors": "Jane Austen",
+      "year": "1813",
+      "tags": ["fiction", "classic", "novel"],
+      "source": "Project Gutenberg",
+      "source_id": "1342",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/1342",
+      "download_url": "https://www.gutenberg.org/ebooks/1342.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "shelley-frankenstein",
+      "title": "Frankenstein; or, The Modern Prometheus",
+      "authors": "Mary Wollstonecraft Shelley",
+      "year": "1818",
+      "tags": ["fiction", "gothic", "science"],
+      "source": "Project Gutenberg",
+      "source_id": "84",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/84",
+      "download_url": "https://www.gutenberg.org/ebooks/84.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "melville-moby-dick",
+      "title": "Moby-Dick; or, The Whale",
+      "authors": "Herman Melville",
+      "year": "1851",
+      "tags": ["fiction", "classic", "novel"],
+      "source": "Project Gutenberg",
+      "source_id": "2701",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/2701",
+      "download_url": "https://www.gutenberg.org/ebooks/2701.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "carroll-alice",
+      "title": "Alice's Adventures in Wonderland",
+      "authors": "Lewis Carroll",
+      "year": "1865",
+      "tags": ["fiction", "fantasy", "children"],
+      "source": "Project Gutenberg",
+      "source_id": "11",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/11",
+      "download_url": "https://www.gutenberg.org/ebooks/11.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "doyle-sherlock-holmes",
+      "title": "The Adventures of Sherlock Holmes",
+      "authors": "Arthur Conan Doyle",
+      "year": "1892",
+      "tags": ["fiction", "mystery", "short-stories"],
+      "source": "Project Gutenberg",
+      "source_id": "1661",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/1661",
+      "download_url": "https://www.gutenberg.org/ebooks/1661.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "wells-time-machine",
+      "title": "The Time Machine",
+      "authors": "H. G. Wells",
+      "year": "1895",
+      "tags": ["fiction", "science-fiction", "classic"],
+      "source": "Project Gutenberg",
+      "source_id": "35",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/35",
+      "download_url": "https://www.gutenberg.org/ebooks/35.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "douglass-narrative",
+      "title": "Narrative of the Life of Frederick Douglass, an American Slave",
+      "authors": "Frederick Douglass",
+      "year": "1845",
+      "tags": ["history", "memoir", "abolition"],
+      "source": "Project Gutenberg",
+      "source_id": "23",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/23",
+      "download_url": "https://www.gutenberg.org/ebooks/23.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "dubois-souls-of-black-folk",
+      "title": "The Souls of Black Folk",
+      "authors": "W. E. B. Du Bois",
+      "year": "1903",
+      "tags": ["history", "essays", "sociology"],
+      "source": "Project Gutenberg",
+      "source_id": "408",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/408",
+      "download_url": "https://www.gutenberg.org/ebooks/408.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "darwin-origin-of-species",
+      "title": "On the Origin of Species By Means of Natural Selection",
+      "authors": "Charles Darwin",
+      "year": "1859",
+      "tags": ["science", "biology", "evolution"],
+      "source": "Project Gutenberg",
+      "source_id": "1228",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/1228",
+      "download_url": "https://www.gutenberg.org/ebooks/1228.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "thoreau-walden",
+      "title": "Walden, and On The Duty Of Civil Disobedience",
+      "authors": "Henry David Thoreau",
+      "year": "1854",
+      "tags": ["essays", "philosophy", "nature"],
+      "source": "Project Gutenberg",
+      "source_id": "205",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/205",
+      "download_url": "https://www.gutenberg.org/ebooks/205.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "whitman-leaves-of-grass",
+      "title": "Leaves of Grass",
+      "authors": "Walt Whitman",
+      "year": "1855",
+      "tags": ["poetry", "classic", "american-literature"],
+      "source": "Project Gutenberg",
+      "source_id": "1322",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/1322",
+      "download_url": "https://www.gutenberg.org/ebooks/1322.epub3.images",
+      "rights": "Public domain in the USA"
+    },
+    {
+      "slug": "baum-wizard-of-oz",
+      "title": "The Wonderful Wizard of Oz",
+      "authors": "L. Frank Baum",
+      "year": "1900",
+      "tags": ["fiction", "fantasy", "children"],
+      "source": "Project Gutenberg",
+      "source_id": "55",
+      "source_landing_url": "https://www.gutenberg.org/ebooks/55",
+      "download_url": "https://www.gutenberg.org/ebooks/55.epub3.images",
+      "rights": "Public domain in the USA"
+    }
+  ]
+}

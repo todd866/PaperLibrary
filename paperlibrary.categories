@@ -1,0 +1,4 @@
+# PaperLibrary logging categories (for kdebugsettings)
+org.paperlibrary.shell PaperLibrary (Shell) DEFAULT_SEVERITY [WARNING] IDENTIFIER [PaperLibraryShellDebug]
+org.paperlibrary.import PaperLibrary (Import) DEFAULT_SEVERITY [WARNING] IDENTIFIER [PaperLibraryImportDebug]
+org.paperlibrary.library PaperLibrary (Library) DEFAULT_SEVERITY [WARNING] IDENTIFIER [PaperLibraryLibraryDebug]

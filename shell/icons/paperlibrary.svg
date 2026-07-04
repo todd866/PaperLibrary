@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PaperLibrary app icon — canonical design source.
+
+  A stack of papers whose top sheet carries a generated typographic cover
+  (tag chip, title block, byline) — the library's own cover style.
+
+  PaperLibrary.icns (all 10 macOS sizes) is rendered from this file via
+  qlmanage -t (SVG -> PNG at each size) and compiled with iconutil.
+
+  SPDX-FileCopyrightText: 2026 Ian Todd <todd.ian@gmail.com>
+  SPDX-License-Identifier: GPL-2.0-or-later
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- macOS Big Sur grid: squircle inset 100px, 824x824, corner radius ~185 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E5546"/>
+      <stop offset="0.55" stop-color="#224236"/>
+      <stop offset="1" stop-color="#182F27"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.22" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.14"/>
+      <stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- background squircle + soft top glow -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#glow)"/>
+
+  <!-- soft shadow under the stack (two layers fake the blur) -->
+  <g transform="rotate(3 512 536)">
+    <rect x="322" y="300" width="404" height="528" rx="30" fill="#0A1712" opacity="0.22"/>
+    <rect x="330" y="316" width="396" height="524" rx="34" fill="#0A1712" opacity="0.12"/>
+  </g>
+
+  <!-- bottom sheet -->
+  <g transform="rotate(-8 512 546)">
+    <rect x="320" y="288" width="392" height="516" rx="26" fill="#D9D2C0"/>
+  </g>
+  <!-- middle sheet -->
+  <g transform="rotate(-2.5 512 536)">
+    <rect x="316" y="272" width="392" height="520" rx="26" fill="#EAE3D3"/>
+  </g>
+
+  <!-- top sheet: cream, dog-eared, laid out like a generated cover -->
+  <g transform="rotate(3 512 536)">
+    <!-- sheet silhouette with cut top-right corner -->
+    <path d="M 342 276
+             h 274
+             l 92 92
+             v 402
+             a 26 26 0 0 1 -26 26
+             h -340
+             a 26 26 0 0 1 -26 -26
+             v -468
+             a 26 26 0 0 1 26 -26
+             z" fill="#F7F1E2"/>
+    <!-- folded flap, tucked inward -->
+    <path d="M 616 276 L 708 368 L 644 368 Q 616 368 616 340 Z" fill="#D8D0BC"/>
+    <!-- crease shadow along the fold -->
+    <path d="M 616 276 L 708 368 L 708 380 L 610 282 Z" fill="#0A1712" opacity="0.07"/>
+
+    <!-- tag chip -->
+    <rect x="362" y="340" width="122" height="44" rx="22" fill="#638A77"/>
+    <!-- title block: three bold lines -->
+    <rect x="362" y="436" width="252" height="52" rx="12" fill="#21463A"/>
+    <rect x="362" y="504" width="290" height="52" rx="12" fill="#21463A"/>
+    <rect x="362" y="572" width="212" height="52" rx="12" fill="#21463A"/>
+    <!-- byline -->
+    <rect x="362" y="664" width="182" height="24" rx="12" fill="#A4AF9E"/>
+    <!-- foot line -->
+    <rect x="362" y="736" width="126" height="16" rx="8" fill="#C2BBA7"/>
+  </g>
+</svg>

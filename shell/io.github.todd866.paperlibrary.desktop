@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PaperLibrary
+GenericName=PDF and EPUB Library
+Comment=Read and organize local PDFs and EPUBs
+Exec=PaperLibrary %U
+Icon=paperlibrary
+MimeType=application/pdf;application/epub+zip;
+Categories=Office;Viewer;
+Terminal=false
+StartupNotify=true
+X-KDE-Protocols=file

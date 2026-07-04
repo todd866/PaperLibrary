@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.todd866.paperlibrary</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <name>PaperLibrary</name>
+  <summary>Local PDF and EPUB reader for a personal document library</summary>
+  <description>
+    <p>
+      PaperLibrary is a local-first reader and library application for PDFs and
+      EPUBs. It provides a macOS-focused shell with Chrome-style tabs,
+      shell-owned QtPdf/PDFium PDF reading, QtWebEngine EPUB reading, library
+      shelves, local metadata, and optional BYO-token local AI hooks.
+    </p>
+    <p>
+      PaperLibrary is based on KDE Okular and preserves the upstream GPL
+      attribution while replacing the active Okular part and generator runtime
+      with PaperLibrary-owned PDF and EPUB readers.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.todd866.paperlibrary.desktop</launchable>
+  <provides>
+    <binary>PaperLibrary</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+  </categories>
+  <url type="homepage">https://github.com/todd866/PaperLibrary</url>
+  <developer_name>Ian Todd</developer_name>
+  <releases>
+    <release version="1.0.0-dev" date="2026-07-04"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

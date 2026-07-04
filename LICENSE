@@ -1,0 +1,14 @@
+PaperLibrary is free software released under the GNU General Public License,
+version 2.0 or later.
+
+The project is derived from KDE Okular and preserves upstream copyright and
+license attribution in source headers, app metadata, and the SPDX license texts
+under LICENSES/.
+
+Primary license:
+
+    GPL-2.0-or-later
+
+See LICENSES/GPL-2.0-or-later.txt for the full license text. Some retained
+upstream files and assets carry compatible SPDX identifiers noted in their file
+headers and represented in LICENSES/.
