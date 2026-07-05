@@ -592,11 +592,71 @@ static QString projectBucketFor(const QString &text, const QString &source, cons
     return QStringLiteral("General Research");
 }
 
+static bool recordMatchesPapersNovelty(const QString &text, const QString &source, const QString &journal)
+{
+    if (recordMatchesMnd(text) || recordMatchesBeyondBayes(text, source, journal) || recordMatchesPeerReview(text, source) || recordMatchesBook(text, source, journal)) {
+        return false;
+    }
+    return projectBucketFor(text, source, journal) == QLatin1String("BioSystems / Highdimensional")
+        || containsAnyNeedle(text,
+                             {QStringLiteral("bioelectric"),
+                              QStringLiteral("anticipatory"),
+                              QStringLiteral("morphogenesis"),
+                              QStringLiteral("active inference"),
+                              QStringLiteral("free energy principle"),
+                              QStringLiteral("complex systems"),
+                              QStringLiteral("systems biology"),
+                              QStringLiteral("causal model"),
+                              QStringLiteral("mechanistic model"),
+                              QStringLiteral("neuroimmune"),
+                              QStringLiteral("microbiome"),
+                              QStringLiteral("computational boundary"),
+                              QStringLiteral("information theory"),
+                              QStringLiteral("network neuroscience")});
+}
+
+static QString papersReadNextSectionFor(const QModelIndex &index, const QString &text, const QString &source, const QString &journal)
+{
+    if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
+        return QStringLiteral("Pinned");
+    }
+    if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
+        return QStringLiteral("Continue Reading");
+    }
+    if (recordMatchesBeyondBayes(text, source, journal) || recordMatchesPeerReview(text, source)) {
+        return QStringLiteral("Active Work");
+    }
+    if (source == QLatin1String("md-project-review-set") || recordMatchesMnd(text)) {
+        return QStringLiteral("MND Project");
+    }
+    if (recordMatchesPaediatrics(text) || recordMatchesObgyn(text) || recordMatchesPsychiatry(text)) {
+        return QStringLiteral("Clinical Rotations");
+    }
+    if (projectBucketFor(text, source, journal) == QLatin1String("Methods & Statistics")) {
+        return QStringLiteral("Methods & Statistics");
+    }
+    if (recordMatchesPapersNovelty(text, source, journal)) {
+        return QStringLiteral("Novelty / Adjacent Ideas");
+    }
+    const QString kind = publicationKindFor(text, source, journal);
+    if (kind == QLatin1String("Guidelines & Evidence") || kind == QLatin1String("Reviews")) {
+        return QStringLiteral("Reviews & Guidelines");
+    }
+    if (index.data(PaperLibraryModel::CitedByCountRole).toInt() >= 100) {
+        return QStringLiteral("Highly Cited");
+    }
+    if (index.data(PaperLibraryModel::AddedRole).toString() >= QLatin1String("2026-06")) {
+        return QStringLiteral("Recent Additions");
+    }
+    return QStringLiteral("Other Papers");
+}
+
 static int sectionRank(const QString &section)
 {
     const QStringList order = {
         QStringLiteral("Pinned"),
         QStringLiteral("Continue Reading"),
+        QStringLiteral("Active Work"),
         QStringLiteral("Clinical Essentials"),
         QStringLiteral("MD Project Review Set"),
         QStringLiteral("Core MND / ALS"),
@@ -612,6 +672,7 @@ static int sectionRank(const QString &section)
         QStringLiteral("MND Project"),
         QStringLiteral("MND / ALS"),
         QStringLiteral("Neuro / MND"),
+        QStringLiteral("Clinical Rotations"),
         QStringLiteral("Paeds Rotation"),
         QStringLiteral("OBGYN Rotation"),
         QStringLiteral("Psychiatry"),
@@ -631,6 +692,7 @@ static int sectionRank(const QString &section)
         QStringLiteral("Reviews & Evidence Synthesis"),
         QStringLiteral("Pathology / Pharmacology / Physiology"),
         QStringLiteral("Methods & Statistics"),
+        QStringLiteral("Novelty / Adjacent Ideas"),
         QStringLiteral("Anatomy"),
         QStringLiteral("Neuroscience"),
         QStringLiteral("Medicine & Clinical"),
@@ -1415,11 +1477,32 @@ static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filt
 
     switch (filter) {
     case PaperLibrarySectionedModel::Papers:
-        if (!focus.isEmpty() && focus != QLatin1String("General Research")) {
-            return focus + QStringLiteral(" paper");
-        }
-        if (topic != QLatin1String("General Research")) {
-            return topic + QStringLiteral(" paper");
+        {
+            const QString section = papersReadNextSectionFor(index, text, source, journal);
+            if (section == QLatin1String("Active Work")) {
+                return QStringLiteral("Active work reading");
+            }
+            if (section == QLatin1String("MND Project")) {
+                return QStringLiteral("MD project adjacent paper");
+            }
+            if (section == QLatin1String("Clinical Rotations")) {
+                return QStringLiteral("Rotation-relevant paper");
+            }
+            if (section == QLatin1String("Methods & Statistics")) {
+                return QStringLiteral("Methods / stats paper");
+            }
+            if (section == QLatin1String("Novelty / Adjacent Ideas")) {
+                return QStringLiteral("Novel adjacent idea");
+            }
+            if (section == QLatin1String("Reviews & Guidelines")) {
+                return QStringLiteral("Review / guideline paper");
+            }
+            if (!focus.isEmpty() && focus != QLatin1String("General Research")) {
+                return focus + QStringLiteral(" paper");
+            }
+            if (topic != QLatin1String("General Research")) {
+                return topic + QStringLiteral(" paper");
+            }
         }
         return QStringLiteral("Reading candidate");
     case PaperLibrarySectionedModel::Books:
@@ -1535,6 +1618,40 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
     if (index.data(PaperLibraryModel::MissingRole).toBool()) {
         return QStringLiteral("Needs local PDF");
     }
+    if (filter == PaperLibrarySectionedModel::Papers) {
+        if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
+            return QStringLiteral("Manually promoted");
+        }
+        if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
+            return QStringLiteral("Opened before; keep warm");
+        }
+        const QString section = papersReadNextSectionFor(index, text, source, journal);
+        if (section == QLatin1String("Active Work")) {
+            return recordMatchesBeyondBayes(text, source, journal) ? QStringLiteral("Connected to Beyond Bayes / revisions") : QStringLiteral("Connected to current review work");
+        }
+        if (section == QLatin1String("MND Project")) {
+            const QString mndTopic = mndTopicSectionFor(text);
+            return mndTopic == QLatin1String("Core MND / ALS") ? QStringLiteral("Connected to the MD project") : QStringLiteral("MND angle: %1").arg(mndTopic);
+        }
+        if (section == QLatin1String("Clinical Rotations")) {
+            if (recordMatchesPaediatrics(text)) {
+                return QStringLiteral("Useful for paeds context");
+            }
+            if (recordMatchesObgyn(text)) {
+                return QStringLiteral("Useful for OBGYN context");
+            }
+            return QStringLiteral("Useful for psychiatry context");
+        }
+        if (section == QLatin1String("Methods & Statistics")) {
+            return QStringLiteral("Methodological leverage");
+        }
+        if (section == QLatin1String("Novelty / Adjacent Ideas")) {
+            return QStringLiteral("Explore adjacent ideas");
+        }
+        if (section == QLatin1String("Reviews & Guidelines")) {
+            return QStringLiteral("Good map of a topic");
+        }
+    }
     if (filter == PaperLibrarySectionedModel::Work) {
         if (recordMatchesBeyondBayes(text, source, journal)) {
             return QStringLiteral("Linked to Beyond Bayes");
@@ -1640,17 +1757,26 @@ static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row,
 
     switch (filter) {
     case PaperLibrarySectionedModel::Papers:
-        if (recordMatchesMnd(text)) {
-            score -= 320;
-        }
         if (recordMatchesBeyondBayes(text, sourceName, journal) || recordMatchesPeerReview(text, sourceName)) {
-            score -= 280;
+            score -= 380;
+        }
+        if (sourceName == QLatin1String("md-project-review-set") || recordMatchesMnd(text)) {
+            score -= 360;
         }
         if (recordMatchesPsychiatry(text) || recordMatchesPaediatrics(text) || recordMatchesObgyn(text)) {
-            score -= 200;
+            score -= 290;
         }
         if (topicBucketFor(text, sourceName, journal) == QLatin1String("Methods & Statistics")) {
-            score -= 160;
+            score -= 250;
+        }
+        if (recordMatchesPapersNovelty(text, sourceName, journal)) {
+            score -= 215;
+        }
+        {
+            const QString kind = publicationKindFor(text, sourceName, journal);
+            if (kind == QLatin1String("Guidelines & Evidence") || kind == QLatin1String("Reviews")) {
+                score -= 140;
+            }
         }
         break;
     case PaperLibrarySectionedModel::Books:
@@ -2618,6 +2744,8 @@ void PaperLibrarySectionedModel::rebuild()
         QString section;
         if (m_sectionMode == ReadNext && isDownranked) {
             section = QStringLiteral("Less Relevant");
+        } else if (m_sectionMode == ReadNext && m_smartFilter == Papers) {
+            section = papersReadNextSectionFor(index, text, source, journal);
         } else if (m_sectionMode == ReadNext && m_smartFilter == Mnd) {
             if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
                 section = QStringLiteral("Pinned");

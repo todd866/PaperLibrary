@@ -369,6 +369,7 @@ private Q_SLOTS:
     void testDatabaseInPathWithSpecialCharacters();
     void testSectionedModelSmartShelves();
     void testMndPaperTopicInferencePrefersPaperSpecificSignals();
+    void testPapersShelfSurfacesInterestNoveltyAndEngagement();
     void testFocusManifestDrivesWorkShelf();
     void testReadingManifestDrivesReadingShelves();
     void testCaroBiographyDoesNotMatchPsychiatry();
@@ -843,6 +844,132 @@ void PaperLibraryModelTest::testMndPaperTopicInferencePrefersPaperSpecificSignal
     const int awajiRow = findTitleRow(QStringLiteral("Awaji ALS Criteria and Electrodiagnosis in Amyotrophic Lateral Sclerosis"));
     QVERIFY(awajiRow >= 0);
     QCOMPARE(sections.data(sections.index(awajiRow), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Diagnosis & Criteria"));
+}
+
+void PaperLibraryModelTest::testPapersShelfSurfacesInterestNoveltyAndEngagement()
+{
+    SyntheticRecord engaged = widgetRecord();
+    engaged.slug = QStringLiteral("10-9999-synthetic-engaged-paper-22");
+    engaged.doi = QStringLiteral("10.9999/synthetic.engaged.paper");
+    engaged.title = QStringLiteral("Previously Opened Study of Clinical Measurement");
+    engaged.authors = QStringLiteral("Riley Reader");
+    engaged.journal = QStringLiteral("Journal of Synthetic Clinical Science");
+    engaged.source = QStringLiteral("unpaywall");
+    engaged.addedTs = QStringLiteral("2026-01-01T00:00:00+00:00");
+
+    SyntheticRecord activeWork = gadgetRecord();
+    activeWork.slug = QStringLiteral("10-9999-synthetic-beyond-bayes-paper-23");
+    activeWork.doi = QStringLiteral("10.9999/synthetic.beyond.bayes.paper");
+    activeWork.title = QStringLiteral("Dimensionality Bound for High-Dimensional Coherence");
+    activeWork.authors = QStringLiteral("Robin Reviewer");
+    activeWork.journal = QStringLiteral("Synthetic Methods");
+    activeWork.source = QStringLiteral("highdimensional");
+    activeWork.addedTs = QStringLiteral("2026-01-02T00:00:00+00:00");
+
+    SyntheticRecord rotation = psychiatryRecord();
+    rotation.slug = QStringLiteral("10-9999-synthetic-rotation-paper-24");
+    rotation.doi = QStringLiteral("10.9999/synthetic.rotation.paper");
+    rotation.title = QStringLiteral("Adolescent Psychiatry Consultation Patterns During Paediatric Admission");
+    rotation.source = QStringLiteral("unpaywall");
+    rotation.addedTs = QStringLiteral("2026-01-03T00:00:00+00:00");
+
+    SyntheticRecord methods = gadgetRecord();
+    methods.slug = QStringLiteral("10-9999-synthetic-methods-paper-25");
+    methods.doi = QStringLiteral("10.9999/synthetic.methods.paper");
+    methods.title = QStringLiteral("Bayesian Prediction Model Calibration for Diagnostic Studies");
+    methods.authors = QStringLiteral("Morgan Methods");
+    methods.journal = QStringLiteral("Synthetic Epidemiology");
+    methods.source = QStringLiteral("unpaywall");
+    methods.addedTs = QStringLiteral("2026-01-04T00:00:00+00:00");
+
+    SyntheticRecord novelty = gadgetRecord();
+    novelty.slug = QStringLiteral("10-9999-synthetic-novelty-paper-26");
+    novelty.doi = QStringLiteral("10.9999/synthetic.novelty.paper");
+    novelty.title = QStringLiteral("Bioelectric Anticipatory Systems in Neural Morphogenesis");
+    novelty.authors = QStringLiteral("Avery Adjacent");
+    novelty.journal = QStringLiteral("BioSystems");
+    novelty.source = QStringLiteral("unpaywall");
+    novelty.addedTs = QStringLiteral("2026-01-05T00:00:00+00:00");
+
+    SyntheticRecord generic = gadgetRecord();
+    generic.slug = QStringLiteral("10-9999-synthetic-generic-paper-27");
+    generic.doi = QStringLiteral("10.9999/synthetic.generic.paper");
+    generic.title = QStringLiteral("Generic Widget Oscillations in Placeholder Materials");
+    generic.authors = QStringLiteral("Grey Generic");
+    generic.journal = QStringLiteral("Annals of Placeholder Science");
+    generic.source = QStringLiteral("unpaywall");
+    generic.addedTs = QStringLiteral("2026-07-01T00:00:00+00:00");
+
+    const QList<SyntheticRecord> records = {generic, novelty, methods, rotation, mndRecord(), activeWork, engaged};
+    const QString corpusDir = writeCatalog(records);
+    for (const SyntheticRecord &record : records) {
+        QVERIFY(!touchFile(QStringLiteral("pdfs/%1.pdf").arg(record.slug)).isEmpty());
+    }
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_interest_fixture"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("catalog.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO papers VALUES('10-9999-synthetic-engaged-paper-22', '%1', 0, '2026-07-01T00:00:00+00:00', 3, 0, 5)")
+                               .arg(m_dir->filePath(QStringLiteral("pdfs/10-9999-synthetic-engaged-paper-22.pdf")))));
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_interest_fixture"));
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Papers);
+    sections.setSectionMode(PaperLibrarySectionedModel::ReadNext);
+
+    auto findTitleRow = [&sections](const QString &title) {
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            if (sections.data(sections.index(row), Qt::DisplayRole).toString() == title) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    const int engagedRow = findTitleRow(engaged.title);
+    const int activeRow = findTitleRow(activeWork.title);
+    const int mndRow = findTitleRow(QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    const int rotationRow = findTitleRow(rotation.title);
+    const int methodsRow = findTitleRow(methods.title);
+    const int noveltyRow = findTitleRow(novelty.title);
+    const int genericRow = findTitleRow(generic.title);
+    QVERIFY(engagedRow >= 0);
+    QVERIFY(activeRow >= 0);
+    QVERIFY(mndRow >= 0);
+    QVERIFY(rotationRow >= 0);
+    QVERIFY(methodsRow >= 0);
+    QVERIFY(noveltyRow >= 0);
+    QVERIFY(genericRow >= 0);
+
+    QVERIFY(engagedRow < activeRow);
+    QVERIFY(activeRow < mndRow);
+    QVERIFY(mndRow < rotationRow);
+    QVERIFY(rotationRow < methodsRow);
+    QVERIFY(methodsRow < noveltyRow);
+    QVERIFY(noveltyRow < genericRow);
+
+    QModelIndex engagedIndex = sections.index(engagedRow);
+    QCOMPARE(sections.data(engagedIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Continue reading"));
+    QCOMPARE(sections.data(engagedIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Opened before; keep warm"));
+
+    QModelIndex activeIndex = sections.index(activeRow);
+    QCOMPARE(sections.data(activeIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Active work reading"));
+    QCOMPARE(sections.data(activeIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Connected to Beyond Bayes / revisions"));
+
+    QModelIndex noveltyIndex = sections.index(noveltyRow);
+    QCOMPARE(sections.data(noveltyIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Novel adjacent idea"));
+    QCOMPARE(sections.data(noveltyIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Explore adjacent ideas"));
 }
 
 void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
