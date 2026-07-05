@@ -97,6 +97,12 @@ privacy, performance, and release tests live in:
 docs/public-release-rules.md
 ```
 
+The current readiness audit against those rules lives in:
+
+```text
+docs/public-release-audit.md
+```
+
 ## Attribution
 
 PaperLibrary is based on KDE Okular:
