@@ -155,6 +155,51 @@ static QString cleanedDisplayTitle(QString title, const QString &path = QString(
     return curatedAfterCleanup.isEmpty() ? title : curatedAfterCleanup;
 }
 
+static QString normalizedDuplicateWorkText(QString text)
+{
+    text = text.toCaseFolded();
+    text.replace(QRegularExpression(QStringLiteral("[’‘`´]")), QStringLiteral("'"));
+    text.replace(QLatin1Char('&'), QStringLiteral(" and "));
+    text.replace(QRegularExpression(QStringLiteral("\\b5\\s*,?\\s*000\\b")), QStringLiteral("5000"));
+    text.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral(" "));
+    return text.simplified();
+}
+
+static QString canonicalDuplicateWorkKey(const QString &title, const QString &authors = QString(), const QString &context = QString())
+{
+    const QString titleKey = normalizedDuplicateWorkText(title);
+    const QString authorKey = normalizedDuplicateWorkText(authors);
+    const QString contextKey = normalizedDuplicateWorkText(context);
+    const QString haystack = QStringList({titleKey, authorKey, contextKey}).join(QLatin1Char(' '));
+
+    if (titleKey.contains(QStringLiteral("dawn of everything"))
+        && (titleKey.startsWith(QStringLiteral("the dawn of everything")) || haystack.contains(QStringLiteral("david graeber")) || haystack.contains(QStringLiteral("wengrow")))) {
+        return QStringLiteral("work|dawn-of-everything|graeber-wengrow");
+    }
+    if (titleKey == QLatin1String("ref13 graeber 2011") || contextKey.contains(QStringLiteral("ref13 graeber 2011"))
+        || (titleKey.contains(QStringLiteral("debt")) && haystack.contains(QStringLiteral("graeber"))
+            && (titleKey.contains(QStringLiteral("5000")) || titleKey.contains(QStringLiteral("first"))))) {
+        return QStringLiteral("work|debt-first-5000-years|graeber");
+    }
+    if (titleKey.contains(QStringLiteral("bullshit jobs")) && haystack.contains(QStringLiteral("graeber"))) {
+        return QStringLiteral("work|bullshit-jobs|graeber");
+    }
+    if (titleKey.contains(QStringLiteral("pirate enlightenment")) && haystack.contains(QStringLiteral("graeber"))) {
+        return QStringLiteral("work|pirate-enlightenment|graeber");
+    }
+    if (titleKey.contains(QStringLiteral("utopia of rules")) && haystack.contains(QStringLiteral("graeber"))) {
+        return QStringLiteral("work|utopia-of-rules|graeber");
+    }
+
+    if (titleKey.size() < 12) {
+        return QString();
+    }
+    if (authorKey.isEmpty()) {
+        return QStringLiteral("title|%1").arg(titleKey);
+    }
+    return QStringLiteral("title|%1|author|%2").arg(titleKey, authorKey.left(60).trimmed());
+}
+
 struct ImportedBookMetadata {
     QString title;
     QString authors;
@@ -1000,6 +1045,20 @@ static bool recordMatchesTextbook(const QString &text, const QString &source)
 static bool recordMatchesBook(const QString &text, const QString &source, const QString &journal)
 {
     return source.startsWith(QLatin1String("book:")) || source == QLatin1String("aa_book") || journal == QLatin1String("(book)") || text.contains(QStringLiteral("annas archive"));
+}
+
+static QString sourceRowDuplicateWorkKey(const PaperLibraryModel *source, int row)
+{
+    const QModelIndex index = source->index(row);
+    const QString sourceName = index.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
+    const QString journal = index.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
+    const QString haystack = index.data(PaperLibraryModel::HaystackRole).toString();
+    if (recordMatchesBook(haystack, sourceName, journal)) {
+        return canonicalDuplicateWorkKey(index.data(Qt::DisplayRole).toString(), index.data(PaperLibraryModel::AuthorsRole).toString(), haystack);
+    }
+
+    const QString doi = index.data(PaperLibraryModel::DoiRole).toString().trimmed().toCaseFolded();
+    return doi.isEmpty() ? QString() : QStringLiteral("doi|%1").arg(doi);
 }
 
 static QString publicationKindFor(const QString &text, const QString &source, const QString &journal)
@@ -3064,6 +3123,7 @@ void PaperLibrarySectionedModel::rebuild()
     if (focusManifest.found) {
         QSet<int> emittedSourceRows;
         QSet<QString> emittedManifestPaths;
+        QSet<QString> emittedWorkKeys;
         for (const FocusManifestEntry &entry : focusManifest.entries) {
             int sourceRow = -1;
             const QString idKey = focusLookupKey(entry.id);
@@ -3101,6 +3161,23 @@ void PaperLibrarySectionedModel::rebuild()
                 emittedManifestPaths.insert(pathKey);
             } else {
                 continue;
+            }
+
+            QString workKey = sourceRow >= 0 ? sourceRowDuplicateWorkKey(m_source, sourceRow) : QString();
+            if (workKey.isEmpty()) {
+                if (!entry.doi.trimmed().isEmpty()) {
+                    workKey = QStringLiteral("doi|%1").arg(entry.doi.trimmed().toCaseFolded());
+                } else {
+                    workKey = canonicalDuplicateWorkKey(entry.title,
+                                                        entry.authors,
+                                                        QStringList({entry.year, entry.journal, entry.source, entry.reason, entry.section, entry.id}).join(QLatin1Char(' ')));
+                }
+            }
+            if (!workKey.isEmpty()) {
+                if (emittedWorkKeys.contains(workKey)) {
+                    continue;
+                }
+                emittedWorkKeys.insert(workKey);
             }
 
             Row row;
@@ -3346,6 +3423,7 @@ void PaperLibrarySectionedModel::rebuild()
 
     const int maxRows = m_query.isEmpty() ? MaxCorpusFeedRows : MaxCorpusSearchRows;
     const int defaultMaxRowsPerSection = m_query.isEmpty() ? MaxCorpusRowsPerSection : MaxCorpusSearchRows;
+    QSet<QString> emittedWorkKeys;
     for (const QString &section : std::as_const(sectionOrder)) {
         if (m_rows.size() >= maxRows) {
             break;
@@ -3397,6 +3475,13 @@ void PaperLibrarySectionedModel::rebuild()
         for (const int sourceRow : sourceRowsForSection) {
             if (m_rows.size() >= maxRows || rowsFromSection >= maxRowsPerSection) {
                 break;
+            }
+            const QString workKey = sourceRowDuplicateWorkKey(m_source, sourceRow);
+            if (!workKey.isEmpty()) {
+                if (emittedWorkKeys.contains(workKey)) {
+                    continue;
+                }
+                emittedWorkKeys.insert(workKey);
             }
             Row row;
             row.sourceRow = sourceRow;

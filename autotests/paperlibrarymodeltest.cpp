@@ -373,6 +373,7 @@ private Q_SLOTS:
     void testFocusManifestDrivesWorkShelf();
     void testReadingManifestDrivesReadingShelves();
     void testCaroBiographyDoesNotMatchPsychiatry();
+    void testSectionedModelSuppressesDuplicateWorks();
     void testImportedBookMetadataIsCleanedAndReclassified();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
@@ -1195,6 +1196,98 @@ void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
     QVERIFY(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
 }
 
+void PaperLibraryModelTest::testSectionedModelSuppressesDuplicateWorks()
+{
+    SyntheticRecord dawnNoisy = anthropologyRecord();
+    dawnNoisy.slug = QStringLiteral("md5-synthetic-dawn-noisy");
+    dawnNoisy.title = QStringLiteral("The Dawn of Everything A New History of Humanity David Graeber, David Wengrow First american edition, 2021 Farrar, Straus and Giroux Anna's Archive");
+    dawnNoisy.authors.clear();
+    dawnNoisy.year.clear();
+    dawnNoisy.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord dawnClean = anthropologyRecord();
+    dawnClean.slug = QStringLiteral("md5-synthetic-dawn-clean");
+    dawnClean.title = QStringLiteral("The Dawn of Everything");
+    dawnClean.authors = QStringLiteral("David Graeber; David Wengrow");
+    dawnClean.year = QStringLiteral("2021");
+    dawnClean.source = QStringLiteral("book:epub");
+    dawnClean.addedTs = QStringLiteral("2026-05-01T00:00:00+00:00");
+
+    SyntheticRecord debtSlug = anthropologyRecord();
+    debtSlug.slug = QStringLiteral("md5-synthetic-ref13-graeber");
+    debtSlug.title = QStringLiteral("ref13 graeber 2011");
+    debtSlug.authors.clear();
+    debtSlug.year.clear();
+    debtSlug.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord debtClean = anthropologyRecord();
+    debtClean.slug = QStringLiteral("md5-synthetic-debt-clean");
+    debtClean.title = QStringLiteral("David Graeber Debt The First 5,000 Years Melville House (2011)");
+    debtClean.authors.clear();
+    debtClean.year.clear();
+    debtClean.source = QStringLiteral("book:epub");
+
+    SyntheticRecord bullshitShort = anthropologyRecord();
+    bullshitShort.slug = QStringLiteral("md5-synthetic-bullshit-jobs-short");
+    bullshitShort.title = QStringLiteral("Bullshit Jobs");
+    bullshitShort.authors = QStringLiteral("David Graeber");
+    bullshitShort.year = QStringLiteral("2018");
+    bullshitShort.source = QStringLiteral("book:epub");
+
+    SyntheticRecord bullshitLong = anthropologyRecord();
+    bullshitLong.slug = QStringLiteral("md5-synthetic-bullshit-jobs-long");
+    bullshitLong.title = QStringLiteral("David Graeber Bullshit Jobs A Theory Simon Schuster (2018)");
+    bullshitLong.authors.clear();
+    bullshitLong.year.clear();
+    bullshitLong.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord whyWork = anthropologyRecord();
+    whyWork.slug = QStringLiteral("md5-synthetic-why-work");
+    whyWork.title = QStringLiteral("Why Work? Arguments for the Leisure Society");
+    whyWork.authors = QStringLiteral("David Graeber; Stanley Aronowitz");
+    whyWork.year = QStringLiteral("2018");
+    whyWork.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord dawnCommentary = anthropologyRecord();
+    dawnCommentary.slug = QStringLiteral("md5-synthetic-dawn-commentary");
+    dawnCommentary.title = QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything");
+    dawnCommentary.authors = QStringLiteral("Daniel Hoyer");
+    dawnCommentary.year = QStringLiteral("2022");
+    dawnCommentary.journal = QStringLiteral("Synthetic Cliodynamics");
+    dawnCommentary.source = QStringLiteral("imported");
+
+    SyntheticRecord powerBroker = politicsRecord();
+    powerBroker.slug = QStringLiteral("md5-synthetic-power-broker");
+    powerBroker.title = QStringLiteral("The Power Broker Political Biography");
+    powerBroker.authors = QStringLiteral("Robert A. Caro");
+    powerBroker.year = QStringLiteral("1974");
+    powerBroker.source = QStringLiteral("book:epub");
+
+    const QString corpusDir = writeCatalog({dawnNoisy, dawnClean, debtSlug, debtClean, bullshitShort, bullshitLong, whyWork, dawnCommentary, caroRecord(), powerBroker});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+
+    QStringList nonfictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+
+    QCOMPARE(nonfictionTitles.count(QStringLiteral("The Dawn of Everything")), 1);
+    QCOMPARE(nonfictionTitles.count(QStringLiteral("Debt: The First 5,000 Years")), 1);
+    QCOMPARE(nonfictionTitles.count(QStringLiteral("Bullshit Jobs")), 1);
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Why Work?")));
+    QVERIFY2(nonfictionTitles.contains(QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything")), qPrintable(nonfictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("The Path to Power")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("The Power Broker")));
+}
+
 void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
 {
     SyntheticRecord warHistory = gadgetRecord();
@@ -1362,7 +1455,7 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     for (int row = 0; row < sections.rowCount(); ++row) {
         nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
     }
-    QVERIFY(nonfictionTitles.contains(QStringLiteral("1941: The America That Went to War")));
+    QVERIFY2(nonfictionTitles.contains(QStringLiteral("1941: The America That Went to War")), qPrintable(nonfictionTitles.join(QLatin1Char('\n'))));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Dawn of Everything")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Debt: The First 5,000 Years")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation")));
