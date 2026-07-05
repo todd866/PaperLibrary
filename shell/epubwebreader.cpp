@@ -16,11 +16,13 @@
 #include <KZip>
 
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QMimeDatabase>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -31,13 +33,16 @@
 #include <QBuffer>
 #include <QCloseEvent>
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QHideEvent>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QPointer>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeView>
 #include <QUuid>
 #include <QVariant>
@@ -565,6 +570,92 @@ QString headingTitleFromMarkup(const QByteArray &data)
     return documentTitle;
 }
 
+bool isWeakNavigation(const QList<EpubNavigationEntry> &entries, int spineCount)
+{
+    if (entries.isEmpty()) {
+        return true;
+    }
+    if (spineCount <= 4) {
+        return false;
+    }
+    if (entries.size() == 1) {
+        const QString title = entries.constFirst().title.trimmed().toLower();
+        return title == QLatin1String("start") || title == QLatin1String("cover") || title == QLatin1String("title page");
+    }
+    return entries.size() < qMin(6, qMax(2, spineCount / 5));
+}
+
+bool looksLikeUsefulContentsLink(const QString &title)
+{
+    const QString normalized = normalizedText(title);
+    if (normalized.size() < 3 || normalized.size() > 120) {
+        return false;
+    }
+    const QString lower = normalized.toLower();
+    if (lower == QLatin1String("next") || lower == QLatin1String("previous") || lower == QLatin1String("back") || lower == QLatin1String("start")) {
+        return false;
+    }
+    if (lower.contains(QRegularExpression(QStringLiteral("^\\d+$")))) {
+        return false;
+    }
+    return true;
+}
+
+QList<EpubNavigationEntry> navigationFromInBookContentsLinks(const KZip &zip,
+                                                             const QStringList &spine,
+                                                             const QHash<QString, QString> &manifestPathsByHref)
+{
+    QList<EpubNavigationEntry> bestEntries;
+    int bestUniqueTargets = 0;
+
+    for (int sourceIndex = 0; sourceIndex < spine.size(); ++sourceIndex) {
+        const QString sourcePath = spine.at(sourceIndex);
+        const QByteArray data = readArchiveFile(zip, sourcePath);
+        if (data.isEmpty()) {
+            continue;
+        }
+
+        QList<EpubNavigationEntry> entries;
+        QStringList seenTargets;
+        QStringList seenKeys;
+        QXmlStreamReader xml(data);
+        const QString sourceBaseDir = archiveBaseDir(sourcePath);
+        while (!xml.atEnd()) {
+            if (xml.readNext() != QXmlStreamReader::StartElement || localXmlName(xml.name().toString()) != QLatin1String("a")) {
+                continue;
+            }
+
+            const QString href = xmlAttributeValue(xml.attributes(), QStringLiteral("href"));
+            const int targetSpine = spineIndexForHref(sourceBaseDir, href, spine, manifestPathsByHref);
+            if (targetSpine < 0) {
+                continue;
+            }
+            const QString title = normalizedText(xml.readElementText(QXmlStreamReader::IncludeChildElements));
+            if (!looksLikeUsefulContentsLink(title)) {
+                continue;
+            }
+
+            const QString fragment = hrefFragmentPart(href);
+            const QString key = QString::number(targetSpine) + QLatin1Char('#') + fragment + QLatin1Char('#') + title;
+            if (seenKeys.contains(key)) {
+                continue;
+            }
+            seenKeys.append(key);
+            if (!seenTargets.contains(QString::number(targetSpine))) {
+                seenTargets.append(QString::number(targetSpine));
+            }
+            appendNavigationEntry(&entries, title, fragment, targetSpine, 1);
+        }
+
+        if (seenTargets.size() > bestUniqueTargets || (seenTargets.size() == bestUniqueTargets && entries.size() > bestEntries.size())) {
+            bestEntries = entries;
+            bestUniqueTargets = seenTargets.size();
+        }
+    }
+
+    return bestUniqueTargets >= 4 && bestEntries.size() >= 4 ? bestEntries : QList<EpubNavigationEntry>();
+}
+
 QList<EpubNavigationEntry> fallbackNavigationFromSpine(const KZip &zip, const QStringList &spine)
 {
     QList<EpubNavigationEntry> entries;
@@ -733,7 +824,13 @@ EpubInspection inspectEpub(const QString &path)
         if (result.navigation.isEmpty() && !ncxPath.isEmpty()) {
             result.navigation = navigationFromNcx(zip, ncxPath, result.spine, result.manifestPathsByHref);
         }
-        if (result.navigation.isEmpty()) {
+        if (isWeakNavigation(result.navigation, result.spine.size())) {
+            const QList<EpubNavigationEntry> contentsNavigation = navigationFromInBookContentsLinks(zip, result.spine, result.manifestPathsByHref);
+            if (!contentsNavigation.isEmpty()) {
+                result.navigation = contentsNavigation;
+            }
+        }
+        if (isWeakNavigation(result.navigation, result.spine.size())) {
             result.navigation = fallbackNavigationFromSpine(zip, result.spine);
         }
     }
@@ -923,6 +1020,7 @@ using namespace EpubWebReaderCore;
 
 constexpr auto EpubScheme = "paperlibrary-epub";
 constexpr auto PositionsGroup = "EpubWebReader Positions";
+constexpr auto PositionHistoryGroup = "EpubWebReader Position History";
 constexpr auto SettingsGroup = "EpubWebReader Settings";
 constexpr auto BookScrollModesGroup = "EpubWebReader Book Scroll Modes";
 constexpr auto GeneralGroup = "General";
@@ -936,6 +1034,8 @@ constexpr int NavigationEntryIndexRole = Qt::UserRole + 1;
 constexpr int MaxReaderHistoryLocations = 80;
 constexpr double ReaderHistoryDuplicateTolerance = 48.0;
 constexpr double ContinuousScrollHistoryStep = 1600.0;
+constexpr qint64 ProgressLogIntervalMs = 2000;
+constexpr double ProgressLogDistance = 600.0;
 
 void epubReaderLog(const QString &message)
 {
@@ -957,6 +1057,21 @@ QString readResourceText(const QString &path)
 {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+}
+
+QString readingHistoryLogPath()
+{
+    QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty()) {
+        root = QDir::homePath() + QStringLiteral("/.paperlibrary");
+    }
+    QDir().mkpath(root);
+    return root + QStringLiteral("/reading-history.jsonl");
+}
+
+QString encodeHistoryLocation(int spineIndex, double scrollOffset)
+{
+    return QString::number(spineIndex) + QLatin1Char(',') + QString::number(cleanReportedScrollOffset(scrollOffset), 'f', 0);
 }
 
 QString readerCommandForUrl(const QUrl &url, const QString &bookId)
@@ -1267,9 +1382,27 @@ EpubWebReader::EpubWebReader(QWidget *parent)
     outlineLayout->setContentsMargins(12, 12, 10, 12);
     outlineLayout->setSpacing(8);
 
+    auto *outlineHeader = new QHBoxLayout;
+    outlineHeader->setContentsMargins(0, 0, 0, 0);
+    outlineHeader->setSpacing(6);
+
     m_outlineTitle = new QLabel(i18n("Contents"), m_outlineWidget);
     m_outlineTitle->setObjectName(QStringLiteral("paperlibrary_epub_outline_title"));
-    outlineLayout->addWidget(m_outlineTitle);
+    outlineHeader->addWidget(m_outlineTitle, 1);
+
+    m_outlineBackButton = new QToolButton(m_outlineWidget);
+    m_outlineBackButton->setText(i18nc("@action:button EPUB navigation history", "Back"));
+    m_outlineBackButton->setToolTip(i18nc("@info:tooltip", "Return to the previous EPUB reading location"));
+    m_outlineBackButton->setEnabled(false);
+    outlineHeader->addWidget(m_outlineBackButton);
+
+    m_outlineForwardButton = new QToolButton(m_outlineWidget);
+    m_outlineForwardButton->setText(i18nc("@action:button EPUB navigation history", "Forward"));
+    m_outlineForwardButton->setToolTip(i18nc("@info:tooltip", "Move forward in EPUB reading history"));
+    m_outlineForwardButton->setEnabled(false);
+    outlineHeader->addWidget(m_outlineForwardButton);
+
+    outlineLayout->addLayout(outlineHeader);
 
     m_outlineModel = new QStandardItemModel(this);
     m_outlineView = new QTreeView(m_outlineWidget);
@@ -1294,6 +1427,8 @@ EpubWebReader::EpubWebReader(QWidget *parent)
 
     connect(m_outlineView, &QTreeView::clicked, this, &EpubWebReader::jumpToNavigationEntry);
     connect(m_outlineView, &QTreeView::activated, this, &EpubWebReader::jumpToNavigationEntry);
+    connect(m_outlineBackButton, &QToolButton::clicked, this, &EpubWebReader::navigateBackInBook);
+    connect(m_outlineForwardButton, &QToolButton::clicked, this, &EpubWebReader::navigateForwardInBook);
 }
 
 EpubWebReader::~EpubWebReader()
@@ -1434,6 +1569,9 @@ bool EpubWebReader::open(const QUrl &url)
     m_forwardStack.clear();
     m_haveHistoryAnchor = false;
     m_suppressHistoryCapture = false;
+    m_sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_lastProgressLogMs = 0;
+    m_haveLastProgressLog = false;
     updateHistoryAvailability();
     m_fontScaleStep = readFontScaleStep();
     m_hasBookScrollModeOverride = readBookScrollMode(m_epubPath, &m_scrollMode);
@@ -1462,12 +1600,14 @@ bool EpubWebReader::open(const QUrl &url)
     m_spineIndex = restoredPosition.spineIndex;
     m_pendingScrollOffset = restoredPosition.scrollOffset;
     m_havePendingScrollOffset = restoredPosition.scrollOffset > 0.0;
+    restoreHistoryStack();
     epubReaderLog(QStringLiteral("restorePosition key=%1 saved=%2 status=%3 restored-spine-index=%4 restored-scroll-offset=%5")
                       .arg(key,
                            saved.join(QLatin1Char(',')),
                            restoredPosition.status,
                            QString::number(m_spineIndex),
                            QString::number(m_pendingScrollOffset, 'f', 0)));
+    logReadingEvent(QStringLiteral("open"), currentLocation(), restoredPosition.status);
 
     Q_EMIT titleChanged(m_bookTitle);
     QTimer::singleShot(0, this, [this]() {
@@ -1568,6 +1708,7 @@ bool EpubWebReader::open(const QUrl &url)
         captureScrollHistoryIfNeeded(offset);
         saveScrollOffset(offset);
         saveReadingPosition();
+        logProgressIfNeeded(offset);
     });
     connect(m_page, &QWebEnginePage::renderProcessTerminated, this, [this](QWebEnginePage::RenderProcessTerminationStatus status, int exitCode) {
         epubReaderLog(QStringLiteral("renderProcessTerminated status=%1 exit-code=%2").arg(static_cast<int>(status)).arg(exitCode));
@@ -1775,6 +1916,8 @@ void EpubWebReader::navigateBackInBook()
     }
     m_forwardStack.append(currentLocation());
     const Location location = m_backStack.takeLast();
+    persistHistoryStack();
+    logReadingEvent(QStringLiteral("history-back"), location);
     loadHistoryLocation(location);
     updateHistoryAvailability();
 }
@@ -1787,6 +1930,8 @@ void EpubWebReader::navigateForwardInBook()
     }
     m_backStack.append(currentLocation());
     const Location location = m_forwardStack.takeLast();
+    persistHistoryStack();
+    logReadingEvent(QStringLiteral("history-forward"), location);
     loadHistoryLocation(location);
     updateHistoryAvailability();
 }
@@ -1817,7 +1962,130 @@ void EpubWebReader::pushHistoryLocation(const Location &location, bool clearForw
     if (clearForward) {
         m_forwardStack.clear();
     }
+    persistHistoryStack();
     updateHistoryAvailability();
+}
+
+void EpubWebReader::restoreHistoryStack()
+{
+    m_backStack.clear();
+    if (m_epubPath.isEmpty() || m_spine.isEmpty()) {
+        updateHistoryAvailability();
+        return;
+    }
+
+    const KConfigGroup group(KSharedConfig::openConfig(), QString::fromLatin1(PositionHistoryGroup));
+    const QStringList encoded = group.readEntry(positionKey(m_epubPath), QStringList());
+    for (const QString &entry : encoded) {
+        const QStringList parts = entry.split(QLatin1Char(','));
+        if (parts.size() != 2) {
+            continue;
+        }
+        bool indexOk = false;
+        bool offsetOk = false;
+        const int spineIndex = parts.at(0).toInt(&indexOk);
+        const double scrollOffset = parts.at(1).toDouble(&offsetOk);
+        if (!indexOk || !offsetOk || spineIndex < 0 || spineIndex >= m_spine.size() || !isRestorableScrollOffset(scrollOffset)) {
+            continue;
+        }
+        m_backStack.append({spineIndex, cleanRestoredScrollOffset(scrollOffset)});
+    }
+    while (m_backStack.size() > MaxReaderHistoryLocations) {
+        m_backStack.removeFirst();
+    }
+    updateHistoryAvailability();
+}
+
+void EpubWebReader::persistHistoryStack() const
+{
+    if (m_epubPath.isEmpty()) {
+        return;
+    }
+
+    QStringList encoded;
+    encoded.reserve(m_backStack.size());
+    for (const Location &location : m_backStack) {
+        if (location.spineIndex >= 0 && location.spineIndex < m_spine.size()) {
+            encoded.append(encodeHistoryLocation(location.spineIndex, location.scrollOffset));
+        }
+    }
+
+    KConfigGroup group(KSharedConfig::openConfig(), QString::fromLatin1(PositionHistoryGroup));
+    group.writeEntry(positionKey(m_epubPath), encoded);
+    group.sync();
+}
+
+QString EpubWebReader::navigationTitleForLocation(const Location &location) const
+{
+    QString title;
+    int bestSpineIndex = -1;
+    for (const EpubNavigationEntry &entry : m_navigationEntries) {
+        if (entry.spineIndex <= location.spineIndex && entry.spineIndex >= bestSpineIndex) {
+            bestSpineIndex = entry.spineIndex;
+            title = entry.title;
+        }
+    }
+    if (!title.trimmed().isEmpty()) {
+        return title;
+    }
+    if (location.spineIndex >= 0 && location.spineIndex < m_spine.size()) {
+        return readablePathTitle(m_spine.at(location.spineIndex), location.spineIndex);
+    }
+    return QString();
+}
+
+void EpubWebReader::logReadingEvent(const QString &event, const Location &location, const QString &source)
+{
+    if (m_epubPath.isEmpty() || event.trimmed().isEmpty()) {
+        return;
+    }
+
+    QJsonObject object;
+    object.insert(QStringLiteral("schema"), QStringLiteral("paperlibrary.reading_event.v1"));
+    object.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    object.insert(QStringLiteral("event"), event);
+    object.insert(QStringLiteral("sessionId"), m_sessionId);
+    object.insert(QStringLiteral("documentKey"), positionKey(m_epubPath));
+    object.insert(QStringLiteral("title"), m_bookTitle);
+    object.insert(QStringLiteral("path"), m_epubPath);
+    object.insert(QStringLiteral("spineIndex"), location.spineIndex);
+    object.insert(QStringLiteral("spineCount"), m_spine.size());
+    if (location.spineIndex >= 0 && location.spineIndex < m_spine.size()) {
+        object.insert(QStringLiteral("spinePath"), m_spine.at(location.spineIndex));
+    }
+    object.insert(QStringLiteral("scrollOffset"), cleanReportedScrollOffset(location.scrollOffset));
+    object.insert(QStringLiteral("scrollMode"), scrollModeValue(m_scrollMode));
+    object.insert(QStringLiteral("approxProgress"), m_spine.isEmpty() ? 0.0 : qBound(0.0, (location.spineIndex + 1.0) / m_spine.size(), 1.0));
+    const QString navigationTitle = navigationTitleForLocation(location);
+    if (!navigationTitle.isEmpty()) {
+        object.insert(QStringLiteral("navigationTitle"), navigationTitle);
+    }
+    if (!source.trimmed().isEmpty()) {
+        object.insert(QStringLiteral("source"), source);
+    }
+
+    QFile log(readingHistoryLogPath());
+    if (!log.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        return;
+    }
+    log.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    log.write("\n");
+}
+
+void EpubWebReader::logProgressIfNeeded(double scrollOffset)
+{
+    const Location location{m_spineIndex, cleanReportedScrollOffset(scrollOffset)};
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_haveLastProgressLog && location.spineIndex == m_lastProgressLogLocation.spineIndex
+        && std::abs(location.scrollOffset - m_lastProgressLogLocation.scrollOffset) < ProgressLogDistance
+        && now - m_lastProgressLogMs < ProgressLogIntervalMs) {
+        return;
+    }
+
+    m_haveLastProgressLog = true;
+    m_lastProgressLogLocation = location;
+    m_lastProgressLogMs = now;
+    logReadingEvent(QStringLiteral("progress"), location);
 }
 
 void EpubWebReader::captureLocationForHistory()
@@ -1862,7 +2130,15 @@ bool EpubWebReader::loadHistoryLocation(const Location &location)
 
 void EpubWebReader::updateHistoryAvailability()
 {
-    Q_EMIT historyAvailabilityChanged(canNavigateBackInBook(), canNavigateForwardInBook());
+    const bool canGoBack = canNavigateBackInBook();
+    const bool canGoForward = canNavigateForwardInBook();
+    if (m_outlineBackButton) {
+        m_outlineBackButton->setEnabled(canGoBack);
+    }
+    if (m_outlineForwardButton) {
+        m_outlineForwardButton->setEnabled(canGoForward);
+    }
+    Q_EMIT historyAvailabilityChanged(canGoBack, canGoForward);
 }
 
 void EpubWebReader::rebuildOutlineModel()
@@ -1943,6 +2219,7 @@ void EpubWebReader::jumpToNavigationEntry(const QModelIndex &index)
 
     const EpubNavigationEntry entry = m_navigationEntries.at(entryIndex);
     loadSpineItem(entry.spineIndex, 0.0, false, entry.fragment);
+    logReadingEvent(QStringLiteral("outline-jump"), {entry.spineIndex, 0.0}, entry.title);
 }
 
 bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd, const QString &fragment, bool recordHistory)
@@ -1969,6 +2246,7 @@ bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scro
                            QString::fromUtf8(spineUrl.toEncoded()),
                            m_pendingScrollToEnd ? QStringLiteral("end") : QString::number(m_pendingScrollOffset, 'f', 0),
                            fragment));
+    logReadingEvent(QStringLiteral("load-spine"), currentLocation(), fragment.isEmpty() ? QString() : QStringLiteral("fragment:%1").arg(fragment));
     m_page->load(spineUrl);
     selectCurrentNavigationEntry();
     if (!m_pendingScrollToEnd) {

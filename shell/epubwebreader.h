@@ -25,6 +25,7 @@ class QLabel;
 class QModelIndex;
 class QStandardItemModel;
 class QTreeView;
+class QToolButton;
 class QWebEnginePage;
 class QWebEngineProfile;
 class QWebEngineUrlRequestInterceptor;
@@ -163,6 +164,11 @@ private:
     void captureScrollHistoryIfNeeded(double scrollOffset);
     void pushHistoryLocation(const Location &location, bool clearForward = true);
     void updateHistoryAvailability();
+    void logReadingEvent(const QString &event, const Location &location, const QString &source = QString());
+    void logProgressIfNeeded(double scrollOffset);
+    void restoreHistoryStack();
+    void persistHistoryStack() const;
+    QString navigationTitleForLocation(const Location &location) const;
     Location currentLocation() const;
     bool loadHistoryLocation(const Location &location);
     void rebuildOutlineModel();
@@ -188,12 +194,18 @@ private:
     bool m_haveHistoryAnchor = false;
     Location m_historyAnchor;
     bool m_suppressHistoryCapture = false;
+    QString m_sessionId;
+    qint64 m_lastProgressLogMs = 0;
+    bool m_haveLastProgressLog = false;
+    Location m_lastProgressLogLocation;
 
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
     QWebEngineView *m_view = nullptr;
     QWidget *m_outlineWidget = nullptr;
     QLabel *m_outlineTitle = nullptr;
+    QToolButton *m_outlineBackButton = nullptr;
+    QToolButton *m_outlineForwardButton = nullptr;
     QTreeView *m_outlineView = nullptr;
     QStandardItemModel *m_outlineModel = nullptr;
     QWebEngineUrlSchemeHandler *m_schemeHandler = nullptr;

@@ -22,7 +22,7 @@ the taste, goals, and priorities.
 ## What Ships Publicly
 
 - The reader: PDF, EPUB, tabs, outlines, search, navigation, reading position,
-  and local state.
+  local reading-history events, and local state.
 - The library UI: tile-first browsing, keyboard navigation, search, downranking,
   generated cards, metadata captions, and focus shelves.
 - Documented file contracts: catalog rows, focus manifests, cover metadata,
@@ -33,7 +33,7 @@ the taste, goals, and priorities.
 ## What Must Stay Local
 
 - Personal corpus data, downloaded PDFs/EPUBs, generated catalogs, local
-  databases, local paths, and app caches.
+  databases, local paths, reading-history logs, and app caches.
 - Private prompts, private scoring scripts, acquisition machinery, and project
   notes that reveal sensitive reading/work context.
 - Any hard-coded "Ian" shelves or goals. Medicine/MND/Work can exist as examples

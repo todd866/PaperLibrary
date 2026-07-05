@@ -21,6 +21,8 @@ mobile/manual/translation tree, and no old Okular config identity.
   defaults.
 - Tile-first browsing with generated covers, metadata, reading progress, and
   downranking.
+- EPUB reading keeps a local back stack, saved position, and append-only
+  reading-history events for future analytics and spaced-repetition workflows.
 - Optional local `claude` CLI hooks for metadata and semantic navigation.
 
 AI features are BYO-token and local-process based. Auto-tagging is opt-in. The
