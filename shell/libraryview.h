@@ -18,11 +18,13 @@ class CoverLoader;
 class LibraryStore;
 class PaperLibraryModel;
 class QAction;
+class QGraphicsOpacityEffect;
 class QLabel;
 class QLineEdit;
 class QListView;
 class QModelIndex;
 class PaperLibrarySectionedModel;
+class QPropertyAnimation;
 class QProcess;
 class QPushButton;
 class QStandardItem;
@@ -186,6 +188,7 @@ private:
     void setPaperSectionMode(Shelf shelf, int mode);
     int paperSectionMode(Shelf shelf) const;
     void syncPaperSectionButton();
+    void showShelfGuide();
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
     /** Load the corpus catalog on first entry; pick up mtime changes later. */
@@ -198,6 +201,7 @@ private:
     void editMetadata(const QUrl &url);
     void coverArrived(const QString &filePath, const QString &coverPath);
     void syncViewModeButton();
+    void animateGridIn();
     /** Reassert the tiled QListView geometry after model/theme/shelf changes. */
     void configureTileGrid();
     Shelf activeShelf() const;
@@ -246,6 +250,8 @@ private:
     CoverLoader *m_coverLoader;
     QTimer *m_corpusCoverWarmupTimer = nullptr;
     int m_nextCorpusCoverRow = 0;
+    QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
+    QPropertyAnimation *m_gridFadeAnimation = nullptr;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
 
     // The PaperLibrary corpus shelf; all null when no corpus is configured

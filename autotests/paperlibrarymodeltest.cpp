@@ -119,6 +119,96 @@ static SyntheticRecord psychiatryRecord()
             QStringLiteral("2026-04-15T00:00:00+00:00")};
 }
 
+static SyntheticRecord clinicalExamTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-clinical-exam-10"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Talley and O'Connor's Clinical Examination"),
+            QStringLiteral("Nicholas Talley; Simon O'Connor"),
+            QStringLiteral("2017"),
+            QStringLiteral("(book)"),
+            101010,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-01T00:00:00+00:00")};
+}
+
+static SyntheticRecord neuroTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-neuroanatomy-11"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Neuroanatomy: An Illustrated Colour Text"),
+            QStringLiteral("A. R. Crossman"),
+            QStringLiteral("2019"),
+            QStringLiteral("(book)"),
+            111111,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-02T00:00:00+00:00")};
+}
+
+static SyntheticRecord paedsTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-paeds-12"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Nelson Textbook of Pediatrics"),
+            QStringLiteral("Placeholder Editor"),
+            QStringLiteral("2024"),
+            QStringLiteral("(book)"),
+            121212,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-03T00:00:00+00:00")};
+}
+
+static SyntheticRecord obgynTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-obgyn-13"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Obstetrics and Gynaecology for Medical Students"),
+            QStringLiteral("Placeholder Editor"),
+            QStringLiteral("2024"),
+            QStringLiteral("(book)"),
+            131313,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-04T00:00:00+00:00")};
+}
+
+static SyntheticRecord psychiatryTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-psychiatry-textbook-14"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Shorter Oxford Textbook of Psychiatry"),
+            QStringLiteral("Placeholder Psychiatrist"),
+            QStringLiteral("2024"),
+            QStringLiteral("(book)"),
+            141414,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-05T00:00:00+00:00")};
+}
+
+static SyntheticRecord patientSafetyTextbookRecord()
+{
+    return {QStringLiteral("md5-synthetic-patient-safety-15"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("Human Error and Patient Safety"),
+            QStringLiteral("Placeholder Safety"),
+            QStringLiteral("2020"),
+            QStringLiteral("(book)"),
+            151515,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-05-06T00:00:00+00:00")};
+}
+
 static SyntheticRecord anthropologyRecord()
 {
     return {QStringLiteral("md5-synthetic-anthropology-7"),
@@ -511,7 +601,19 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
 {
     const QString mndPdfPath = touchFile(QStringLiteral("pdfs/10-9999-synthetic-mnd-5.pdf"));
     QVERIFY(!mndPdfPath.isEmpty());
-    const QString corpusDir = writeCatalog({widgetRecord(), gadgetRecord(), textbookRecord(), mndRecord(), psychiatryRecord(), anthropologyRecord(), politicsRecord()});
+    const QString corpusDir = writeCatalog({widgetRecord(),
+                                            gadgetRecord(),
+                                            textbookRecord(),
+                                            mndRecord(),
+                                            psychiatryRecord(),
+                                            clinicalExamTextbookRecord(),
+                                            neuroTextbookRecord(),
+                                            paedsTextbookRecord(),
+                                            obgynTextbookRecord(),
+                                            psychiatryTextbookRecord(),
+                                            patientSafetyTextbookRecord(),
+                                            anthropologyRecord(),
+                                            politicsRecord()});
 
     PaperLibraryModel model;
     QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
@@ -522,13 +624,12 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     sections.setSourceModel(&model);
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Textbooks);
-    QCOMPARE(sections.rowCount(), 1); // Focus mode is packed: no header rows
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Fundamentals of Widget Physiology"));
+    QCOMPARE(sections.rowCount(), 7); // Focus mode is packed: no header rows
+    QVERIFY(!sections.data(sections.index(0), PaperLibrarySectionedModel::SectionHeaderRole).toBool());
 
     sections.setSectionMode(PaperLibrarySectionedModel::ByTopic);
-    QCOMPARE(sections.rowCount(), 1); // grouped modes still emit tiles only
+    QCOMPARE(sections.rowCount(), 7); // grouped modes still emit tiles only
     QVERIFY(!sections.data(sections.index(0), PaperLibrarySectionedModel::SectionHeaderRole).toBool());
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Fundamentals of Widget Physiology"));
 
     sections.setSectionMode(PaperLibrarySectionedModel::ReadNext);
     sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
@@ -543,14 +644,28 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::GeneratedCoverRole).toBool(), false);
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Medicine);
-    QCOMPARE(sections.rowCount(), 1); // Medicine is medical textbooks, not every medical paper
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Fundamentals of Widget Physiology"));
-    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Medical textbook"));
-    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Related: physiology"));
+    QCOMPARE(sections.rowCount(), 7); // Medicine is medical textbooks, not every medical paper
+    QStringList medicineTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        medicineTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QCOMPARE(medicineTitles.at(0), QStringLiteral("Talley and O'Connor's Clinical Examination"));
+    QCOMPARE(medicineTitles.at(1), QStringLiteral("Neuroanatomy: An Illustrated Colour Text"));
+    QCOMPARE(medicineTitles.at(2), QStringLiteral("Nelson Textbook of Pediatrics"));
+    QCOMPARE(medicineTitles.at(3), QStringLiteral("Obstetrics and Gynaecology for Medical Students"));
+    QCOMPARE(medicineTitles.at(4), QStringLiteral("Shorter Oxford Textbook of Psychiatry"));
+    QVERIFY(medicineTitles.indexOf(QStringLiteral("Human Error and Patient Safety")) > medicineTitles.indexOf(QStringLiteral("Fundamentals of Widget Physiology")));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Clinical rotation reference"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("For clinical placement"));
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Psychiatry);
-    QCOMPARE(sections.rowCount(), 1);
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
+    QCOMPARE(sections.rowCount(), 2);
+    QStringList psychiatryTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        psychiatryTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(psychiatryTitles.contains(QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry")));
+    QVERIFY(psychiatryTitles.contains(QStringLiteral("Shorter Oxford Textbook of Psychiatry")));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Psychiatry"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailSeedRole).toString(), QStringLiteral("Psychiatry"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Psychiatry training"));

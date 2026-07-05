@@ -19,8 +19,10 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEasingCurve>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGraphicsOpacityEffect>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
@@ -30,6 +32,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QProcess>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -479,6 +482,57 @@ static int paperSectionModeFromName(const QString &name, int fallback)
         return PaperLibrarySectionedModel::ReadNext;
     }
     return fallback;
+}
+
+static QString corpusShelfGuide(LibraryView::Shelf shelf, int mode)
+{
+    QString modeLabel;
+    switch (mode) {
+    case PaperLibrarySectionedModel::ByTopic:
+        modeLabel = i18nc("@label corpus library grouping", "Topics");
+        break;
+    case PaperLibrarySectionedModel::ByProject:
+        modeLabel = i18nc("@label corpus library grouping", "Projects");
+        break;
+    case PaperLibrarySectionedModel::ByType:
+        modeLabel = i18nc("@label corpus library grouping", "Types");
+        break;
+    case PaperLibrarySectionedModel::BySource:
+        modeLabel = i18nc("@label corpus library grouping", "Sources");
+        break;
+    case PaperLibrarySectionedModel::ByYear:
+        modeLabel = i18nc("@label corpus library grouping", "Years");
+        break;
+    case PaperLibrarySectionedModel::ByJournal:
+        modeLabel = i18nc("@label corpus library grouping", "Journals");
+        break;
+    case PaperLibrarySectionedModel::ReadNext:
+    default:
+        modeLabel = i18nc("@label corpus library grouping", "For you");
+        break;
+    }
+
+    switch (shelf) {
+    case LibraryView::MedicineShelf:
+        return i18nc("@info corpus shelf guide", "%1: clinical essentials, neuro/MND, paeds, OBGYN, psychiatry", modeLabel);
+    case LibraryView::MndShelf:
+        return i18nc("@info corpus shelf guide", "%1: MD project set, biomarkers, diagnosis, trials, nearby ALS papers", modeLabel);
+    case LibraryView::WorkShelf:
+        return i18nc("@info corpus shelf guide", "%1: Beyond Bayes, peer reviews, active revision work", modeLabel);
+    case LibraryView::TextbooksShelf:
+        return i18nc("@info corpus shelf guide", "%1: textbooks and reference books grouped for quick retrieval", modeLabel);
+    case LibraryView::BooksShelf:
+        return i18nc("@info corpus shelf guide", "%1: long-form books from the corpus", modeLabel);
+    case LibraryView::FictionShelf:
+        return i18nc("@info corpus shelf guide", "%1: fiction queue and current series reading", modeLabel);
+    case LibraryView::NonfictionShelf:
+        return i18nc("@info corpus shelf guide", "%1: biography, history, politics, anthropology, social theory", modeLabel);
+    case LibraryView::PapersShelf:
+        return i18nc("@info corpus shelf guide", "%1: papers ranked by active projects and adjacent reading", modeLabel);
+    case LibraryView::PdfShelf:
+        break;
+    }
+    return QString();
 }
 
 static QString compactPublicationTypeKey(QString label)
@@ -1115,13 +1169,13 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_paperSectionButton->hide();
     QMenu *paperSectionMenu = new QMenu(m_paperSectionButton);
     QActionGroup *paperSectionGroup = new QActionGroup(paperSectionMenu);
-    const QString sectionModeNames[] = {i18nc("@item:inmenu corpus arrangement", "Focus"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Topic"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Project"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Type"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Source"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Year"),
-                                        i18nc("@item:inmenu corpus arrangement", "By Journal")};
+    const QString sectionModeNames[] = {i18nc("@item:inmenu corpus arrangement", "For you"),
+                                        i18nc("@item:inmenu corpus arrangement", "Topics"),
+                                        i18nc("@item:inmenu corpus arrangement", "Projects"),
+                                        i18nc("@item:inmenu corpus arrangement", "Types"),
+                                        i18nc("@item:inmenu corpus arrangement", "Sources"),
+                                        i18nc("@item:inmenu corpus arrangement", "Years"),
+                                        i18nc("@item:inmenu corpus arrangement", "Journals")};
     for (int mode = PaperLibrarySectionedModel::ReadNext; mode <= PaperLibrarySectionedModel::ByJournal; ++mode) {
         QAction *action = paperSectionMenu->addAction(sectionModeNames[mode]);
         action->setCheckable(true);
@@ -1196,6 +1250,12 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     configureTileGrid();
     m_grid->setModel(modelForShelf(PdfShelf));
     m_grid->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_gridFadeEffect = new QGraphicsOpacityEffect(m_grid);
+    m_gridFadeEffect->setOpacity(1.0);
+    m_grid->setGraphicsEffect(m_gridFadeEffect);
+    m_gridFadeAnimation = new QPropertyAnimation(m_gridFadeEffect, "opacity", this);
+    m_gridFadeAnimation->setDuration(140);
+    m_gridFadeAnimation->setEasingCurve(QEasingCurve::OutCubic);
     mainLayout->addWidget(m_grid, 1);
 
     // The PaperLibrary corpus earns its shelf only when it is actually there
@@ -1253,6 +1313,18 @@ void LibraryView::syncViewModeButton()
     const ViewMode mode = m_viewModes[shelf];
     m_viewModeActions[mode]->setChecked(true);
     m_viewModeButton->setText(m_viewModeActions[mode]->text());
+}
+
+void LibraryView::animateGridIn()
+{
+    if (!m_gridFadeEffect || !m_gridFadeAnimation) {
+        return;
+    }
+    m_gridFadeAnimation->stop();
+    m_gridFadeEffect->setOpacity(0.74);
+    m_gridFadeAnimation->setStartValue(0.74);
+    m_gridFadeAnimation->setEndValue(1.0);
+    m_gridFadeAnimation->start();
 }
 
 void LibraryView::configureTileGrid()
@@ -2284,7 +2356,7 @@ void LibraryView::setupPapersShelf()
     m_paperSections->setSourceModel(m_paperModel);
     m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Papers);
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
-        m_paperNotice->hide();
+        showShelfGuide();
         requestCorpusCovers();
     });
     connect(m_paperSections, &QAbstractItemModel::modelReset, this, [this]() {
@@ -2320,6 +2392,7 @@ void LibraryView::shelfChanged(int index)
         configureTileGrid();
         delete oldSelection;
         ensurePapersFresh();
+        showShelfGuide();
         requestCorpusCovers();
     } else {
         QItemSelectionModel *oldSelection = m_grid->selectionModel();
@@ -2327,7 +2400,11 @@ void LibraryView::shelfChanged(int index)
         configureTileGrid();
         delete oldSelection;
         syncViewModeButton(); // the arrangement is a per-shelf choice
+        if (m_paperNotice) {
+            m_paperNotice->hide();
+        }
     }
+    animateGridIn();
     if (!searchQuery().isEmpty()) {
         applySearch(); // the content search follows the active shelf
     }
@@ -2390,6 +2467,8 @@ void LibraryView::setPaperSectionMode(Shelf shelf, int mode)
         m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(mode));
     }
     syncPaperSectionButton();
+    showShelfGuide();
+    requestCorpusCovers();
 }
 
 int LibraryView::paperSectionMode(Shelf shelf) const
@@ -2416,10 +2495,31 @@ void LibraryView::syncPaperSectionButton()
     }
 }
 
+void LibraryView::showShelfGuide()
+{
+    const Shelf shelf = activeShelf();
+    if (!usesCorpusList(shelf) || !m_paperNotice) {
+        if (m_paperNotice) {
+            m_paperNotice->hide();
+        }
+        return;
+    }
+    const QString guide = corpusShelfGuide(shelf, paperSectionMode(shelf));
+    if (guide.isEmpty()) {
+        m_paperNotice->hide();
+        return;
+    }
+    showPaperNotice(guide, false);
+}
+
 void LibraryView::requestCorpusCovers()
 {
     m_nextCorpusCoverRow = 0;
-    requestNextCorpusCoverBatch();
+    if (m_corpusCoverWarmupTimer) {
+        m_corpusCoverWarmupTimer->start(260);
+    } else {
+        requestNextCorpusCoverBatch();
+    }
 }
 
 void LibraryView::requestNextCorpusCoverBatch()
@@ -2435,7 +2535,7 @@ void LibraryView::requestNextCorpusCoverBatch()
     // Keep each pass bounded. Generated corpus cards are immediately useful,
     // while real local PDF covers are warmed opportunistically after the
     // highest-ranked first screens.
-    static constexpr int MaxCorpusCoverRequests = 96;
+    static constexpr int MaxCorpusCoverRequests = 24;
     int requested = 0;
     const int rows = m_paperSections->rowCount();
     for (; m_nextCorpusCoverRow < rows && requested < MaxCorpusCoverRequests; ++m_nextCorpusCoverRow) {
@@ -2471,7 +2571,7 @@ void LibraryView::ensurePapersFresh()
         return;
     }
     if (m_paperModel->isLoaded()) {
-        m_paperModel->reloadIfChanged(); // catalog.jsonl mtime is the watch
+        return; // tab switches should be instant; refresh() owns mtime checks
     } else {
         showPaperNotice(i18nc("@info while the corpus catalog parses in the background", "Loading catalog…"), false);
         m_paperModel->load(m_paperCorpusDir);

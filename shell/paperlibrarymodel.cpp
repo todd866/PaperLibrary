@@ -361,6 +361,64 @@ static bool recordMatchesMedicine(const QString &text)
                               QStringLiteral("emergency")});
 }
 
+static bool recordMatchesClinicalEssentials(const QString &text)
+{
+    return containsAnyNeedle(text,
+                             {QStringLiteral("clinical examination"),
+                              QStringLiteral("clinical exam"),
+                              QStringLiteral("talley"),
+                              QStringLiteral("o'connor"),
+                              QStringLiteral("oxford handbook of clinical medicine"),
+                              QStringLiteral("clinical diagnosis"),
+                              QStringLiteral("physical diagnosis"),
+                              QStringLiteral("general practice"),
+                              QStringLiteral("emergency medicine")});
+}
+
+static bool recordMatchesNeuroMedicine(const QString &text)
+{
+    return recordMatchesMnd(text)
+        || containsAnyNeedle(text,
+                             {QStringLiteral("neuroanatomy"),
+                              QStringLiteral("neuroscience"),
+                              QStringLiteral("neurology"),
+                              QStringLiteral("brain"),
+                              QStringLiteral("spinal cord"),
+                              QStringLiteral("neuron"),
+                              QStringLiteral("motor system")});
+}
+
+static bool recordMatchesMedicalCoreScience(const QString &text)
+{
+    return containsAnyNeedle(text,
+                             {QStringLiteral("pathoma"),
+                              QStringLiteral("pathology"),
+                              QStringLiteral("pharmacology"),
+                              QStringLiteral("physiology"),
+                              QStringLiteral("basic and clinical pharmacology"),
+                              QStringLiteral("costanzo")});
+}
+
+static bool recordMatchesMedicalAnatomy(const QString &text)
+{
+    return containsAnyNeedle(text,
+                             {QStringLiteral("anatomy"),
+                              QStringLiteral("netter"),
+                              QStringLiteral("gray's anatomy"),
+                              QStringLiteral("grays anatomy"),
+                              QStringLiteral("snell")});
+}
+
+static bool recordMatchesPatientSafety(const QString &text)
+{
+    return containsAnyNeedle(text,
+                             {QStringLiteral("patient safety"),
+                              QStringLiteral("human error"),
+                              QStringLiteral("quality improvement"),
+                              QStringLiteral("healthcare systems"),
+                              QStringLiteral("clinical governance")});
+}
+
 static bool recordMatchesNonfiction(const QString &text, const QString &source, const QString &journal)
 {
     if (recordMatchesFiction(text)) {
@@ -392,6 +450,7 @@ static bool recordMatchesTextbook(const QString &text, const QString &source)
                                                    QStringLiteral("principles of "),
                                                    QStringLiteral("introduction to "),
                                                    QStringLiteral("clinical examination"),
+                                                   QStringLiteral("patient safety"),
                                                    QStringLiteral("anatomy"),
                                                    QStringLiteral("physiology"),
                                                    QStringLiteral("pathology"),
@@ -399,7 +458,9 @@ static bool recordMatchesTextbook(const QString &text, const QString &source)
                                                    QStringLiteral("epidemiology"),
                                                    QStringLiteral("statistics"),
                                                    QStringLiteral("neuroscience"),
-                                                   QStringLiteral("medicine")});
+                                                   QStringLiteral("medicine"),
+                                                   QStringLiteral("medical"),
+                                                   QStringLiteral("medical students")});
     return (bookSource && textbookSignal) || text.contains(QStringLiteral("textbook of "));
 }
 
@@ -509,16 +570,18 @@ static int sectionRank(const QString &section)
     const QStringList order = {
         QStringLiteral("Pinned"),
         QStringLiteral("Continue Reading"),
+        QStringLiteral("Clinical Essentials"),
         QStringLiteral("MD Project Review Set"),
         QStringLiteral("MND Project"),
         QStringLiteral("MND / ALS"),
+        QStringLiteral("Neuro / MND"),
+        QStringLiteral("Paeds Rotation"),
+        QStringLiteral("OBGYN Rotation"),
         QStringLiteral("Psychiatry"),
         QStringLiteral("Child & Adolescent Psychiatry"),
         QStringLiteral("Mood, Anxiety & Trauma"),
         QStringLiteral("Psychosis & Bipolar"),
         QStringLiteral("Substance Use"),
-        QStringLiteral("Paeds Rotation"),
-        QStringLiteral("OBGYN Rotation"),
         QStringLiteral("Beyond Bayes / Highdimensional"),
         QStringLiteral("Peer Reviews"),
         QStringLiteral("Fiction"),
@@ -529,10 +592,13 @@ static int sectionRank(const QString &section)
         QStringLiteral("Clinical Guidelines"),
         QStringLiteral("Reviews & Guidelines"),
         QStringLiteral("Reviews & Evidence Synthesis"),
+        QStringLiteral("Pathology / Pharmacology / Physiology"),
         QStringLiteral("Methods & Statistics"),
+        QStringLiteral("Anatomy"),
         QStringLiteral("Neuroscience"),
         QStringLiteral("Medicine & Clinical"),
         QStringLiteral("Medicine"),
+        QStringLiteral("Patient Safety & Systems"),
         QStringLiteral("Systems & Theory"),
         QStringLiteral("Highly Cited"),
         QStringLiteral("Recent Additions"),
@@ -543,6 +609,7 @@ static int sectionRank(const QString &section)
         QStringLiteral("Neuroscience & Mind"),
         QStringLiteral("Social Theory"),
         QStringLiteral("Other Textbooks"),
+        QStringLiteral("Other Medical Textbooks"),
         QStringLiteral("Other Books"),
         QStringLiteral("Guidelines & Evidence"),
         QStringLiteral("Peer Reviews"),
@@ -614,6 +681,41 @@ static QString readNextSectionFor(const QModelIndex &index, const QString &text,
         return QStringLiteral("Recent Additions");
     }
     return QStringLiteral("Other Papers");
+}
+
+static QString medicineReadNextSectionFor(const QModelIndex &index, const QString &text)
+{
+    if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
+        return QStringLiteral("Pinned");
+    }
+    if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
+        return QStringLiteral("Continue Reading");
+    }
+    if (recordMatchesClinicalEssentials(text)) {
+        return QStringLiteral("Clinical Essentials");
+    }
+    if (recordMatchesNeuroMedicine(text)) {
+        return QStringLiteral("Neuro / MND");
+    }
+    if (recordMatchesPaediatrics(text)) {
+        return QStringLiteral("Paeds Rotation");
+    }
+    if (recordMatchesObgyn(text)) {
+        return QStringLiteral("OBGYN Rotation");
+    }
+    if (recordMatchesPsychiatry(text)) {
+        return QStringLiteral("Psychiatry");
+    }
+    if (recordMatchesMedicalCoreScience(text)) {
+        return QStringLiteral("Pathology / Pharmacology / Physiology");
+    }
+    if (recordMatchesMedicalAnatomy(text)) {
+        return QStringLiteral("Anatomy");
+    }
+    if (recordMatchesPatientSafety(text)) {
+        return QStringLiteral("Patient Safety & Systems");
+    }
+    return QStringLiteral("Other Medical Textbooks");
 }
 
 QVariant PaperLibraryModel::data(const QModelIndex &index, int role) const
@@ -1163,17 +1265,29 @@ static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filt
     case PaperLibrarySectionedModel::Textbooks:
         return topic == QLatin1String("General Research") ? QStringLiteral("Reference textbook") : topic + QStringLiteral(" reference");
     case PaperLibrarySectionedModel::Medicine:
-        if (recordMatchesMnd(text)) {
-            return QStringLiteral("Clinical MND reference");
+        if (recordMatchesClinicalEssentials(text)) {
+            return QStringLiteral("Clinical rotation reference");
+        }
+        if (recordMatchesNeuroMedicine(text)) {
+            return QStringLiteral("Neuro / MND reference");
+        }
+        if (recordMatchesPaediatrics(text)) {
+            return QStringLiteral("Paeds rotation textbook");
+        }
+        if (recordMatchesObgyn(text)) {
+            return QStringLiteral("OBGYN rotation textbook");
         }
         if (recordMatchesPsychiatry(text)) {
             return QStringLiteral("Psychiatry training");
         }
-        if (recordMatchesPaediatrics(text)) {
-            return QStringLiteral("Paeds rotation");
+        if (recordMatchesMedicalCoreScience(text)) {
+            return QStringLiteral("Core medical science");
         }
-        if (recordMatchesObgyn(text)) {
-            return QStringLiteral("OBGYN rotation");
+        if (recordMatchesMedicalAnatomy(text)) {
+            return QStringLiteral("Anatomy reference");
+        }
+        if (recordMatchesPatientSafety(text)) {
+            return QStringLiteral("Systems / patient safety");
         }
         return QStringLiteral("Medical textbook");
     case PaperLibrarySectionedModel::Psychiatry:
@@ -1226,8 +1340,11 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
         }
     }
     if (filter == PaperLibrarySectionedModel::Medicine) {
-        if (recordMatchesMnd(text)) {
-            return QStringLiteral("Bridge: medicine + MND");
+        if (recordMatchesClinicalEssentials(text)) {
+            return QStringLiteral("For clinical placement");
+        }
+        if (recordMatchesNeuroMedicine(text)) {
+            return QStringLiteral("Bridge: medicine + neuro");
         }
         if (recordMatchesPsychiatry(text)) {
             return QStringLiteral("Bridge: medicine + psychiatry");
@@ -1237,6 +1354,12 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
         }
         if (recordMatchesObgyn(text)) {
             return QStringLiteral("Rotation: OBGYN");
+        }
+        if (recordMatchesMedicalCoreScience(text)) {
+            return QStringLiteral("Foundation: path/pharm/phys");
+        }
+        if (recordMatchesPatientSafety(text)) {
+            return QStringLiteral("Lower priority for rotations");
         }
     }
     if (filter == PaperLibrarySectionedModel::Mnd && source == QLatin1String("md-project-review-set")) {
@@ -1311,11 +1434,26 @@ static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row,
         }
         break;
     case PaperLibrarySectionedModel::Medicine:
-        if (recordMatchesMnd(text) || recordMatchesPsychiatry(text)) {
-            score -= 260;
+        if (recordMatchesClinicalEssentials(text)) {
+            score -= 330;
+        }
+        if (recordMatchesNeuroMedicine(text)) {
+            score -= 315;
         }
         if (recordMatchesPaediatrics(text) || recordMatchesObgyn(text)) {
-            score -= 220;
+            score -= 300;
+        }
+        if (recordMatchesPsychiatry(text)) {
+            score -= 280;
+        }
+        if (recordMatchesMedicalCoreScience(text)) {
+            score -= 240;
+        }
+        if (recordMatchesMedicalAnatomy(text)) {
+            score -= 210;
+        }
+        if (recordMatchesPatientSafety(text)) {
+            score -= 70;
         }
         break;
     case PaperLibrarySectionedModel::Mnd:
@@ -1761,21 +1899,7 @@ void PaperLibrarySectionedModel::rebuild()
         } else if (m_sectionMode == ReadNext && m_smartFilter == Textbooks) {
             section = textbookTopicSectionFor(text);
         } else if (m_sectionMode == ReadNext && m_smartFilter == Medicine) {
-            if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
-                section = QStringLiteral("Pinned");
-            } else if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
-                section = QStringLiteral("Continue Reading");
-            } else if (recordMatchesMnd(text)) {
-                section = QStringLiteral("MND / ALS");
-            } else if (recordMatchesPsychiatry(text)) {
-                section = psychiatryTopicSectionFor(text);
-            } else if (recordMatchesPaediatrics(text)) {
-                section = QStringLiteral("Paeds Rotation");
-            } else if (recordMatchesObgyn(text)) {
-                section = QStringLiteral("OBGYN Rotation");
-            } else {
-                section = topicBucketFor(text, source, journal);
-            }
+            section = medicineReadNextSectionFor(index, text);
         } else if (m_sectionMode == ReadNext && m_smartFilter == Psychiatry) {
             if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
                 section = QStringLiteral("Pinned");
