@@ -1048,24 +1048,35 @@ bool PaperLibraryFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex 
 static QString mndTopicSectionFor(const QString &text)
 {
     if (containsAnyNeedle(text,
-                          {QStringLiteral("diagnos"),
-                           QStringLiteral("criteria"),
+                          {QStringLiteral("biomarker"),
+                           QStringLiteral("neurofilament"),
+                           QStringLiteral(" nfl "),
+                           QStringLiteral("nf-l"),
+                           QStringLiteral("light chain"),
+                           QStringLiteral("csf"),
+                           QStringLiteral("serum"),
+                           QStringLiteral("plasma"),
+                           QStringLiteral("chitinase"),
+                           QStringLiteral("chi3l1")})) {
+        return QStringLiteral("Biomarkers & Neurofilament");
+    }
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("criteria"),
                            QStringLiteral("awaji"),
                            QStringLiteral("el escorial"),
                            QStringLiteral("gold coast"),
-                           QStringLiteral("threshold tracking"),
-                           QStringLiteral("electrodiagnos"),
-                           QStringLiteral("electromyography"),
-                           QStringLiteral(" emg "),
                            QStringLiteral("mimic")})) {
         return QStringLiteral("Diagnosis & Criteria");
-    }
-    if (containsAnyNeedle(text, {QStringLiteral("biomarker"), QStringLiteral("neurofilament"), QStringLiteral(" nfl "), QStringLiteral("csf"), QStringLiteral("serum")})) {
-        return QStringLiteral("Biomarkers & Neurofilament");
     }
     if (containsAnyNeedle(text,
                           {QStringLiteral("cortical hyperexcitability"),
                            QStringLiteral("hyperexcitability"),
+                           QStringLiteral("threshold tracking"),
+                           QStringLiteral("electrodiagnos"),
+                           QStringLiteral("electromyography"),
+                           QStringLiteral(" emg "),
+                           QStringLiteral("nerve conduction"),
+                           QStringLiteral("split-hand"),
                            QStringLiteral("transcranial magnetic stimulation"),
                            QStringLiteral(" tms "),
                            QStringLiteral("motor cortex"),
@@ -1073,6 +1084,9 @@ static QString mndTopicSectionFor(const QString &text)
                            QStringLiteral("intermuscular"),
                            QStringLiteral("excitability")})) {
         return QStringLiteral("Neurophysiology / Hyperexcitability");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("diagnos")})) {
+        return QStringLiteral("Diagnosis & Criteria");
     }
     if (containsAnyNeedle(text,
                           {QStringLiteral("treatment"),
@@ -1465,7 +1479,7 @@ static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filt
                 return QStringLiteral("Biomarker candidate");
             }
             if (mndTopic == QLatin1String("Neurophysiology / Hyperexcitability")) {
-                return QStringLiteral("Cortical excitability paper");
+                return QStringLiteral("Electrophysiology / excitability paper");
             }
             if (mndTopic == QLatin1String("Trials & Treatment")) {
                 return QStringLiteral("Treatment / trial paper");
@@ -1564,7 +1578,7 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
             return QStringLiteral("Use for biomarker evidence");
         }
         if (mndTopic == QLatin1String("Neurophysiology / Hyperexcitability")) {
-            return QStringLiteral("Use for excitability mechanism");
+            return QStringLiteral("Use for electrophysiology evidence");
         }
         if (mndTopic == QLatin1String("Trials & Treatment")) {
             return QStringLiteral("Use for therapy context");
@@ -2210,10 +2224,13 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == Qt::ToolTipRole) {
         const QString title = focusRow && !row.title.isEmpty() ? row.title : sourceIndex.data(Qt::DisplayRole).toString();
         const QString detail = focusRow && !focusDetailText.isEmpty() ? focusDetailText : sourceIndex.data(PaperLibraryModel::DetailRole).toString();
-        const QString intent = focusRow && !row.focusReason.isEmpty() ? focusReasonPrimary(row.focusReason) : corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
+        const bool inferFocusReason = focusRow && m_smartFilter == Mnd;
+        const QString intent = focusRow && !row.focusReason.isEmpty() && !inferFocusReason ? focusReasonPrimary(row.focusReason)
+                                                                                           : corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
         const QString relation =
-            focusRow && !row.focusReason.isEmpty() ? focusReasonSecondary(row.focusReason) : corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
-        const QString priority = focusRow && !row.focusSection.isEmpty() ? row.focusSection : corpusPriorityHintFor(sourceIndex, text, source, journal);
+            focusRow && !row.focusReason.isEmpty() && !inferFocusReason ? focusReasonSecondary(row.focusReason)
+                                                                         : corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
+        const QString priority = focusRow && !row.focusSection.isEmpty() && !inferFocusReason ? row.focusSection : corpusPriorityHintFor(sourceIndex, text, source, journal);
         const QString tags = QStringList(data(index, TopicTagsRole).toStringList().mid(0, 3)).join(QStringLiteral(" · "));
         return corpusTileTooltip(title, {detail, priority, intent, relation, tags});
     }
@@ -2235,11 +2252,24 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == TopicTagsRole) {
         if (focusRow) {
             QStringList tags;
-            if (!row.focusSection.isEmpty()) {
+            if (m_smartFilter == Mnd) {
+                const QString mndTopic = mndTopicSectionFor(text);
+                if (!mndTopic.isEmpty() && mndTopic != QLatin1String("Core MND / ALS")) {
+                    tags.append(mndTopic);
+                }
+                const QString relation = corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
+                if (!relation.isEmpty() && !tags.contains(relation)) {
+                    tags.append(relation);
+                }
+                if (!row.focusSection.isEmpty() && !tags.contains(row.focusSection)) {
+                    tags.append(row.focusSection);
+                }
+            }
+            if (tags.isEmpty() && !row.focusSection.isEmpty()) {
                 tags.append(row.focusSection);
             }
             const QString primary = focusReasonPrimary(row.focusReason);
-            if (!primary.isEmpty()) {
+            if (!primary.isEmpty() && !tags.contains(primary)) {
                 tags.append(primary);
             }
             return tags;

@@ -774,6 +774,245 @@ static QPainterPath starPath(const QPointF &center, qreal outerRadius)
     return path;
 }
 
+static bool corpusPaperKeyContainsAny(const QString &key, const QStringList &needles)
+{
+    for (const QString &needle : needles) {
+        if (key.contains(needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static QString corpusPaperKeyForIndex(const QModelIndex &index)
+{
+    return QStringList({index.data(Qt::DisplayRole).toString(),
+                        index.data(PaperLibraryModel::DetailRole).toString(),
+                        index.data(PaperLibraryModel::AuthorsRole).toString(),
+                        index.data(PaperLibraryModel::YearRole).toString(),
+                        index.data(PaperLibraryModel::JournalRole).toString(),
+                        index.data(PaperLibraryModel::DoiRole).toString(),
+                        index.data(PaperLibraryModel::SourceRole).toString()})
+        .join(QLatin1Char(' '))
+        .toCaseFolded();
+}
+
+static QString corpusPaperTopicLabelForKey(const QString &key, const QString &fallback = QString())
+{
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("diagnostic delay"),
+                                   QStringLiteral("delay"),
+                                   QStringLiteral("racial"),
+                                   QStringLiteral("disparit"),
+                                   QStringLiteral("health services"),
+                                   QStringLiteral("utilization"),
+                                   QStringLiteral("utilisation"),
+                                   QStringLiteral("referral"),
+                                   QStringLiteral("neurologist"),
+                                   QStringLiteral("diagnostician")})) {
+        return QStringLiteral("Access / delay");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("neurofilament"),
+                                   QStringLiteral(" nfl "),
+                                   QStringLiteral("nf-l"),
+                                   QStringLiteral("light chain"),
+                                   QStringLiteral("csf"),
+                                   QStringLiteral("serum"),
+                                   QStringLiteral("plasma"),
+                                   QStringLiteral("biomarker"),
+                                   QStringLiteral("chitinase"),
+                                   QStringLiteral("chi3l1"),
+                                   QStringLiteral("sensitivity"),
+                                   QStringLiteral("specificity")})) {
+        return QStringLiteral("Fluid marker");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("threshold tracking"),
+                                   QStringLiteral("nerve conduction"),
+                                   QStringLiteral("split-hand"),
+                                   QStringLiteral("electrodiagnos"),
+                                   QStringLiteral("electromyography"),
+                                   QStringLiteral(" emg "),
+                                   QStringLiteral("transcranial magnetic stimulation"),
+                                   QStringLiteral(" tms "),
+                                   QStringLiteral("cortical hyperexcitability"),
+                                   QStringLiteral("hyperexcitability"),
+                                   QStringLiteral("beta-band"),
+                                   QStringLiteral("intermuscular")})) {
+        return QStringLiteral("Electrophysiology");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("mri"),
+                                   QStringLiteral("magnetic resonance"),
+                                   QStringLiteral("imaging"),
+                                   QStringLiteral("sonographic"),
+                                   QStringLiteral("ultrasound"),
+                                   QStringLiteral("structural brain"),
+                                   QStringLiteral("network"),
+                                   QStringLiteral("connectivity")})) {
+        return QStringLiteral("Imaging / network");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("differential"),
+                                   QStringLiteral("mimic"),
+                                   QStringLiteral("misdiagnos"),
+                                   QStringLiteral("false positive"),
+                                   QStringLiteral("als-plus"),
+                                   QStringLiteral("spastic paraplegia"),
+                                   QStringLiteral("porphyria"),
+                                   QStringLiteral("leukoencephalopathy")})) {
+        return QStringLiteral("Mimic boundary");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("awaji"),
+                                   QStringLiteral("el escorial"),
+                                   QStringLiteral("gold coast"),
+                                   QStringLiteral("criteria"),
+                                   QStringLiteral("criterion"),
+                                   QStringLiteral("diagnosis pathway"),
+                                   QStringLiteral("diagnostic pathway")})) {
+        return QStringLiteral("Criteria / pathway");
+    }
+    if (corpusPaperKeyContainsAny(key, {QStringLiteral("prodromal"), QStringLiteral("preclinical"), QStringLiteral("onset"), QStringLiteral("early symptom")})) {
+        return QStringLiteral("Prodrome");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("survival"),
+                                   QStringLiteral("prognosis"),
+                                   QStringLiteral("natural history"),
+                                   QStringLiteral("phenotype"),
+                                   QStringLiteral("cohort"),
+                                   QStringLiteral("risk factor"),
+                                   QStringLiteral("incidence"),
+                                   QStringLiteral("prevalence")})) {
+        return QStringLiteral("Trajectory");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("nutrition"),
+                                   QStringLiteral("malnutrition"),
+                                   QStringLiteral("metabolic"),
+                                   QStringLiteral("bioenergetic"),
+                                   QStringLiteral("energy metabolism"),
+                                   QStringLiteral("mitochond"),
+                                   QStringLiteral("sirt3"),
+                                   QStringLiteral("hypothalamic")})) {
+        return QStringLiteral("Metabolism");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("sod1"),
+                                   QStringLiteral("c9orf72"),
+                                   QStringLiteral("tdp-43"),
+                                   QStringLiteral("tdp43"),
+                                   QStringLiteral("genetic"),
+                                   QStringLiteral("mutation"),
+                                   QStringLiteral("familial")})) {
+        return QStringLiteral("Genetics / molecular");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("treatment"),
+                                   QStringLiteral("trial"),
+                                   QStringLiteral("therapy"),
+                                   QStringLiteral("riluzole"),
+                                   QStringLiteral("edaravone"),
+                                   QStringLiteral("tofersen"),
+                                   QStringLiteral("antisense")})) {
+        return QStringLiteral("Treatment signal");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("cognitive"),
+                                   QStringLiteral("frontotemporal"),
+                                   QStringLiteral(" ftd "),
+                                   QStringLiteral("executive"),
+                                   QStringLiteral("behaviour"),
+                                   QStringLiteral("behavior")})) {
+        return QStringLiteral("Cognition / FTD");
+    }
+    if (corpusPaperKeyContainsAny(key,
+                                  {QStringLiteral("care"),
+                                   QStringLiteral("management"),
+                                   QStringLiteral("respiratory"),
+                                   QStringLiteral("feeding"),
+                                   QStringLiteral("end-of-life"),
+                                   QStringLiteral("clinical pathway")})) {
+        return QStringLiteral("Care pathway");
+    }
+    if (corpusPaperKeyContainsAny(key, {QStringLiteral("mnd"), QStringLiteral("als"), QStringLiteral("motor neuron"), QStringLiteral("amyotrophic")})) {
+        return QStringLiteral("ALS / MND frame");
+    }
+    return fallback;
+}
+
+static QString corpusPaperSummaryForKey(const QString &key)
+{
+    const QString label = corpusPaperTopicLabelForKey(key);
+    if (label == QLatin1String("Access / delay")) {
+        return QStringLiteral("Where diagnosis gets delayed");
+    }
+    if (label == QLatin1String("Fluid marker")) {
+        return QStringLiteral("Candidate marker for diagnosis or staging");
+    }
+    if (label == QLatin1String("Electrophysiology")) {
+        return QStringLiteral("Signal from excitability / nerve testing");
+    }
+    if (label == QLatin1String("Imaging / network")) {
+        return QStringLiteral("Structural or network evidence");
+    }
+    if (label == QLatin1String("Mimic boundary")) {
+        return QStringLiteral("Separates ALS from mimics");
+    }
+    if (label == QLatin1String("Criteria / pathway")) {
+        return QStringLiteral("How diagnostic criteria perform");
+    }
+    if (label == QLatin1String("Prodrome")) {
+        return QStringLiteral("Possible pre-diagnostic window");
+    }
+    if (label == QLatin1String("Trajectory")) {
+        return QStringLiteral("Natural history / prognosis context");
+    }
+    if (label == QLatin1String("Metabolism")) {
+        return QStringLiteral("Metabolic mechanism or vulnerability");
+    }
+    if (label == QLatin1String("Genetics / molecular")) {
+        return QStringLiteral("Molecular subtype or disease mechanism");
+    }
+    if (label == QLatin1String("Treatment signal")) {
+        return QStringLiteral("Treatment evidence or trial context");
+    }
+    if (label == QLatin1String("Cognition / FTD")) {
+        return QStringLiteral("ALS cognitive / FTD overlap");
+    }
+    if (label == QLatin1String("Care pathway")) {
+        return QStringLiteral("Clinical management and services");
+    }
+    if (label == QLatin1String("ALS / MND frame")) {
+        return QStringLiteral("General MND project context");
+    }
+    return QString();
+}
+
+static QString corpusPaperMetadataLineForIndex(const QModelIndex &index)
+{
+    const QString authors = index.data(PaperLibraryModel::AuthorsRole).toString();
+    const QString year = index.data(PaperLibraryModel::YearRole).toString();
+    const QString journal = index.data(PaperLibraryModel::JournalRole).toString();
+    QString firstAuthor = authors.section(QLatin1Char(';'), 0, 0).trimmed();
+    if (firstAuthor.isEmpty()) {
+        firstAuthor = authors.section(QLatin1Char(','), 0, 0).trimmed();
+    }
+    QStringList parts;
+    if (!firstAuthor.isEmpty()) {
+        parts.append(firstAuthor);
+    }
+    if (!year.isEmpty() && year != QLatin1String("None")) {
+        parts.append(year);
+    }
+    if (!journal.isEmpty() && journal != QLatin1String("(book)") && journal != QLatin1String("None")) {
+        parts.append(journal);
+    }
+    return parts.join(QStringLiteral(" · "));
+}
+
 /**
  * Paints library tiles: a cover (thumbnail or placeholder) with rounded
  * corners over a soft ambient shadow, the title (up to two lines) with a
@@ -1021,16 +1260,7 @@ private:
 
     static QString visualKeyForCorpusCard(const QModelIndex &index)
     {
-        return QStringList({index.data(Qt::DisplayRole).toString(),
-                            index.data(PaperLibraryModel::DetailRole).toString(),
-                            index.data(PaperLibrarySectionedModel::KindRole).toString(),
-                            index.data(PaperLibrarySectionedModel::FocusRole).toString(),
-                            index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString(),
-                            index.data(PaperLibrarySectionedModel::RelationHintRole).toString(),
-                            index.data(PaperLibrarySectionedModel::PriorityHintRole).toString(),
-                            index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList().join(QLatin1Char(' '))})
-            .join(QLatin1Char(' '))
-            .toCaseFolded();
+        return corpusPaperKeyForIndex(index);
     }
 
     static void drawCorpusMotif(QPainter *painter, const QRectF &area, const QString &key, QColor accent, const QPalette &palette)
@@ -1044,12 +1274,85 @@ private:
 
         const bool biomarkerLike = keyContainsAny(key,
                                                   {QStringLiteral("biomarker"),
-                                                   QStringLiteral("diagnostic"),
-                                                   QStringLiteral("accuracy"),
                                                    QStringLiteral("neurofilament"),
-                                                   QStringLiteral("threshold"),
+                                                   QStringLiteral(" nfl "),
+                                                   QStringLiteral("nf-l"),
+                                                   QStringLiteral("light chain"),
+                                                   QStringLiteral("csf"),
+                                                   QStringLiteral("serum"),
+                                                   QStringLiteral("plasma"),
+                                                   QStringLiteral("chitinase"),
+                                                   QStringLiteral("chi3l1"),
                                                    QStringLiteral("sensitivity"),
                                                    QStringLiteral("specificity")});
+        const bool accessLike = keyContainsAny(key,
+                                               {QStringLiteral("diagnostic delay"),
+                                                QStringLiteral("delay"),
+                                                QStringLiteral("racial"),
+                                                QStringLiteral("disparit"),
+                                                QStringLiteral("health services"),
+                                                QStringLiteral("utilization"),
+                                                QStringLiteral("utilisation"),
+                                                QStringLiteral("referral"),
+                                                QStringLiteral("neurologist"),
+                                                QStringLiteral("diagnostician")});
+        const bool electrophysiologyLike = keyContainsAny(key,
+                                                          {QStringLiteral("threshold tracking"),
+                                                           QStringLiteral("nerve conduction"),
+                                                           QStringLiteral("split-hand"),
+                                                           QStringLiteral("electrodiagnos"),
+                                                           QStringLiteral("electromyography"),
+                                                           QStringLiteral(" emg "),
+                                                           QStringLiteral("transcranial magnetic stimulation"),
+                                                           QStringLiteral(" tms "),
+                                                           QStringLiteral("cortical hyperexcitability"),
+                                                           QStringLiteral("hyperexcitability"),
+                                                           QStringLiteral("beta-band"),
+                                                           QStringLiteral("intermuscular")});
+        const bool imagingLike = keyContainsAny(key,
+                                                {QStringLiteral("mri"),
+                                                 QStringLiteral("magnetic resonance"),
+                                                 QStringLiteral("imaging"),
+                                                 QStringLiteral("sonographic"),
+                                                 QStringLiteral("ultrasound"),
+                                                 QStringLiteral("structural brain"),
+                                                 QStringLiteral("network"),
+                                                 QStringLiteral("connectivity")});
+        const bool differentialLike = keyContainsAny(key,
+                                                     {QStringLiteral("differential"),
+                                                      QStringLiteral("mimic"),
+                                                      QStringLiteral("misdiagnos"),
+                                                      QStringLiteral("false positive"),
+                                                      QStringLiteral("als-plus"),
+                                                      QStringLiteral("spastic paraplegia"),
+                                                      QStringLiteral("porphyria"),
+                                                      QStringLiteral("leukoencephalopathy")});
+        const bool prodromeLike = keyContainsAny(key, {QStringLiteral("prodromal"), QStringLiteral("preclinical"), QStringLiteral("onset"), QStringLiteral("early symptom")});
+        const bool metabolismLike = keyContainsAny(key,
+                                                   {QStringLiteral("nutrition"),
+                                                    QStringLiteral("malnutrition"),
+                                                    QStringLiteral("metabolic"),
+                                                    QStringLiteral("bioenergetic"),
+                                                    QStringLiteral("energy metabolism"),
+                                                    QStringLiteral("mitochond"),
+                                                    QStringLiteral("sirt3"),
+                                                    QStringLiteral("hypothalamic")});
+        const bool molecularLike = keyContainsAny(key,
+                                                  {QStringLiteral("sod1"),
+                                                   QStringLiteral("c9orf72"),
+                                                   QStringLiteral("tdp-43"),
+                                                   QStringLiteral("tdp43"),
+                                                   QStringLiteral("genetic"),
+                                                   QStringLiteral("mutation"),
+                                                   QStringLiteral("familial")});
+        const bool pathwayLike = keyContainsAny(key,
+                                                {QStringLiteral("awaji"),
+                                                 QStringLiteral("el escorial"),
+                                                 QStringLiteral("gold coast"),
+                                                 QStringLiteral("criteria"),
+                                                 QStringLiteral("criterion"),
+                                                 QStringLiteral("diagnosis pathway"),
+                                                 QStringLiteral("diagnostic pathway")});
         const bool trialLike = keyContainsAny(key,
                                               {QStringLiteral("trial"),
                                                QStringLiteral("treatment"),
@@ -1073,6 +1376,130 @@ private:
                                                QStringLiteral("cortical"),
                                                QStringLiteral("axon"),
                                                QStringLiteral("psychiat")});
+
+        if (accessLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            const qreal midY = area.center().y();
+            painter->drawLine(QPointF(area.left() + 8, midY), QPointF(area.right() - 8, midY));
+            painter->drawLine(QPointF(area.left() + 8, midY), QPointF(area.left() + 8, area.top() + 9));
+            painter->setPen(pen);
+            const QList<QPointF> stops = {
+                QPointF(area.left() + 12, midY),
+                QPointF(area.left() + area.width() * 0.36, midY - 10),
+                QPointF(area.left() + area.width() * 0.58, midY + 9),
+                QPointF(area.right() - 10, midY - 6),
+            };
+            for (int i = 0; i < stops.size() - 1; ++i) {
+                painter->drawLine(stops.at(i), stops.at(i + 1));
+            }
+            painter->setBrush(accent);
+            for (const QPointF &stop : stops) {
+                painter->drawEllipse(stop, 3.0, 3.0);
+            }
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawRoundedRect(QRectF(area.right() - 28, area.top() + 8, 20, 13), 3, 3);
+            return;
+        }
+
+        if (electrophysiologyLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(area.left() + 7, area.center().y()), QPointF(area.right() - 7, area.center().y()));
+            painter->setPen(pen);
+            QPainterPath wave;
+            wave.moveTo(area.left() + 8, area.center().y());
+            for (int i = 0; i < 4; ++i) {
+                const qreal x = area.left() + 10 + i * area.width() * 0.22;
+                wave.cubicTo(x + 4, area.top() + 7, x + 12, area.bottom() - 7, x + 20, area.center().y());
+            }
+            painter->drawPath(wave);
+            painter->setBrush(accent);
+            for (int i = 0; i < 3; ++i) {
+                const qreal x = area.right() - 12 - i * 13;
+                painter->drawRoundedRect(QRectF(x, area.top() + 10 + i * 4, 5, area.height() - 19 - i * 4), 2, 2);
+            }
+            return;
+        }
+
+        if (imagingLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawRoundedRect(area.adjusted(7, 5, -7, -5), 6, 6);
+            painter->setPen(pen);
+            painter->drawEllipse(QRectF(area.left() + 20, area.top() + 8, area.width() - 40, area.height() - 16));
+            painter->drawArc(QRectF(area.left() + 30, area.top() + 13, area.width() - 60, area.height() - 26), 30 * 16, 260 * 16);
+            painter->setBrush(accent);
+            painter->drawEllipse(QPointF(area.right() - 21, area.top() + 16), 3, 3);
+            return;
+        }
+
+        if (differentialLike) {
+            const QPointF origin(area.left() + 10, area.center().y());
+            painter->setPen(pen);
+            QPainterPath upper;
+            upper.moveTo(origin);
+            upper.cubicTo(area.left() + area.width() * 0.40, area.top() + 6, area.left() + area.width() * 0.58, area.top() + 8, area.right() - 9, area.top() + 13);
+            painter->drawPath(upper);
+            QPainterPath lower;
+            lower.moveTo(origin);
+            lower.cubicTo(area.left() + area.width() * 0.38, area.bottom() - 7, area.left() + area.width() * 0.62, area.bottom() - 8, area.right() - 9, area.bottom() - 13);
+            painter->drawPath(lower);
+            painter->setPen(QPen(faint, 1.1, Qt::SolidLine, Qt::RoundCap));
+            painter->drawEllipse(origin, 3, 3);
+            painter->drawText(QRectF(area.right() - 19, area.center().y() - 11, 14, 18), Qt::AlignCenter, QStringLiteral("?"));
+            return;
+        }
+
+        if (prodromeLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(area.left() + 8, area.bottom() - 10), QPointF(area.right() - 7, area.bottom() - 10));
+            painter->setPen(pen);
+            QPainterPath trend;
+            trend.moveTo(area.left() + 10, area.bottom() - 11);
+            trend.cubicTo(area.left() + area.width() * 0.34, area.bottom() - 18, area.left() + area.width() * 0.50, area.top() + 23, area.right() - 17, area.top() + 12);
+            painter->drawPath(trend);
+            painter->setBrush(accent);
+            for (int i = 0; i < 5; ++i) {
+                painter->drawEllipse(QPointF(area.left() + 10 + i * area.width() * 0.18, area.bottom() - 11 - i * 5), 2.3, 2.3);
+            }
+            painter->drawLine(QPointF(area.right() - 16, area.top() + 10), QPointF(area.right() - 16, area.bottom() - 9));
+            return;
+        }
+
+        if (metabolismLike || molecularLike) {
+            painter->setPen(pen);
+            const QPointF center = area.center();
+            const qreal r = qMin(area.width(), area.height()) * 0.25;
+            QPainterPath cell;
+            for (int i = 0; i < 6; ++i) {
+                const qreal angle = -M_PI / 2 + i * M_PI / 3;
+                const QPointF p(center.x() + r * std::cos(angle), center.y() + r * std::sin(angle));
+                i == 0 ? cell.moveTo(p) : cell.lineTo(p);
+            }
+            cell.closeSubpath();
+            painter->drawPath(cell);
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            for (int i = 0; i < 3; ++i) {
+                const QPointF a(area.left() + 13 + i * 16, area.bottom() - 11 - i * 6);
+                const QPointF b(area.left() + 25 + i * 16, area.top() + 12 + i * 5);
+                painter->drawLine(a, b);
+                painter->drawEllipse(a, 2.0, 2.0);
+                painter->drawEllipse(b, 2.0, 2.0);
+            }
+            return;
+        }
+
+        if (pathwayLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            const QRectF a(area.left() + 8, area.top() + 9, 21, 13);
+            const QRectF b(area.center().x() - 10, area.center().y() - 6, 24, 13);
+            const QRectF c(area.right() - 31, area.bottom() - 22, 23, 13);
+            painter->drawRoundedRect(a, 3, 3);
+            painter->drawRoundedRect(b, 3, 3);
+            painter->drawRoundedRect(c, 3, 3);
+            painter->setPen(pen);
+            painter->drawLine(a.center(), b.center());
+            painter->drawLine(b.center(), c.center());
+            return;
+        }
 
         if (neuroLike && !biomarkerLike && !trialLike && !methodLike && !clinicalLike) {
             const QPointF soma(area.left() + area.width() * 0.22, area.top() + area.height() * 0.55);
@@ -1223,11 +1650,14 @@ private:
         const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
         const bool missing = index.data(PaperLibraryModel::MissingRole).toBool();
         const QString visualKey = visualKeyForCorpusCard(index);
+        const QString paperTopic = corpusPaperTopicLabelForKey(visualKey, !focus.isEmpty() && focus != kind ? focus : kind);
+        const QString paperSummary = corpusPaperSummaryForKey(visualKey);
+        const QString paperMetadata = corpusPaperMetadataLineForIndex(index);
 
         QPainterPath clip;
         clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
-        const QString accentSeed = joinCompact({seed, relation, priority, QStringList(tags.mid(0, 2)).join(QStringLiteral(" · ")), title});
+        const QString accentSeed = joinCompact({title, detail, paperTopic, seed});
         QColor accent = CoverGenerator::accentColor(accentSeed.isEmpty() ? kind : accentSeed, darkMode);
         const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
         QLinearGradient field(coverRect.topLeft(), coverRect.bottomRight());
@@ -1273,7 +1703,7 @@ private:
         muted.setAlphaF(0.50);
         painter->setFont(kindFont);
         painter->setPen(muted);
-        const QString topLabel = !focus.isEmpty() && focus != kind ? focus : kind;
+        const QString topLabel = paperTopic.isEmpty() ? (!focus.isEmpty() && focus != kind ? focus : kind) : paperTopic;
         painter->drawText(coverRect.adjusted(10, 10, -10, -10), Qt::AlignLeft | Qt::AlignTop, QFontMetrics(kindFont).elidedText(topLabel, Qt::ElideRight, coverRect.width() - 20));
 
         QFont titleFont = option.font;
@@ -1296,9 +1726,12 @@ private:
         painter->setFont(metaFont);
         painter->setPen(metaColor);
         const int metaTop = qMax(y + 3, coverRect.bottom() - 36);
-        QString meta = intent;
+        QString meta = paperSummary.isEmpty() ? intent : paperSummary;
         if (!priority.isEmpty() && priority != intent && priority != detail) {
-            meta = joinCompact({priority, meta});
+            const QString priorityTopic = corpusPaperTopicLabelForKey(priority.toCaseFolded());
+            if (priorityTopic.isEmpty() && priority != topLabel) {
+                meta = joinCompact({priority, meta});
+            }
         }
         if (meta.isEmpty()) {
             meta = detail;
@@ -1310,7 +1743,10 @@ private:
             painter->drawText(QRect(coverRect.left() + 10, metaTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 20));
         }
 
-        QString tagRow = relation;
+        QString tagRow = paperMetadata;
+        if (tagRow.isEmpty()) {
+            tagRow = relation;
+        }
         if (tagRow.isEmpty() && !tags.isEmpty()) {
             tagRow = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
         }
@@ -2839,6 +3275,11 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         const bool generatedCardShowing = index.data(PaperLibrarySectionedModel::GeneratedCoverRole).toBool() && !corpusCover.isNull();
         if (!corpusCover.isNull() && !generatedCardShowing) {
             return {index.data(Qt::DisplayRole).toString(), false};
+        }
+        const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
+        if (!paperSummary.isEmpty()) {
+            const QString metadata = corpusPaperMetadataLineForIndex(index);
+            return {metadata.isEmpty() ? paperSummary : joinCompact({paperSummary, metadata}), true};
         }
         const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
         if (!relation.isEmpty()) {

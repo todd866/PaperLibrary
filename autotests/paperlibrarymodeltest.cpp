@@ -135,6 +135,36 @@ static SyntheticRecord mndHyperexcitabilityRecord()
             QStringLiteral("2026-04-03T00:00:00+00:00")};
 }
 
+static SyntheticRecord mndDiagnosticBiomarkerRecord()
+{
+    return {QStringLiteral("10-9999-synthetic-mnd-diagnostic-biomarker-20"),
+            QStringLiteral("10.9999/synthetic.mnd.diagnostic.biomarker"),
+            QString(),
+            QStringLiteral("sample2026mnddiagnosticbiomarker"),
+            QStringLiteral("Diagnostic Accuracy of Serum Neurofilament Light Chain in ALS"),
+            QStringLiteral("Bailey Biomarker"),
+            QStringLiteral("2026"),
+            QStringLiteral("Journal of Synthetic Biomarkers"),
+            202020,
+            QStringLiteral("synthetic"),
+            QStringLiteral("2026-04-05T00:00:00+00:00")};
+}
+
+static SyntheticRecord mndThresholdTrackingRecord()
+{
+    return {QStringLiteral("10-9999-synthetic-mnd-threshold-tracking-21"),
+            QStringLiteral("10.9999/synthetic.mnd.threshold.tracking"),
+            QString(),
+            QStringLiteral("sample2026mndthresholdtracking"),
+            QStringLiteral("Threshold Tracking Nerve Conduction Study of Split-Hand Impairment in ALS"),
+            QStringLiteral("Elliot Electrode"),
+            QStringLiteral("2026"),
+            QStringLiteral("Journal of Synthetic Neurophysiology"),
+            212121,
+            QStringLiteral("synthetic"),
+            QStringLiteral("2026-04-06T00:00:00+00:00")};
+}
+
 static SyntheticRecord mndTreatmentRecord()
 {
     return {QStringLiteral("10-9999-synthetic-mnd-treatment-18"),
@@ -338,6 +368,7 @@ private Q_SLOTS:
     void testDatabaseEnrichment();
     void testDatabaseInPathWithSpecialCharacters();
     void testSectionedModelSmartShelves();
+    void testMndPaperTopicInferencePrefersPaperSpecificSignals();
     void testFocusManifestDrivesWorkShelf();
     void testReadingManifestDrivesReadingShelves();
     void testCaroBiographyDoesNotMatchPsychiatry();
@@ -769,6 +800,49 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QVERIFY(mndRow >= 0);
     QCOMPARE(sections.data(sections.index(mndRow), PaperLibrarySectionedModel::DownrankedRole).toBool(), true);
     QCOMPARE(sections.data(sections.index(sections.rowCount() - 1), Qt::DisplayRole).toString(), mndTitle);
+}
+
+void PaperLibraryModelTest::testMndPaperTopicInferencePrefersPaperSpecificSignals()
+{
+    const QString corpusDir = writeCatalog({mndDiagnosticBiomarkerRecord(), mndThresholdTrackingRecord(), mndDiagnosisRecord()});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
+
+    auto findTitleRow = [&sections](const QString &title) {
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            if (sections.data(sections.index(row), Qt::DisplayRole).toString() == title) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    const int biomarkerRow = findTitleRow(QStringLiteral("Diagnostic Accuracy of Serum Neurofilament Light Chain in ALS"));
+    QVERIFY(biomarkerRow >= 0);
+    QModelIndex biomarkerIndex = sections.index(biomarkerRow);
+    QCOMPARE(sections.data(biomarkerIndex, PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Biomarkers & Neurofilament"));
+    QCOMPARE(sections.data(biomarkerIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Biomarker candidate"));
+    QCOMPARE(sections.data(biomarkerIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Use for biomarker evidence"));
+    QVERIFY(sections.data(biomarkerIndex, PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Biomarkers & Neurofilament")));
+
+    const int thresholdRow = findTitleRow(QStringLiteral("Threshold Tracking Nerve Conduction Study of Split-Hand Impairment in ALS"));
+    QVERIFY(thresholdRow >= 0);
+    QModelIndex thresholdIndex = sections.index(thresholdRow);
+    QCOMPARE(sections.data(thresholdIndex, PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Neurophysiology / Hyperexcitability"));
+    QCOMPARE(sections.data(thresholdIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Electrophysiology / excitability paper"));
+    QCOMPARE(sections.data(thresholdIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Use for electrophysiology evidence"));
+    QVERIFY(sections.data(thresholdIndex, PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Neurophysiology / Hyperexcitability")));
+
+    const int awajiRow = findTitleRow(QStringLiteral("Awaji ALS Criteria and Electrodiagnosis in Amyotrophic Lateral Sclerosis"));
+    QVERIFY(awajiRow >= 0);
+    QCOMPARE(sections.data(sections.index(awajiRow), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Diagnosis & Criteria"));
 }
 
 void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
