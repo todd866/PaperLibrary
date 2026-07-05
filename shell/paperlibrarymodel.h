@@ -50,6 +50,7 @@ public:
         CitedByCountRole,
         HaystackRole, /**< case-folded searchable text for the filter */
         MissingRole,  /**< true when the catalog knows the PDF is not local */
+        ResolvedPathRole, /**< load-time local PDF path, no fresh filesystem check */
     };
 
     /** What was learned about a record's local PDF at load time. */
@@ -242,6 +243,7 @@ private:
     void rebuild();
     QString cacheKey() const;
     void clearRowCache();
+    QString storedPathForSourceRow(int sourceRow) const;
     bool sourceRowDownranked(int sourceRow) const;
     void saveDownrankedSlugs() const;
 

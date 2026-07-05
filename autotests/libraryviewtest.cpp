@@ -12,8 +12,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QListView>
+#include <QPainter>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QStyleOptionViewItem>
 #include <QTabBar>
 #include <QTemporaryDir>
 
@@ -24,6 +26,7 @@
 
 #include "../shell/libraryview.h"
 #include "../shell/librarystore.h"
+#include "../shell/paperlibrarymodel.h"
 
 namespace
 {
@@ -44,6 +47,24 @@ QByteArray corpusRecordLine()
     object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-04-01T00:00:00+00:00"));
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
 }
+
+QByteArray workCorpusRecordLine()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("slug"), QStringLiteral("10-9999-synthetic-beyond-bayes-work"));
+    object.insert(QStringLiteral("doi"), QStringLiteral("10.9999/synthetic.beyond.bayes.work"));
+    object.insert(QStringLiteral("md5"), QString());
+    object.insert(QStringLiteral("pmid"), QString());
+    object.insert(QStringLiteral("cite_key"), QStringLiteral("sample2026beyondbayes"));
+    object.insert(QStringLiteral("title"), QStringLiteral("Beyond Bayes Revision Notes for High-Dimensional Inference"));
+    object.insert(QStringLiteral("authors"), QStringLiteral("Robin Reviewer"));
+    object.insert(QStringLiteral("year"), QStringLiteral("2026"));
+    object.insert(QStringLiteral("journal"), QStringLiteral("Synthetic Methods"));
+    object.insert(QStringLiteral("bytes"), 87654);
+    object.insert(QStringLiteral("source"), QStringLiteral("peer review major revisions"));
+    object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-01T00:00:00+00:00"));
+    return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
 }
 
 class LibraryViewTest : public QObject
@@ -54,6 +75,8 @@ private Q_SLOTS:
     void initTestCase();
     void init();
     void testCorpusShelvesUseTileGrid();
+    void testCorpusShelfModelsPersistAcrossSwitches();
+    void testWorkShelfGeneratedCardsAreVisible();
     void testBooksShelfStaysWithLocalEbooks();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
 
@@ -77,6 +100,7 @@ void LibraryViewTest::init()
     QFile catalog(m_dir->filePath(QStringLiteral("catalog.jsonl")));
     QVERIFY(catalog.open(QIODevice::WriteOnly));
     catalog.write(corpusRecordLine());
+    catalog.write(workCorpusRecordLine());
     catalog.close();
 
     QDir(m_dir->path()).mkpath(QStringLiteral("pdfs"));
@@ -112,6 +136,85 @@ void LibraryViewTest::testCorpusShelvesUseTileGrid()
     QVERIFY(grid->gridSize().width() >= 160);
     QVERIFY(grid->gridSize().height() >= 220);
     QVERIFY(!grid->model()->index(0, 0).data(Qt::DisplayRole).toString().isEmpty());
+}
+
+void LibraryViewTest::testCorpusShelfModelsPersistAcrossSwitches()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    shelves->setCurrentIndex(LibraryView::MndShelf);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QAbstractItemModel *mndModel = grid->model();
+
+    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QAbstractItemModel *workModel = grid->model();
+    QVERIFY(workModel != mndModel);
+
+    shelves->setCurrentIndex(LibraryView::MndShelf);
+    QCOMPARE(grid->model(), mndModel);
+    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    QCOMPARE(grid->model(), workModel);
+}
+
+void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    const QModelIndex index = grid->model()->index(0, 0);
+    QVERIFY(index.data(PaperLibrarySectionedModel::SourceRowRole).isValid());
+    QVERIFY(index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>().isNull());
+
+    QStyleOptionViewItem option;
+    option.initFrom(grid);
+    option.state |= QStyle::State_Enabled | QStyle::State_Active;
+    option.widget = grid;
+    QSize tileSize = grid->gridSize();
+    if (!tileSize.isValid() || tileSize.isEmpty()) {
+        tileSize = grid->itemDelegate()->sizeHint(option, index);
+    }
+    if (!tileSize.isValid() || tileSize.isEmpty()) {
+        tileSize = QSize(172, 232);
+    }
+    option.rect = QRect(QPoint(0, 0), tileSize);
+    option.font = grid->font();
+    option.fontMetrics = QFontMetrics(grid->font());
+    QVERIFY(tileSize.width() >= 160);
+    QVERIFY(tileSize.height() >= 220);
+
+    QPixmap tile(tileSize);
+    const QColor base = view.palette().color(QPalette::Base);
+    tile.fill(base);
+    QPainter painter(&tile);
+    grid->itemDelegate()->paint(&painter, option, index);
+    painter.end();
+
+    const QImage image = tile.toImage();
+    int changedCoverPixels = 0;
+    const int bottom = qMin(image.height(), 156);
+    const int right = qMin(image.width(), 140);
+    for (int y = 12; y < bottom; ++y) {
+        for (int x = 20; x < right; ++x) {
+            if (image.pixelColor(x, y) != base) {
+                ++changedCoverPixels;
+            }
+        }
+    }
+    QVERIFY2(changedCoverPixels > 4000, qPrintable(QString::number(changedCoverPixels)));
 }
 
 void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()

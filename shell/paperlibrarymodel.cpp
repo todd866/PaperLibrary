@@ -765,6 +765,8 @@ QVariant PaperLibraryModel::data(const QModelIndex &index, int role) const
         return record.haystack;
     case MissingRole:
         return record.availability == Missing;
+    case ResolvedPathRole:
+        return record.pdfPath;
     }
     return QVariant();
 }
@@ -1799,14 +1801,15 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         return row.sourceRow;
     }
     const QModelIndex sourceIndex = m_source ? m_source->index(row.sourceRow) : QModelIndex();
-    const QString pdfPath = m_source ? m_source->resolvePdfPath(row.sourceRow) : QString();
     if (role == PdfPathRole) {
-        return pdfPath;
+        return storedPathForSourceRow(row.sourceRow);
     }
     if (role == CoverPixmapRole) {
+        const QString pdfPath = storedPathForSourceRow(row.sourceRow);
         return QVariant::fromValue(m_coverPixmaps.value(pdfPath));
     }
     if (role == GeneratedCoverRole) {
+        const QString pdfPath = storedPathForSourceRow(row.sourceRow);
         return m_generatedCoverPaths.contains(pdfPath);
     }
     if (role == DownrankedRole) {
@@ -1895,11 +1898,19 @@ void PaperLibrarySectionedModel::setCoverForPath(const QString &path, const QVar
     const QList<int> roles = {CoverPixmapRole, GeneratedCoverRole};
     for (int row = 0; row < m_rows.count(); ++row) {
         const Row &sectionRow = m_rows.at(row);
-        if (!sectionRow.header && m_source && m_source->resolvePdfPath(sectionRow.sourceRow) == path) {
+        if (!sectionRow.header && m_source && storedPathForSourceRow(sectionRow.sourceRow) == path) {
             const QModelIndex changed = index(row);
             Q_EMIT dataChanged(changed, changed, roles);
         }
     }
+}
+
+QString PaperLibrarySectionedModel::storedPathForSourceRow(int sourceRow) const
+{
+    if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {
+        return QString();
+    }
+    return m_source->index(sourceRow).data(PaperLibraryModel::ResolvedPathRole).toString();
 }
 
 bool PaperLibrarySectionedModel::sourceRowDownranked(int sourceRow) const

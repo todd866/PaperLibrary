@@ -438,6 +438,29 @@ static int defaultPaperSectionModeForShelf(LibraryView::Shelf shelf)
     return PaperLibrarySectionedModel::ReadNext;
 }
 
+static PaperLibrarySectionedModel::SmartFilter paperFilterForShelf(LibraryView::Shelf shelf)
+{
+    switch (shelf) {
+    case LibraryView::TextbooksShelf:
+        return PaperLibrarySectionedModel::Textbooks;
+    case LibraryView::MedicineShelf:
+        return PaperLibrarySectionedModel::Medicine;
+    case LibraryView::MndShelf:
+        return PaperLibrarySectionedModel::Mnd;
+    case LibraryView::WorkShelf:
+        return PaperLibrarySectionedModel::Work;
+    case LibraryView::FictionShelf:
+        return PaperLibrarySectionedModel::Fiction;
+    case LibraryView::NonfictionShelf:
+        return PaperLibrarySectionedModel::Nonfiction;
+    case LibraryView::PapersShelf:
+    case LibraryView::BooksShelf:
+    case LibraryView::PdfShelf:
+        break;
+    }
+    return PaperLibrarySectionedModel::Papers;
+}
+
 static QString paperSectionModeName(int mode)
 {
     switch (mode) {
@@ -675,6 +698,20 @@ static QStringList wrapTitle(const QString &text, const QFont &font, int width, 
     return lines;
 }
 
+static bool isLibraryHeaderIndex(const QModelIndex &index)
+{
+    if (!index.isValid()) {
+        return false;
+    }
+    if (index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+        return true;
+    }
+    if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
+        return false;
+    }
+    return index.data(LibraryView::HeaderRole).toBool();
+}
+
 static QPainterPath starPath(const QPointF &center, qreal outerRadius)
 {
     QPainterPath path;
@@ -763,8 +800,8 @@ public:
 
         // Real covers keep their aspect ratio, sitting on the box's bottom
         // edge like books on a shelf; placeholders fill the box
-        QPixmap cover = index.data(LibraryView::CoverRole).value<QPixmap>();
-        if (cover.isNull()) {
+        QPixmap cover = corpusTile ? index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>() : index.data(LibraryView::CoverRole).value<QPixmap>();
+        if (!corpusTile && cover.isNull()) {
             cover = index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>();
         }
         QRect coverRect;
@@ -913,7 +950,7 @@ public:
 private:
     static bool isHeader(const QModelIndex &index)
     {
-        return index.data(LibraryView::HeaderRole).toBool() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool();
+        return isLibraryHeaderIndex(index);
     }
 
     static bool isCorpusTile(const QModelIndex &index)
@@ -1018,21 +1055,27 @@ private:
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
         QColor accent = CoverGenerator::accentColor(seed.isEmpty() ? kind : seed, darkMode);
         const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
-        painter->fillPath(clip, blendColors(cardBase, accent, darkMode ? 0.24 : 0.18));
+        painter->fillPath(clip, blendColors(cardBase, accent, darkMode ? 0.36 : 0.30));
 
         QColor rim = accent;
-        rim.setAlphaF(darkMode ? 0.55 : 0.38);
-        painter->setPen(QPen(rim, 1.2));
+        rim.setAlphaF(darkMode ? 0.78 : 0.58);
+        painter->setPen(QPen(rim, 1.8));
         painter->setBrush(Qt::NoBrush);
         painter->drawRoundedRect(QRectF(coverRect).adjusted(0.8, 0.8, -0.8, -0.8), CoverRadius, CoverRadius);
 
-        accent.setAlphaF(0.78);
+        accent.setAlphaF(0.88);
         painter->setPen(Qt::NoPen);
         painter->setBrush(accent);
-        painter->drawRect(QRect(coverRect.left(), coverRect.top(), coverRect.width(), 6));
+        painter->drawRect(QRect(coverRect.left(), coverRect.top(), coverRect.width(), 7));
+        painter->drawRect(QRect(coverRect.left(), coverRect.top(), 7, coverRect.height()));
+
+        QColor panel = palette.color(QPalette::Base);
+        panel.setAlphaF(darkMode ? 0.72 : 0.84);
+        painter->setBrush(panel);
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(8, 26, -8, -8), 4, 4);
 
         QColor wash = accent;
-        wash.setAlphaF(darkMode ? 0.22 : 0.17);
+        wash.setAlphaF(darkMode ? 0.28 : 0.22);
         painter->setBrush(wash);
         painter->drawEllipse(QRectF(coverRect.right() - 46, coverRect.top() + 18, 70, 70));
         painter->drawRoundedRect(QRectF(coverRect.left() + 10, coverRect.bottom() - 38, coverRect.width() - 20, 20), 4, 4);
@@ -2176,10 +2219,13 @@ void LibraryView::applySearch()
 {
     cancelContentSearch(); // whatever was in flight answers a stale query
     rebuildShelves();
-    if (m_paperSections) {
+    for (PaperLibrarySectionedModel *sections : m_paperSections) {
+        if (!sections) {
+            continue;
+        }
         // The corpus's instant layer: one substring filter over ~18k
         // precomputed haystacks per keystroke
-        m_paperSections->setQuery(searchQuery());
+        sections->setQuery(searchQuery());
     }
     if (!searchQuery().isEmpty()) {
         m_searchDebounce->start();
@@ -2419,20 +2465,23 @@ void LibraryView::setupPapersShelf()
     m_shelfSwitch->addTab(i18nc("library shelf listing the PaperLibrary corpus", "Papers"));
 
     m_paperModel = new PaperLibraryModel(this);
-    m_paperSections = new PaperLibrarySectionedModel(this);
-    m_paperSections->setSourceModel(m_paperModel);
-    m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Papers);
+    for (Shelf shelf : {TextbooksShelf, MedicineShelf, MndShelf, WorkShelf, FictionShelf, NonfictionShelf, PapersShelf}) {
+        auto *sections = new PaperLibrarySectionedModel(this);
+        sections->setSourceModel(m_paperModel);
+        sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+        m_paperSections[shelf] = sections;
+        connect(sections, &QAbstractItemModel::modelReset, this, [this, sections]() {
+            QTimer::singleShot(0, this, [this, sections]() {
+                if (activePaperSections() == sections) {
+                    selectFirstTile();
+                    requestCorpusCovers();
+                }
+            });
+        });
+    }
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
         showShelfGuide();
         requestCorpusCovers();
-    });
-    connect(m_paperSections, &QAbstractItemModel::modelReset, this, [this]() {
-        QTimer::singleShot(0, this, [this]() {
-            if (usesCorpusList(activeShelf())) {
-                selectFirstTile();
-            }
-            requestCorpusCovers();
-        });
     });
 
     // The non-modal notice slot under the header ("Loading catalog…",
@@ -2459,10 +2508,11 @@ void LibraryView::shelfChanged(int index)
     m_grid->setVisible(true);
     if (corpus) {
         configureCorpusShelf(shelf);
+        PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
         QItemSelectionModel *oldSelection = nullptr;
-        if (m_grid->model() != m_paperSections) {
+        if (m_grid->model() != sections) {
             oldSelection = m_grid->selectionModel();
-            m_grid->setModel(m_paperSections);
+            m_grid->setModel(sections);
         }
         configureTileGrid();
         m_grid->scrollToTop();
@@ -2494,46 +2544,29 @@ void LibraryView::shelfChanged(int index)
 
 bool LibraryView::usesCorpusList(Shelf shelf) const
 {
-    if (!m_paperModel || !m_paperSections) {
-        return false;
+    return paperSectionsForShelf(shelf) != nullptr;
+}
+
+PaperLibrarySectionedModel *LibraryView::paperSectionsForShelf(Shelf shelf) const
+{
+    if (shelf < PdfShelf || shelf > PapersShelf) {
+        return nullptr;
     }
-    return shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == PapersShelf;
+    return m_paperSections[shelf];
+}
+
+PaperLibrarySectionedModel *LibraryView::activePaperSections() const
+{
+    return paperSectionsForShelf(activeShelf());
 }
 
 void LibraryView::configureCorpusShelf(Shelf shelf)
 {
-    if (!m_paperSections) {
+    PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
+    if (!sections) {
         return;
     }
-    PaperLibrarySectionedModel::SmartFilter filter = PaperLibrarySectionedModel::Papers;
-    switch (shelf) {
-    case BooksShelf:
-        filter = PaperLibrarySectionedModel::Books;
-        break;
-    case TextbooksShelf:
-        filter = PaperLibrarySectionedModel::Textbooks;
-        break;
-    case MedicineShelf:
-        filter = PaperLibrarySectionedModel::Medicine;
-        break;
-    case MndShelf:
-        filter = PaperLibrarySectionedModel::Mnd;
-        break;
-    case WorkShelf:
-        filter = PaperLibrarySectionedModel::Work;
-        break;
-    case FictionShelf:
-        filter = PaperLibrarySectionedModel::Fiction;
-        break;
-    case NonfictionShelf:
-        filter = PaperLibrarySectionedModel::Nonfiction;
-        break;
-    case PapersShelf:
-    case PdfShelf:
-        filter = PaperLibrarySectionedModel::Papers;
-        break;
-    }
-    m_paperSections->setShelf(filter, static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+    sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
     syncPaperSectionButton();
 }
 
@@ -2546,8 +2579,8 @@ void LibraryView::setPaperSectionMode(Shelf shelf, int mode)
     KConfigGroup config = partGeneralConfig();
     config.writeEntry(paperSectionModeConfigKey(shelf), paperSectionModeName(mode));
     config.sync();
-    if (m_paperSections && usesCorpusList(shelf) && activeShelf() == shelf) {
-        m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(mode));
+    if (PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf); sections && activeShelf() == shelf) {
+        sections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(mode));
     }
     syncPaperSectionButton();
     showShelfGuide();
@@ -2568,7 +2601,7 @@ int LibraryView::paperSectionMode(Shelf shelf) const
 
 void LibraryView::syncPaperSectionButton()
 {
-    if (!m_paperSections || !m_paperSectionButton) {
+    if (!m_paperSectionButton || !activePaperSections()) {
         return;
     }
     const int mode = paperSectionMode(activeShelf());
@@ -2607,7 +2640,8 @@ void LibraryView::requestCorpusCovers()
 
 void LibraryView::requestNextCorpusCoverBatch()
 {
-    if (!m_paperSections || !m_coverLoader) {
+    PaperLibrarySectionedModel *sections = activePaperSections();
+    if (!sections || !m_coverLoader) {
         return;
     }
     if (m_coverLoader->pendingWorkCount() > 160) {
@@ -2620,10 +2654,10 @@ void LibraryView::requestNextCorpusCoverBatch()
     // highest-ranked first screens.
     static constexpr int MaxCorpusCoverRequests = 24;
     int requested = 0;
-    const int rows = m_paperSections->rowCount();
+    const int rows = sections->rowCount();
     for (; m_nextCorpusCoverRow < rows && requested < MaxCorpusCoverRequests; ++m_nextCorpusCoverRow) {
         const int row = m_nextCorpusCoverRow;
-        const QModelIndex index = m_paperSections->index(row);
+        const QModelIndex index = sections->index(row);
         if (!index.isValid() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
             continue;
         }
@@ -2637,7 +2671,7 @@ void LibraryView::requestNextCorpusCoverBatch()
         const CoverGenerator::CoverSpec spec = corpusCoverSpecForIndex(index);
         const QString cached = m_coverLoader->cachedCoverPath(pdfPath, spec);
         if (!cached.isEmpty()) {
-            m_paperSections->setCoverForPath(pdfPath, QVariant::fromValue(QPixmap(cached)), CoverLoader::isGeneratedCoverPath(cached));
+            sections->setCoverForPath(pdfPath, QVariant::fromValue(QPixmap(cached)), CoverLoader::isGeneratedCoverPath(cached));
         } else {
             m_coverLoader->requestCover(pdfPath, spec);
         }
@@ -2740,11 +2774,12 @@ void LibraryView::activate(const QUrl &url, double booksProgress)
 
 void LibraryView::tileClicked(const QModelIndex &index)
 {
-    if (!index.isValid() || index.data(HeaderRole).toBool() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+    if (!index.isValid() || isLibraryHeaderIndex(index)) {
         return;
     }
     if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
-        const QString pdfPath = m_paperSections ? m_paperSections->resolvePath(index) : QString();
+        const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
+        const QString pdfPath = sections ? sections->resolvePath(index) : QString();
         if (pdfPath.isEmpty()) {
             showPaperNotice(i18nc("@info after activating a corpus tile with no PDF on disk", "PDF not local — restore in PaperLibrary"));
             return;
@@ -2775,7 +2810,7 @@ void LibraryView::selectFirstTile()
     QItemSelectionModel *selection = m_grid->selectionModel();
     for (int row = 0; row < m_grid->model()->rowCount(); ++row) {
         const QModelIndex index = m_grid->model()->index(row, 0);
-        if (!index.data(HeaderRole).toBool() && !index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+        if (!isLibraryHeaderIndex(index)) {
             m_grid->setCurrentIndex(index);
             if (selection) {
                 selection->select(index, QItemSelectionModel::ClearAndSelect);
@@ -2788,13 +2823,14 @@ void LibraryView::selectFirstTile()
 void LibraryView::showContextMenu(const QPoint &pos)
 {
     const QModelIndex index = m_grid->indexAt(pos);
-    if (!index.isValid() || index.data(HeaderRole).toBool() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+    if (!index.isValid() || isLibraryHeaderIndex(index)) {
         return;
     }
     if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
         const QString relatedQuery = index.data(PaperLibrarySectionedModel::RelatedQueryRole).toString();
         const QString relationHint = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
-        const QString pdfPath = m_paperSections ? m_paperSections->resolvePath(index) : QString();
+        auto *sections = qobject_cast<PaperLibrarySectionedModel *>(const_cast<QAbstractItemModel *>(index.model()));
+        const QString pdfPath = sections ? sections->resolvePath(index) : QString();
         const bool downranked = index.data(PaperLibrarySectionedModel::DownrankedRole).toBool();
 
         QMenu menu(this);
@@ -2823,8 +2859,8 @@ void LibraryView::showContextMenu(const QPoint &pos)
         if (chosen == relatedAction) {
             setSearchQuery(relatedQuery);
         } else if (chosen == downrankAction) {
-            if (m_paperSections) {
-                m_paperSections->setDownranked(index, !downranked);
+            if (sections) {
+                sections->setDownranked(index, !downranked);
                 QTimer::singleShot(0, this, &LibraryView::requestCorpusCovers);
             }
         } else if (chosen == clearSearchAction) {
@@ -2935,8 +2971,10 @@ void LibraryView::coverArrived(const QString &filePath, const QString &coverPath
             }
         }
     }
-    if (m_paperSections) {
-        m_paperSections->setCoverForPath(filePath, QVariant::fromValue(cover), CoverLoader::isGeneratedCoverPath(coverPath));
+    for (PaperLibrarySectionedModel *sections : m_paperSections) {
+        if (sections) {
+            sections->setCoverForPath(filePath, QVariant::fromValue(cover), CoverLoader::isGeneratedCoverPath(coverPath));
+        }
     }
 }
 

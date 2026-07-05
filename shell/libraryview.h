@@ -184,6 +184,8 @@ private:
     void setupPapersShelf();
     void shelfChanged(int index);
     bool usesCorpusList(Shelf shelf) const;
+    PaperLibrarySectionedModel *paperSectionsForShelf(Shelf shelf) const;
+    PaperLibrarySectionedModel *activePaperSections() const;
     void configureCorpusShelf(Shelf shelf);
     void setPaperSectionMode(Shelf shelf, int mode);
     int paperSectionMode(Shelf shelf) const;
@@ -259,7 +261,7 @@ private:
     // The PaperLibrary corpus shelf; all null when no corpus is configured
     QString m_paperCorpusDir;
     PaperLibraryModel *m_paperModel = nullptr;
-    PaperLibrarySectionedModel *m_paperSections = nullptr;
+    PaperLibrarySectionedModel *m_paperSections[DocumentShelfCount + 1] = {};
     QLabel *m_paperNotice = nullptr;
     QTimer *m_paperNoticeTimer = nullptr;
 };
