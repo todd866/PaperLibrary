@@ -240,6 +240,8 @@ static bool looksLikePersonList(const QString &segment)
                                     QStringLiteral("foundations"),
                                     QStringLiteral("genesis"),
                                     QStringLiteral("goodness"),
+                                    QStringLiteral("i"),
+                                    QStringLiteral("am"),
                                     QStringLiteral("jaws"),
                                     QStringLiteral("learning"),
                                     QStringLiteral("logic"),
@@ -323,6 +325,8 @@ static QString firstYearIn(const QString &text)
 
 static bool isBookTitleStarter(const QString &word)
 {
+    QString normalized = word.toCaseFolded();
+    normalized.remove(QRegularExpression(QStringLiteral("^[^a-z0-9]+|[^a-z0-9]+$")));
     static const QSet<QString> titleStarters = {QStringLiteral("a"),
                                                 QStringLiteral("an"),
                                                 QStringLiteral("the"),
@@ -363,7 +367,7 @@ static bool isBookTitleStarter(const QString &word)
                                                 QStringLiteral("war"),
                                                 QStringLiteral("working"),
                                                 QStringLiteral("you")};
-    return titleStarters.contains(word.toCaseFolded());
+    return titleStarters.contains(normalized);
 }
 
 static bool looksLikeBookTitleRemainder(const QString &segment)
@@ -408,6 +412,9 @@ static bool splitLeadingAuthorTitle(const QString &text, QString *title, QString
         int score = 0;
         const QString firstRemainderWord = remainder.section(QLatin1Char(' '), 0, 0).toCaseFolded();
         const bool firstIsTitleStarter = isBookTitleStarter(firstRemainderWord);
+        if (!firstIsTitleStarter) {
+            continue;
+        }
         if (firstIsTitleStarter) {
             score += 3;
         }
