@@ -108,6 +108,9 @@ public:
      * pdfs/<slug>.pdf when that exists, else an empty string.
      */
     QString resolvePdfPath(int row) const;
+    int rowForLookupSlug(const QString &slug) const;
+    int rowForLookupDoi(const QString &doi) const;
+    int rowForLookupPath(const QString &path) const;
 
     // The pure pieces, unit-testable without a corpus directory
     /** One JSON object per line; malformed or blank lines are skipped. */
@@ -128,6 +131,7 @@ Q_SIGNALS:
 
 private:
     void finishLoad(const QList<Record> &records);
+    void rebuildLookupRows();
 
     friend class PaperLibraryModelTest;
 
@@ -137,6 +141,9 @@ private:
     bool m_loading = false;
     bool m_loaded = false;
     QList<Record> m_records;
+    QHash<QString, int> m_rowsByLookupSlug;
+    QHash<QString, int> m_rowsByLookupDoi;
+    QHash<QString, int> m_rowsByLookupPath;
 };
 
 /**

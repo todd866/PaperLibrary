@@ -648,6 +648,30 @@ static QString joinCompact(const QStringList &parts)
     return kept.join(QStringLiteral(" · "));
 }
 
+static QString libraryTileTooltip(const QString &title, const QStringList &detailLines)
+{
+    QStringList lines;
+    const QString cleanTitle = title.trimmed();
+    if (!cleanTitle.isEmpty()) {
+        lines.append(cleanTitle);
+    }
+    for (const QString &line : detailLines) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && trimmed != cleanTitle && !lines.contains(trimmed)) {
+            lines.append(trimmed);
+        }
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+static QString progressTooltipLine(double progress)
+{
+    if (progress < 0.0) {
+        return QString();
+    }
+    return i18nc("@info:tooltip Apple Books reading progress", "Progress: %1%", qRound(qBound(0.0, progress, 1.0) * 100));
+}
+
 static QString cleanedFilenameTitle(const QUrl &url)
 {
     QString title = QFileInfo(url.isLocalFile() ? url.toLocalFile() : url.fileName()).completeBaseName();
@@ -1322,7 +1346,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     connect(m_coverLoader, &CoverLoader::coverReady, this, &LibraryView::coverArrived);
     m_corpusCoverWarmupTimer = new QTimer(this);
     m_corpusCoverWarmupTimer->setSingleShot(true);
-    m_corpusCoverWarmupTimer->setInterval(900);
+    m_corpusCoverWarmupTimer->setInterval(1200);
     connect(m_corpusCoverWarmupTimer, &QTimer::timeout, this, &LibraryView::requestNextCorpusCoverBatch);
 
     connect(m_shelfSwitch, &QTabBar::currentChanged, this, &LibraryView::shelfChanged);
@@ -1420,6 +1444,11 @@ void LibraryView::configureTileGrid()
     const QFontMetrics titleMetrics(m_grid->font());
     const QFontMetrics smallMetrics(smallerFont(m_grid->font()));
     const bool corpus = usesCorpusList(activeShelf());
+    const int corpusKey = corpus ? 1 : 0;
+    if (m_configuredGridCorpus == corpusKey) {
+        return;
+    }
+    m_configuredGridCorpus = corpusKey;
     const int coverHeight = corpus ? CorpusCoverHeight : CoverHeight;
     const int tileHeight = TilePadding + coverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + smallMetrics.height() + TilePadding;
 
@@ -2387,12 +2416,10 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
     }
     item->setData(shownTags, TagsRole);
     item->setData(entry.description, DescriptionRole);
-    // The full title stays reachable however the caption slot is used
-    item->setToolTip(entry.title);
     item->setAccessibleText(entry.title);
+    QString tooltipDescription = entry.description;
     if (entry.url.isLocalFile()) {
         const QString filePath = entry.url.toLocalFile();
-        item->setToolTip(entry.title + QLatin1Char('\n') + filePath);
         // What a typographic card would say for this entry. Books get
         // their byline, foot and fallback description from the EPUB's own
         // OPF metadata — curated store metadata, when present, wins
@@ -2403,6 +2430,7 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
             spec.yearJournal = metadata.year;
             if (entry.description.isEmpty()) {
                 item->setData(metadata.description, DescriptionRole);
+                tooltipDescription = metadata.description;
             }
         }
         const QString cached = m_coverLoader->cachedCoverPath(filePath, spec);
@@ -2413,6 +2441,10 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
             m_coverLoader->requestCover(filePath, spec);
         }
     }
+    item->setToolTip(libraryTileTooltip(entry.title,
+                                        {joinCompact({entry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}),
+                                         progressTooltipLine(entry.progress),
+                                         tooltipDescription}));
     return item;
 }
 
@@ -2467,7 +2499,6 @@ void LibraryView::setupPapersShelf()
     m_paperModel = new PaperLibraryModel(this);
     for (Shelf shelf : {TextbooksShelf, MedicineShelf, MndShelf, WorkShelf, FictionShelf, NonfictionShelf, PapersShelf}) {
         auto *sections = new PaperLibrarySectionedModel(this);
-        sections->setSourceModel(m_paperModel);
         sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
         m_paperSections[shelf] = sections;
         connect(sections, &QAbstractItemModel::modelReset, this, [this, sections]() {
@@ -2566,6 +2597,10 @@ void LibraryView::configureCorpusShelf(Shelf shelf)
     if (!sections) {
         return;
     }
+    if (!m_paperSectionAttached[shelf]) {
+        sections->setSourceModel(m_paperModel);
+        m_paperSectionAttached[shelf] = true;
+    }
     sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
     syncPaperSectionButton();
 }
@@ -2632,7 +2667,7 @@ void LibraryView::requestCorpusCovers()
 {
     m_nextCorpusCoverRow = 0;
     if (m_corpusCoverWarmupTimer) {
-        m_corpusCoverWarmupTimer->start(260);
+        m_corpusCoverWarmupTimer->start(650);
     } else {
         requestNextCorpusCoverBatch();
     }
@@ -2652,7 +2687,7 @@ void LibraryView::requestNextCorpusCoverBatch()
     // Keep each pass bounded. Generated corpus cards are immediately useful,
     // while real local PDF covers are warmed opportunistically after the
     // highest-ranked first screens.
-    static constexpr int MaxCorpusCoverRequests = 24;
+    static constexpr int MaxCorpusCoverRequests = 8;
     int requested = 0;
     const int rows = sections->rowCount();
     for (; m_nextCorpusCoverRow < rows && requested < MaxCorpusCoverRequests; ++m_nextCorpusCoverRow) {

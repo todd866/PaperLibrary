@@ -254,6 +254,7 @@ private:
     CoverLoader *m_coverLoader;
     QTimer *m_corpusCoverWarmupTimer = nullptr;
     int m_nextCorpusCoverRow = 0;
+    int m_configuredGridCorpus = -1;
     QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
     QPropertyAnimation *m_gridFadeAnimation = nullptr;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
@@ -262,6 +263,7 @@ private:
     QString m_paperCorpusDir;
     PaperLibraryModel *m_paperModel = nullptr;
     PaperLibrarySectionedModel *m_paperSections[DocumentShelfCount + 1] = {};
+    bool m_paperSectionAttached[DocumentShelfCount + 1] = {};
     QLabel *m_paperNotice = nullptr;
     QTimer *m_paperNoticeTimer = nullptr;
 };
