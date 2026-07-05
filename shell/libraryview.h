@@ -197,6 +197,8 @@ private:
     /** Non-modal inline notice over the corpus shelf; auto-hides by default. */
     void showPaperNotice(const QString &text, bool autoHide = true);
     void tileClicked(const QModelIndex &index);
+    void activateCurrentTile();
+    void selectFirstTile();
     void showContextMenu(const QPoint &pos);
     void editMetadata(const QUrl &url);
     void coverArrived(const QString &filePath, const QString &coverPath);

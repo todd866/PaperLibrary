@@ -220,6 +220,7 @@ public:
     explicit PaperLibrarySectionedModel(QObject *parent = nullptr);
 
     void setSourceModel(PaperLibraryModel *model);
+    void setShelf(SmartFilter filter, SectionMode mode);
     void setSmartFilter(SmartFilter filter);
     void setSectionMode(SectionMode mode);
     void setQuery(const QString &query);
@@ -239,6 +240,8 @@ private:
     };
 
     void rebuild();
+    QString cacheKey() const;
+    void clearRowCache();
     bool sourceRowDownranked(int sourceRow) const;
     void saveDownrankedSlugs() const;
 
@@ -247,6 +250,7 @@ private:
     SectionMode m_sectionMode = ReadNext;
     QString m_query;
     QList<Row> m_rows;
+    QHash<QString, QList<Row>> m_rowCache;
     QHash<QString, QVariant> m_coverPixmaps;
     QSet<QString> m_generatedCoverPaths;
     QSet<QString> m_downrankedSlugs;

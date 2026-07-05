@@ -572,6 +572,16 @@ static int sectionRank(const QString &section)
         QStringLiteral("Continue Reading"),
         QStringLiteral("Clinical Essentials"),
         QStringLiteral("MD Project Review Set"),
+        QStringLiteral("Core MND / ALS"),
+        QStringLiteral("Diagnosis & Criteria"),
+        QStringLiteral("Biomarkers & Neurofilament"),
+        QStringLiteral("Neurophysiology / Hyperexcitability"),
+        QStringLiteral("Trials & Treatment"),
+        QStringLiteral("Mechanisms & Metabolism"),
+        QStringLiteral("Cognitive / FTD"),
+        QStringLiteral("Imaging & Networks"),
+        QStringLiteral("Epidemiology / Natural History"),
+        QStringLiteral("Care & Respiratory"),
         QStringLiteral("MND Project"),
         QStringLiteral("MND / ALS"),
         QStringLiteral("Neuro / MND"),
@@ -961,25 +971,73 @@ bool PaperLibraryFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex 
 
 static QString mndTopicSectionFor(const QString &text)
 {
-    if (containsAnyNeedle(text, {QStringLiteral("diagnos"), QStringLiteral("criteria"), QStringLiteral("awaji"), QStringLiteral("el escorial"), QStringLiteral("mimic")})) {
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("diagnos"),
+                           QStringLiteral("criteria"),
+                           QStringLiteral("awaji"),
+                           QStringLiteral("el escorial"),
+                           QStringLiteral("gold coast"),
+                           QStringLiteral("threshold tracking"),
+                           QStringLiteral("electrodiagnos"),
+                           QStringLiteral("electromyography"),
+                           QStringLiteral(" emg "),
+                           QStringLiteral("mimic")})) {
         return QStringLiteral("Diagnosis & Criteria");
     }
-    if (containsAnyNeedle(text, {QStringLiteral("biomarker"), QStringLiteral("neurofilament"), QStringLiteral("csf"), QStringLiteral("serum")})) {
-        return QStringLiteral("Biomarkers");
+    if (containsAnyNeedle(text, {QStringLiteral("biomarker"), QStringLiteral("neurofilament"), QStringLiteral(" nfl "), QStringLiteral("csf"), QStringLiteral("serum")})) {
+        return QStringLiteral("Biomarkers & Neurofilament");
     }
-    if (containsAnyNeedle(text, {QStringLiteral("c9orf72"), QStringLiteral("sod1"), QStringLiteral("tdp-43"), QStringLiteral("genetic"), QStringLiteral("mutation"), QStringLiteral("pathology"), QStringLiteral("mechanism")})) {
-        return QStringLiteral("Genetics & Mechanisms");
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("cortical hyperexcitability"),
+                           QStringLiteral("hyperexcitability"),
+                           QStringLiteral("transcranial magnetic stimulation"),
+                           QStringLiteral(" tms "),
+                           QStringLiteral("motor cortex"),
+                           QStringLiteral("beta-band"),
+                           QStringLiteral("intermuscular"),
+                           QStringLiteral("excitability")})) {
+        return QStringLiteral("Neurophysiology / Hyperexcitability");
     }
-    if (containsAnyNeedle(text, {QStringLiteral("treatment"), QStringLiteral("therapy"), QStringLiteral("trial"), QStringLiteral("riluzole"), QStringLiteral("edaravone"), QStringLiteral("ceftriaxone")})) {
-        return QStringLiteral("Treatment & Trials");
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("treatment"),
+                           QStringLiteral("therapy"),
+                           QStringLiteral("trial"),
+                           QStringLiteral("riluzole"),
+                           QStringLiteral("edaravone"),
+                           QStringLiteral("tofersen"),
+                           QStringLiteral("antisense"),
+                           QStringLiteral("ceftriaxone")})) {
+        return QStringLiteral("Trials & Treatment");
     }
-    if (containsAnyNeedle(text, {QStringLiteral("epidemiology"), QStringLiteral("incidence"), QStringLiteral("prevalence"), QStringLiteral("risk factor")})) {
-        return QStringLiteral("Epidemiology & Risk");
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("metabolic"),
+                           QStringLiteral("bioenergetic"),
+                           QStringLiteral("mitochond"),
+                           QStringLiteral("energy metabolism"),
+                           QStringLiteral("sirt3"),
+                           QStringLiteral("excitotoxic"),
+                           QStringLiteral("c9orf72"),
+                           QStringLiteral("sod1"),
+                           QStringLiteral("tdp-43"),
+                           QStringLiteral("genetic"),
+                           QStringLiteral("mutation"),
+                           QStringLiteral("pathology"),
+                           QStringLiteral("mechanism")})) {
+        return QStringLiteral("Mechanisms & Metabolism");
     }
-    if (containsAnyNeedle(text, {QStringLiteral("care"), QStringLiteral("management"), QStringLiteral("respiratory"), QStringLiteral("feeding"), QStringLiteral("end-of-life")})) {
-        return QStringLiteral("Care & Management");
+    if (containsAnyNeedle(text, {QStringLiteral("cognitive"), QStringLiteral("frontotemporal"), QStringLiteral(" ftd "), QStringLiteral("executive"), QStringLiteral("behaviour"), QStringLiteral("behavior")})) {
+        return QStringLiteral("Cognitive / FTD");
     }
-    return QStringLiteral("Other MND / ALS");
+    if (containsAnyNeedle(text, {QStringLiteral("imaging"), QStringLiteral("network"), QStringLiteral("structural brain"), QStringLiteral("diffusion"), QStringLiteral(" mri "), QStringLiteral("connectivity")})) {
+        return QStringLiteral("Imaging & Networks");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("epidemiology"), QStringLiteral("incidence"), QStringLiteral("prevalence"), QStringLiteral("risk factor"), QStringLiteral("natural history"), QStringLiteral("preclinical"), QStringLiteral("survival"), QStringLiteral("prognosis"), QStringLiteral("phenotype"), QStringLiteral("cohort")})) {
+        return QStringLiteral("Epidemiology / Natural History");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("care"), QStringLiteral("management"), QStringLiteral("respiratory"), QStringLiteral("feeding"), QStringLiteral("nutrition"), QStringLiteral("end-of-life")})) {
+        return QStringLiteral("Care & Respiratory");
+    }
+    return QStringLiteral("Core MND / ALS");
 }
 
 static QString textbookTopicSectionFor(const QString &text)
@@ -1098,7 +1156,8 @@ static QString focusBucketFor(const QModelIndex &index, const QString &text, con
         return QStringLiteral("Continue Reading");
     }
     if (source == QLatin1String("md-project-review-set") || recordMatchesMnd(text)) {
-        return QStringLiteral("MND Project");
+        const QString mndTopic = mndTopicSectionFor(text);
+        return mndTopic == QLatin1String("Core MND / ALS") ? QStringLiteral("MND Project") : mndTopic;
     }
     if (recordMatchesPsychiatry(text)) {
         return QStringLiteral("Psychiatry");
@@ -1147,9 +1206,18 @@ static QString relatedQueryFor(const QString &text, const QString &source, const
         QStringLiteral("motor neuron"),
         QStringLiteral("motor neurone"),
         QStringLiteral("neurofilament"),
+        QStringLiteral("cortical hyperexcitability"),
+        QStringLiteral("threshold tracking"),
+        QStringLiteral("transcranial magnetic stimulation"),
+        QStringLiteral("electrodiagnosis"),
         QStringLiteral("c9orf72"),
         QStringLiteral("sod1"),
         QStringLiteral("tdp-43"),
+        QStringLiteral("riluzole"),
+        QStringLiteral("tofersen"),
+        QStringLiteral("frontotemporal dementia"),
+        QStringLiteral("natural history"),
+        QStringLiteral("bioenergetic"),
         QStringLiteral("systematic review"),
         QStringLiteral("clinical guideline"),
         QStringLiteral("statistics"),
@@ -1296,7 +1364,37 @@ static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filt
         if (source == QLatin1String("md-project-review-set")) {
             return QStringLiteral("MD project core paper");
         }
-        return topic == QLatin1String("MND / ALS") ? QStringLiteral("MND project paper") : topic;
+        {
+            const QString mndTopic = mndTopicSectionFor(text);
+            if (mndTopic == QLatin1String("Diagnosis & Criteria")) {
+                return QStringLiteral("Diagnosis / criteria paper");
+            }
+            if (mndTopic == QLatin1String("Biomarkers & Neurofilament")) {
+                return QStringLiteral("Biomarker candidate");
+            }
+            if (mndTopic == QLatin1String("Neurophysiology / Hyperexcitability")) {
+                return QStringLiteral("Cortical excitability paper");
+            }
+            if (mndTopic == QLatin1String("Trials & Treatment")) {
+                return QStringLiteral("Treatment / trial paper");
+            }
+            if (mndTopic == QLatin1String("Mechanisms & Metabolism")) {
+                return QStringLiteral("Mechanism paper");
+            }
+            if (mndTopic == QLatin1String("Cognitive / FTD")) {
+                return QStringLiteral("ALS-FTD paper");
+            }
+            if (mndTopic == QLatin1String("Imaging & Networks")) {
+                return QStringLiteral("Imaging / network paper");
+            }
+            if (mndTopic == QLatin1String("Epidemiology / Natural History")) {
+                return QStringLiteral("Natural history paper");
+            }
+            if (mndTopic == QLatin1String("Care & Respiratory")) {
+                return QStringLiteral("Care pathway paper");
+            }
+            return topic == QLatin1String("MND / ALS") ? QStringLiteral("MND project paper") : topic;
+        }
     case PaperLibrarySectionedModel::Work:
         if (recordMatchesBeyondBayes(text, source, journal)) {
             return QStringLiteral("Beyond Bayes work");
@@ -1364,6 +1462,36 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
     }
     if (filter == PaperLibrarySectionedModel::Mnd && source == QLatin1String("md-project-review-set")) {
         return QStringLiteral("Linked to MD project review set");
+    }
+    if (filter == PaperLibrarySectionedModel::Mnd) {
+        const QString mndTopic = mndTopicSectionFor(text);
+        if (mndTopic == QLatin1String("Diagnosis & Criteria")) {
+            return QStringLiteral("Use for diagnostic framing");
+        }
+        if (mndTopic == QLatin1String("Biomarkers & Neurofilament")) {
+            return QStringLiteral("Use for biomarker evidence");
+        }
+        if (mndTopic == QLatin1String("Neurophysiology / Hyperexcitability")) {
+            return QStringLiteral("Use for excitability mechanism");
+        }
+        if (mndTopic == QLatin1String("Trials & Treatment")) {
+            return QStringLiteral("Use for therapy context");
+        }
+        if (mndTopic == QLatin1String("Mechanisms & Metabolism")) {
+            return QStringLiteral("Use for pathogenesis model");
+        }
+        if (mndTopic == QLatin1String("Cognitive / FTD")) {
+            return QStringLiteral("Use for cognitive overlap");
+        }
+        if (mndTopic == QLatin1String("Imaging & Networks")) {
+            return QStringLiteral("Use for network evidence");
+        }
+        if (mndTopic == QLatin1String("Epidemiology / Natural History")) {
+            return QStringLiteral("Use for cohort framing");
+        }
+        if (mndTopic == QLatin1String("Care & Respiratory")) {
+            return QStringLiteral("Use for clinical pathway");
+        }
     }
     if (filter == PaperLibrarySectionedModel::Fiction && recordMatchesGameOfThrones(text)) {
         return QStringLiteral("Continue the series");
@@ -1458,10 +1586,22 @@ static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row,
         break;
     case PaperLibrarySectionedModel::Mnd:
         if (sourceName == QLatin1String("md-project-review-set")) {
-            score -= 360;
+            score -= 440;
         }
-        if (containsAnyNeedle(text, {QStringLiteral("biomarker"), QStringLiteral("neurofilament"), QStringLiteral("diagnos"), QStringLiteral("trial")})) {
-            score -= 240;
+        {
+            const QString mndTopic = mndTopicSectionFor(text);
+            if (mndTopic == QLatin1String("Biomarkers & Neurofilament") || mndTopic == QLatin1String("Diagnosis & Criteria")
+                || mndTopic == QLatin1String("Neurophysiology / Hyperexcitability")) {
+                score -= 300;
+            } else if (mndTopic == QLatin1String("Trials & Treatment")) {
+                score -= 260;
+            } else if (mndTopic == QLatin1String("Mechanisms & Metabolism") || mndTopic == QLatin1String("Epidemiology / Natural History")) {
+                score -= 210;
+            } else if (mndTopic == QLatin1String("Cognitive / FTD") || mndTopic == QLatin1String("Imaging & Networks")) {
+                score -= 180;
+            } else if (mndTopic == QLatin1String("Core MND / ALS")) {
+                score -= 150;
+            }
         }
         break;
     case PaperLibrarySectionedModel::Work:
@@ -1577,10 +1717,17 @@ void PaperLibrarySectionedModel::setSourceModel(PaperLibraryModel *model)
     if (m_source) {
         m_source->disconnect(this);
     }
+    clearRowCache();
     m_source = model;
     if (m_source) {
-        connect(m_source, &QAbstractItemModel::modelReset, this, &PaperLibrarySectionedModel::rebuild);
-        connect(m_source, &QAbstractItemModel::dataChanged, this, &PaperLibrarySectionedModel::rebuild);
+        connect(m_source, &QAbstractItemModel::modelReset, this, [this]() {
+            clearRowCache();
+            rebuild();
+        });
+        connect(m_source, &QAbstractItemModel::dataChanged, this, [this]() {
+            clearRowCache();
+            rebuild();
+        });
     }
     rebuild();
 }
@@ -1591,6 +1738,16 @@ void PaperLibrarySectionedModel::setSmartFilter(SmartFilter filter)
         return;
     }
     m_smartFilter = filter;
+    rebuild();
+}
+
+void PaperLibrarySectionedModel::setShelf(SmartFilter filter, SectionMode mode)
+{
+    if (m_smartFilter == filter && m_sectionMode == mode) {
+        return;
+    }
+    m_smartFilter = filter;
+    m_sectionMode = mode;
     rebuild();
 }
 
@@ -1790,12 +1947,31 @@ void PaperLibrarySectionedModel::setDownranked(const QModelIndex &index, bool do
         m_downrankedSlugs.remove(slug);
     }
     saveDownrankedSlugs();
+    clearRowCache();
     rebuild();
+}
+
+QString PaperLibrarySectionedModel::cacheKey() const
+{
+    return QStringLiteral("%1|%2|%3").arg(static_cast<int>(m_smartFilter)).arg(static_cast<int>(m_sectionMode)).arg(m_query);
+}
+
+void PaperLibrarySectionedModel::clearRowCache()
+{
+    m_rowCache.clear();
 }
 
 void PaperLibrarySectionedModel::rebuild()
 {
+    const QString key = cacheKey();
     beginResetModel();
+    const auto cached = m_rowCache.constFind(key);
+    if (cached != m_rowCache.cend()) {
+        m_rows = cached.value();
+        endResetModel();
+        return;
+    }
+
     m_rows.clear();
     if (!m_source) {
         endResetModel();
@@ -1994,5 +2170,6 @@ void PaperLibrarySectionedModel::rebuild()
             m_rows.append({false, sourceRow, QString()});
         }
     }
+    m_rowCache.insert(key, m_rows);
     endResetModel();
 }

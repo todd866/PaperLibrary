@@ -6,11 +6,13 @@
 
 #include <QTest>
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QListView>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTabBar>
 #include <QTemporaryDir>
@@ -52,6 +54,8 @@ private Q_SLOTS:
     void initTestCase();
     void init();
     void testCorpusShelvesUseTileGrid();
+    void testBooksShelfStaysWithLocalEbooks();
+    void testTilesSelectOnClickAndOpenOnDoubleClick();
 
 private:
     std::unique_ptr<QTemporaryDir> m_dir;
@@ -108,6 +112,55 @@ void LibraryViewTest::testCorpusShelvesUseTileGrid()
     QVERIFY(grid->gridSize().width() >= 160);
     QVERIFY(grid->gridSize().height() >= 220);
     QVERIFY(!grid->model()->index(0, 0).data(Qt::DisplayRole).toString().isEmpty());
+}
+
+void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    shelves->setCurrentIndex(LibraryView::BooksShelf);
+    QVERIFY(grid->model());
+    QCOMPARE(grid->model()->rowCount(), 0);
+
+    shelves->setCurrentIndex(LibraryView::MndShelf);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+}
+
+void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()
+{
+    const QString pdfPath = m_dir->filePath(QStringLiteral("recent.pdf"));
+    QFile pdf(pdfPath);
+    QVERIFY(pdf.open(QIODevice::WriteOnly));
+    pdf.write("%PDF-1.4\n");
+    pdf.close();
+
+    const QUrl url = QUrl::fromLocalFile(pdfPath);
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    store.recordOpen(url, QDateTime(QDate(2026, 7, 5), QTime(10, 24)));
+
+    LibraryView view(&store, nullptr, false);
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTRY_VERIFY(grid->model());
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    QSignalSpy activatedSpy(&view, &LibraryView::itemActivated);
+    const QModelIndex index = grid->model()->index(0, 0);
+    QVERIFY(index.isValid());
+
+    QVERIFY(QMetaObject::invokeMethod(grid, "clicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
+    QCOMPARE(activatedSpy.count(), 0);
+
+    grid->setCurrentIndex(index);
+    QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
+    QCOMPARE(activatedSpy.count(), 1);
+    QCOMPARE(activatedSpy.takeFirst().at(0).toUrl(), url);
 }
 
 QTEST_MAIN(LibraryViewTest)

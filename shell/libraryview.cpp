@@ -74,6 +74,7 @@ static constexpr int TagGap = 2;
 static constexpr int ProgressGap = 7;
 static constexpr int ProgressBarHeight = 4;
 static constexpr int GridSpacing = 12;
+static constexpr int CorpusCoverHeight = 144;
 
 /**
  * Renders cover thumbnails asynchronously through macOS QuickLook
@@ -713,7 +714,8 @@ public:
             return QSize(width, option.fontMetrics.height() + 14);
         }
 
-        int height = TilePadding + CoverHeight;
+        const int coverHeight = isCorpusTile(index) ? CorpusCoverHeight : CoverHeight;
+        int height = TilePadding + coverHeight;
         if (reservesProgressRow(index)) {
             height += ProgressGap + QFontMetrics(smallerFont(option.font)).height();
         }
@@ -755,7 +757,9 @@ public:
             painter->drawRoundedRect(option.rect, 8, 8);
         }
 
-        const QRect coverBox(option.rect.left() + TilePadding, option.rect.top() + TilePadding, CoverWidth, CoverHeight);
+        const bool corpusTile = isCorpusTile(index);
+        const int coverHeight = corpusTile ? CorpusCoverHeight : CoverHeight;
+        const QRect coverBox(option.rect.left() + TilePadding, option.rect.top() + TilePadding, CoverWidth, coverHeight);
 
         // Real covers keep their aspect ratio, sitting on the box's bottom
         // edge like books on a shelf; placeholders fill the box
@@ -775,7 +779,6 @@ public:
 
         QPainterPath coverClip;
         coverClip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
-        const bool corpusTile = isCorpusTile(index);
         if (!cover.isNull()) {
             painter->save();
             painter->setClipPath(coverClip);
@@ -1014,15 +1017,22 @@ private:
         clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
         QColor accent = CoverGenerator::accentColor(seed.isEmpty() ? kind : seed, darkMode);
-        painter->fillPath(clip, blendColors(palette.color(QPalette::Base), accent, darkMode ? 0.18 : 0.10));
+        const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
+        painter->fillPath(clip, blendColors(cardBase, accent, darkMode ? 0.24 : 0.18));
 
-        accent.setAlphaF(0.62);
+        QColor rim = accent;
+        rim.setAlphaF(darkMode ? 0.55 : 0.38);
+        painter->setPen(QPen(rim, 1.2));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(0.8, 0.8, -0.8, -0.8), CoverRadius, CoverRadius);
+
+        accent.setAlphaF(0.78);
         painter->setPen(Qt::NoPen);
         painter->setBrush(accent);
-        painter->drawRect(QRect(coverRect.left(), coverRect.top(), coverRect.width(), 4));
+        painter->drawRect(QRect(coverRect.left(), coverRect.top(), coverRect.width(), 6));
 
         QColor wash = accent;
-        wash.setAlphaF(darkMode ? 0.16 : 0.10);
+        wash.setAlphaF(darkMode ? 0.22 : 0.17);
         painter->setBrush(wash);
         painter->drawEllipse(QRectF(coverRect.right() - 46, coverRect.top() + 18, 70, 70));
         painter->drawRoundedRect(QRectF(coverRect.left() + 10, coverRect.bottom() - 38, coverRect.width() - 20, 20), 4, 4);
@@ -1241,6 +1251,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_grid->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_grid->setDragDropMode(QAbstractItemView::NoDragDrop);
     m_grid->setWordWrap(false);
+    m_grid->setFocusPolicy(Qt::StrongFocus);
     m_grid->setMouseTracking(true);
     m_grid->setFrameShape(QFrame::NoFrame);
     m_grid->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -1254,7 +1265,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_gridFadeEffect->setOpacity(1.0);
     m_grid->setGraphicsEffect(m_gridFadeEffect);
     m_gridFadeAnimation = new QPropertyAnimation(m_gridFadeEffect, "opacity", this);
-    m_gridFadeAnimation->setDuration(140);
+    m_gridFadeAnimation->setDuration(190);
     m_gridFadeAnimation->setEasingCurve(QEasingCurve::OutCubic);
     mainLayout->addWidget(m_grid, 1);
 
@@ -1272,9 +1283,39 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     connect(m_corpusCoverWarmupTimer, &QTimer::timeout, this, &LibraryView::requestNextCorpusCoverBatch);
 
     connect(m_shelfSwitch, &QTabBar::currentChanged, this, &LibraryView::shelfChanged);
-    connect(m_grid, &QListView::clicked, this, &LibraryView::tileClicked);
-    connect(m_grid, &QListView::activated, this, &LibraryView::tileClicked);
+    connect(m_grid, &QListView::doubleClicked, this, &LibraryView::tileClicked);
     connect(m_grid, &QWidget::customContextMenuRequested, this, &LibraryView::showContextMenu);
+
+    auto addShortcut = [this](const QKeySequence &sequence, const auto &slot) {
+        QShortcut *shortcut = new QShortcut(sequence, this);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(shortcut, &QShortcut::activated, this, slot);
+        return shortcut;
+    };
+    addShortcut(QKeySequence(Qt::CTRL | Qt::Key_O), [this]() {
+        Q_EMIT openClicked();
+    });
+    addShortcut(QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), [this]() {
+        m_shelfSwitch->setCurrentIndex(qMax(0, m_shelfSwitch->currentIndex() - 1));
+    });
+    addShortcut(QKeySequence(Qt::CTRL | Qt::Key_BracketRight), [this]() {
+        m_shelfSwitch->setCurrentIndex(qMin(m_shelfSwitch->count() - 1, m_shelfSwitch->currentIndex() + 1));
+    });
+    for (int shelf = 0; shelf < qMin(9, m_shelfSwitch->count()); ++shelf) {
+        addShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + shelf)), [this, shelf]() {
+            if (shelf < m_shelfSwitch->count()) {
+                m_shelfSwitch->setCurrentIndex(shelf);
+            }
+        });
+    }
+    auto addGridOpenShortcut = [this](const QKeySequence &sequence) {
+        QShortcut *shortcut = new QShortcut(sequence, m_grid);
+        shortcut->setContext(Qt::WidgetShortcut);
+        connect(shortcut, &QShortcut::activated, this, &LibraryView::activateCurrentTile);
+    };
+    addGridOpenShortcut(QKeySequence(Qt::Key_Return));
+    addGridOpenShortcut(QKeySequence(Qt::Key_Enter));
+    addGridOpenShortcut(QKeySequence(Qt::Key_Space));
 
     applyChromePalette();
     syncViewModeButton();
@@ -1321,8 +1362,8 @@ void LibraryView::animateGridIn()
         return;
     }
     m_gridFadeAnimation->stop();
-    m_gridFadeEffect->setOpacity(0.74);
-    m_gridFadeAnimation->setStartValue(0.74);
+    m_gridFadeEffect->setOpacity(0.56);
+    m_gridFadeAnimation->setStartValue(0.56);
     m_gridFadeAnimation->setEndValue(1.0);
     m_gridFadeAnimation->start();
 }
@@ -1335,9 +1376,13 @@ void LibraryView::configureTileGrid()
 
     const QFontMetrics titleMetrics(m_grid->font());
     const QFontMetrics smallMetrics(smallerFont(m_grid->font()));
-    const int tileHeight = TilePadding + CoverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + smallMetrics.height() + TilePadding;
+    const bool corpus = usesCorpusList(activeShelf());
+    const int coverHeight = corpus ? CorpusCoverHeight : CoverHeight;
+    const int tileHeight = TilePadding + coverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + smallMetrics.height() + TilePadding;
 
     m_grid->setViewMode(QListView::IconMode);
+    m_grid->setLayoutMode(QListView::Batched);
+    m_grid->setBatchSize(64);
     m_grid->setResizeMode(QListView::Adjust);
     m_grid->setMovement(QListView::Static);
     m_grid->setFlow(QListView::LeftToRight);
@@ -1366,6 +1411,7 @@ void LibraryView::refresh()
     const QList<AppleBooksProgress::BookEntry> bookEntries = appleBooksScanEnabled() ? AppleBooksProgress::read() : QList<AppleBooksProgress::BookEntry>();
     QHash<QString, double> progressByPath;
     QHash<QString, QString> booksTitleByPath;
+    const bool mirrorAppleBooks = !bookEntries.isEmpty();
     for (const AppleBooksProgress::BookEntry &book : bookEntries) {
         const QString canonical = QFileInfo(book.path).canonicalFilePath();
         if (!canonical.isEmpty()) {
@@ -1386,7 +1432,12 @@ void LibraryView::refresh()
             continue;
         }
         const QString canonical = entry.url.isLocalFile() ? QFileInfo(entry.url.toLocalFile()).canonicalFilePath() : QString();
-        knownPaths.insert(canonical);
+        if (mirrorAppleBooks && (canonical.isEmpty() || !progressByPath.contains(canonical))) {
+            continue;
+        }
+        if (!canonical.isEmpty()) {
+            knownPaths.insert(canonical);
+        }
         // Title precedence: curated store title, else Apple Books title, else filename
         QString title = entry.title.isEmpty() ? booksTitleByPath.value(canonical) : entry.title;
         if (title.isEmpty()) {
@@ -1433,9 +1484,22 @@ void LibraryView::refresh()
         }
         return a.title.localeAwareCompare(b.title) < 0;
     };
-    std::sort(booksOnly.begin(), booksOnly.end(), entryLikelyBefore);
+    const auto bookLikelyBefore = [&entryLikelyBefore](const ShelfEntry &a, const ShelfEntry &b) {
+        const bool aActive = a.progress > 0.0 && a.progress < 0.98;
+        const bool bActive = b.progress > 0.0 && b.progress < 0.98;
+        if (aActive != bActive) {
+            return aActive;
+        }
+        const bool aTracked = a.progress >= 0.0;
+        const bool bTracked = b.progress >= 0.0;
+        if (aTracked != bTracked) {
+            return aTracked;
+        }
+        return entryLikelyBefore(a, b);
+    };
+    std::sort(booksOnly.begin(), booksOnly.end(), bookLikelyBefore);
     books += booksOnly;
-    std::stable_sort(books.begin(), books.end(), entryLikelyBefore);
+    std::stable_sort(books.begin(), books.end(), bookLikelyBefore);
     m_shelfEntries[BooksShelf] = books;
 
     const QList<ShelfEntry> allDocuments = pdfs + books;
@@ -2145,6 +2209,9 @@ void LibraryView::rebuildShelves()
         }
         populateSections(model, {{QString(), matches}});
     }
+    if (!usesCorpusList(activeShelf())) {
+        selectFirstTile();
+    }
 }
 
 void LibraryView::startContentSearch()
@@ -2360,7 +2427,12 @@ void LibraryView::setupPapersShelf()
         requestCorpusCovers();
     });
     connect(m_paperSections, &QAbstractItemModel::modelReset, this, [this]() {
-        QTimer::singleShot(0, this, &LibraryView::requestCorpusCovers);
+        QTimer::singleShot(0, this, [this]() {
+            if (usesCorpusList(activeShelf())) {
+                selectFirstTile();
+            }
+            requestCorpusCovers();
+        });
     });
 
     // The non-modal notice slot under the header ("Loading catalog…",
@@ -2387,23 +2459,33 @@ void LibraryView::shelfChanged(int index)
     m_grid->setVisible(true);
     if (corpus) {
         configureCorpusShelf(shelf);
-        QItemSelectionModel *oldSelection = m_grid->selectionModel();
-        m_grid->setModel(m_paperSections);
+        QItemSelectionModel *oldSelection = nullptr;
+        if (m_grid->model() != m_paperSections) {
+            oldSelection = m_grid->selectionModel();
+            m_grid->setModel(m_paperSections);
+        }
         configureTileGrid();
+        m_grid->scrollToTop();
         delete oldSelection;
         ensurePapersFresh();
         showShelfGuide();
         requestCorpusCovers();
     } else {
-        QItemSelectionModel *oldSelection = m_grid->selectionModel();
-        m_grid->setModel(modelForShelf(shelf));
+        QAbstractItemModel *const shelfModel = modelForShelf(shelf);
+        QItemSelectionModel *oldSelection = nullptr;
+        if (m_grid->model() != shelfModel) {
+            oldSelection = m_grid->selectionModel();
+            m_grid->setModel(shelfModel);
+        }
         configureTileGrid();
+        m_grid->scrollToTop();
         delete oldSelection;
         syncViewModeButton(); // the arrangement is a per-shelf choice
         if (m_paperNotice) {
             m_paperNotice->hide();
         }
     }
+    selectFirstTile();
     animateGridIn();
     if (!searchQuery().isEmpty()) {
         applySearch(); // the content search follows the active shelf
@@ -2415,7 +2497,7 @@ bool LibraryView::usesCorpusList(Shelf shelf) const
     if (!m_paperModel || !m_paperSections) {
         return false;
     }
-    return shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == PapersShelf;
+    return shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == PapersShelf;
 }
 
 void LibraryView::configureCorpusShelf(Shelf shelf)
@@ -2423,34 +2505,35 @@ void LibraryView::configureCorpusShelf(Shelf shelf)
     if (!m_paperSections) {
         return;
     }
+    PaperLibrarySectionedModel::SmartFilter filter = PaperLibrarySectionedModel::Papers;
     switch (shelf) {
     case BooksShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Books);
+        filter = PaperLibrarySectionedModel::Books;
         break;
     case TextbooksShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Textbooks);
+        filter = PaperLibrarySectionedModel::Textbooks;
         break;
     case MedicineShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Medicine);
+        filter = PaperLibrarySectionedModel::Medicine;
         break;
     case MndShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Mnd);
+        filter = PaperLibrarySectionedModel::Mnd;
         break;
     case WorkShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Work);
+        filter = PaperLibrarySectionedModel::Work;
         break;
     case FictionShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Fiction);
+        filter = PaperLibrarySectionedModel::Fiction;
         break;
     case NonfictionShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+        filter = PaperLibrarySectionedModel::Nonfiction;
         break;
     case PapersShelf:
     case PdfShelf:
-        m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Papers);
+        filter = PaperLibrarySectionedModel::Papers;
         break;
     }
-    m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+    m_paperSections->setShelf(filter, static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
     syncPaperSectionButton();
 }
 
@@ -2617,7 +2700,7 @@ void LibraryView::showPaperNotice(const QString &text, bool autoHide)
     // A quiet palette-derived strip, styled at show time so it follows
     // light/dark appearance changes
     QPalette chip = palette();
-    chip.setColor(QPalette::Window, blendColors(palette().color(QPalette::Base), palette().color(QPalette::Text), 0.06));
+    chip.setColor(QPalette::Window, blendColors(palette().color(QPalette::Base), palette().color(QPalette::Highlight), 0.10));
     QColor noticeColor = palette().color(QPalette::Text);
     noticeColor.setAlphaF(0.75);
     chip.setColor(QPalette::WindowText, noticeColor);
@@ -2657,9 +2740,7 @@ void LibraryView::activate(const QUrl &url, double booksProgress)
 
 void LibraryView::tileClicked(const QModelIndex &index)
 {
-    // Once the first click opened a document the library gets hidden;
-    // ignore the activated() half of a double click arriving after that
-    if (!isVisible() || !index.isValid() || index.data(HeaderRole).toBool() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+    if (!index.isValid() || index.data(HeaderRole).toBool() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
         return;
     }
     if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
@@ -2672,6 +2753,36 @@ void LibraryView::tileClicked(const QModelIndex &index)
         return;
     }
     activate(index.data(UrlRole).toUrl(), index.data(ProgressRole).toDouble());
+}
+
+void LibraryView::activateCurrentTile()
+{
+    if (!m_grid) {
+        return;
+    }
+    QModelIndex index = m_grid->currentIndex();
+    if (!index.isValid() && m_grid->selectionModel() && !m_grid->selectionModel()->selectedIndexes().isEmpty()) {
+        index = m_grid->selectionModel()->selectedIndexes().constFirst();
+    }
+    tileClicked(index);
+}
+
+void LibraryView::selectFirstTile()
+{
+    if (!m_grid || !m_grid->model()) {
+        return;
+    }
+    QItemSelectionModel *selection = m_grid->selectionModel();
+    for (int row = 0; row < m_grid->model()->rowCount(); ++row) {
+        const QModelIndex index = m_grid->model()->index(row, 0);
+        if (!index.data(HeaderRole).toBool() && !index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+            m_grid->setCurrentIndex(index);
+            if (selection) {
+                selection->select(index, QItemSelectionModel::ClearAndSelect);
+            }
+            return;
+        }
+    }
 }
 
 void LibraryView::showContextMenu(const QPoint &pos)
@@ -2878,6 +2989,13 @@ void LibraryView::keyPressEvent(QKeyEvent *event)
         }
         event->accept();
         return;
+    }
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space) {
+        if (m_grid->hasFocus() || m_grid->viewport()->hasFocus()) {
+            activateCurrentTile();
+            event->accept();
+            return;
+        }
     }
     QWidget::keyPressEvent(event);
 }

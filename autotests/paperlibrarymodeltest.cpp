@@ -104,6 +104,51 @@ static SyntheticRecord mndRecord()
             QStringLiteral("2026-04-01T00:00:00+00:00")};
 }
 
+static SyntheticRecord mndDiagnosisRecord()
+{
+    return {QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"),
+            QStringLiteral("10.9999/synthetic.mnd.diagnosis"),
+            QString(),
+            QStringLiteral("sample2026mnddiagnosis"),
+            QStringLiteral("Awaji ALS Criteria and Electrodiagnosis in Amyotrophic Lateral Sclerosis"),
+            QStringLiteral("Casey Clinician"),
+            QStringLiteral("2026"),
+            QStringLiteral("Journal of Synthetic Neurology"),
+            161616,
+            QStringLiteral("synthetic"),
+            QStringLiteral("2026-04-02T00:00:00+00:00")};
+}
+
+static SyntheticRecord mndHyperexcitabilityRecord()
+{
+    return {QStringLiteral("10-9999-synthetic-mnd-excitability-17"),
+            QStringLiteral("10.9999/synthetic.mnd.excitability"),
+            QString(),
+            QStringLiteral("sample2026mndexcitability"),
+            QStringLiteral("Cortical Hyperexcitability Precedes Lower Motor Neuron Dysfunction in ALS"),
+            QStringLiteral("Morgan Motor"),
+            QStringLiteral("2026"),
+            QStringLiteral("Journal of Synthetic Neurophysiology"),
+            171717,
+            QStringLiteral("synthetic"),
+            QStringLiteral("2026-04-03T00:00:00+00:00")};
+}
+
+static SyntheticRecord mndTreatmentRecord()
+{
+    return {QStringLiteral("10-9999-synthetic-mnd-treatment-18"),
+            QStringLiteral("10.9999/synthetic.mnd.treatment"),
+            QString(),
+            QStringLiteral("sample2026mndtreatment"),
+            QStringLiteral("Riluzole Treatment Trial Design in Amyotrophic Lateral Sclerosis"),
+            QStringLiteral("Taylor Trialist"),
+            QStringLiteral("2026"),
+            QStringLiteral("Journal of Synthetic Trials"),
+            181818,
+            QStringLiteral("synthetic"),
+            QStringLiteral("2026-04-04T00:00:00+00:00")};
+}
+
 static SyntheticRecord psychiatryRecord()
 {
     return {QStringLiteral("10-9999-synthetic-psychiatry-6"),
@@ -605,6 +650,9 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
                                             gadgetRecord(),
                                             textbookRecord(),
                                             mndRecord(),
+                                            mndDiagnosisRecord(),
+                                            mndHyperexcitabilityRecord(),
+                                            mndTreatmentRecord(),
                                             psychiatryRecord(),
                                             clinicalExamTextbookRecord(),
                                             neuroTextbookRecord(),
@@ -633,12 +681,20 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
 
     sections.setSectionMode(PaperLibrarySectionedModel::ReadNext);
     sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
-    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.rowCount(), 4);
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::PdfPathRole).toString(), mndPdfPath);
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("MD project core paper"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to MD project review set"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::PriorityHintRole).toString(), QStringLiteral("MD project review set"));
+    QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Awaji ALS Criteria and Electrodiagnosis in Amyotrophic Lateral Sclerosis"));
+    QCOMPARE(sections.data(sections.index(1), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Diagnosis & Criteria"));
+    QCOMPARE(sections.data(sections.index(1), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Diagnosis / criteria paper"));
+    QCOMPARE(sections.data(sections.index(1), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Use for diagnostic framing"));
+    QCOMPARE(sections.data(sections.index(2), Qt::DisplayRole).toString(), QStringLiteral("Cortical Hyperexcitability Precedes Lower Motor Neuron Dysfunction in ALS"));
+    QCOMPARE(sections.data(sections.index(2), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Neurophysiology / Hyperexcitability"));
+    QCOMPARE(sections.data(sections.index(3), Qt::DisplayRole).toString(), QStringLiteral("Riluzole Treatment Trial Design in Amyotrophic Lateral Sclerosis"));
+    QCOMPARE(sections.data(sections.index(3), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Treatment / trial paper"));
     sections.setCoverForPath(mndPdfPath, QStringLiteral("cover-token"), false);
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::CoverPixmapRole).toString(), QStringLiteral("cover-token"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::GeneratedCoverRole).toBool(), false);
