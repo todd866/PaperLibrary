@@ -144,6 +144,7 @@ private Q_SLOTS:
     void testWorkShelfGeneratedCardsAreVisible();
     void testBooksShelfStaysWithLocalEbooks();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
+    void testCorpusActivationStoresCuratedMetadata();
 
 private:
     std::unique_ptr<QTemporaryDir> m_dir;
@@ -368,6 +369,37 @@ void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()
     QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
     QCOMPARE(activatedSpy.count(), 1);
     QCOMPARE(activatedSpy.takeFirst().at(0).toUrl(), url);
+}
+
+void LibraryViewTest::testCorpusActivationStoresCuratedMetadata()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    QSignalSpy activatedSpy(&view, &LibraryView::itemActivated);
+    const QModelIndex index = grid->model()->index(0, 0);
+    QVERIFY(index.isValid());
+    grid->setCurrentIndex(index);
+    QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
+    QCOMPARE(activatedSpy.count(), 1);
+
+    const QUrl url = activatedSpy.takeFirst().at(0).toUrl();
+    const LibraryStore::Entry metadata = store.metadata(url);
+    QCOMPARE(metadata.title, QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    QVERIFY(metadata.tags.contains(QStringLiteral("Current")));
+    QVERIFY(metadata.description.contains(QStringLiteral("Casey Clinician")));
+    QVERIFY(metadata.description.contains(QStringLiteral("Core project paper")));
 }
 
 QTEST_MAIN(LibraryViewTest)

@@ -203,6 +203,7 @@ private:
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
     int requestCorpusCoversForSections(PaperLibrarySectionedModel *sections, int startRow, int maxRequests);
+    void prebuildCorpusShelves();
     void scheduleCorpusPrewarm();
     void prewarmNextCorpusShelf();
     /** Load the corpus catalog on first entry; pick up mtime changes later. */

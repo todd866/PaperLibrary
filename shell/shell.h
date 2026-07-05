@@ -153,6 +153,8 @@ private:
     bool shouldUsePdfView(const QUrl &url) const;
     bool openPdfViewInTab(int tab, const QUrl &url);
     void connectPdfView(PdfView *reader);
+    QString curatedTitleForUrl(const QUrl &url) const;
+    QString tabTitleForUrl(const QUrl &url) const;
     void removePdfSideContainer(PdfView *reader);
     void hideXmlGuiToolbars();
     void applyChromeSeparatorStyle();

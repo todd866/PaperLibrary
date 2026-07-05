@@ -532,12 +532,27 @@ bool Shell::shouldUsePdfView(const QUrl &url) const
     return group.readEntry(QT_PDF_READER_KEY, true) && PdfView::canOpen(url);
 }
 
+QString Shell::curatedTitleForUrl(const QUrl &url) const
+{
+    if (!m_libraryStore) {
+        return QString();
+    }
+    return m_libraryStore->metadata(url).title.trimmed();
+}
+
+QString Shell::tabTitleForUrl(const QUrl &url) const
+{
+    const QString title = curatedTitleForUrl(url);
+    return title.isEmpty() ? url.fileName() : title;
+}
+
 void Shell::connectEpubWebReader(EpubWebReader *reader)
 {
     connect(reader, &EpubWebReader::titleChanged, this, [this, reader](const QString &title) {
         const int tab = findTabIndex(reader);
         if (tab >= 0 && !title.isEmpty()) {
-            m_tabWidget->setTabText(tab, title);
+            const QString curatedTitle = curatedTitleForUrl(reader->url());
+            m_tabWidget->setTabText(tab, curatedTitle.isEmpty() ? title : curatedTitle);
         }
     });
     connect(reader, &EpubWebReader::renderProcessTerminated, this, [](const QString &message) {
@@ -580,7 +595,8 @@ void Shell::connectPdfView(PdfView *reader)
     connect(reader, &PdfView::titleChanged, this, [this, reader](const QString &title) {
         const int tab = findTabIndex(reader);
         if (tab >= 0 && !title.isEmpty()) {
-            m_tabWidget->setTabText(tab, title);
+            const QString curatedTitle = curatedTitleForUrl(reader->url());
+            m_tabWidget->setTabText(tab, curatedTitle.isEmpty() ? title : curatedTitle);
         }
     });
     connect(reader, &PdfView::errorOccurred, this, [](const QString &message) {
@@ -621,7 +637,7 @@ bool Shell::openEpubWebReaderInTab(int tab, const QUrl &url)
     applyTitlebarSafeAreaOptOut(reader);
 
     m_tabs[tab] = TabState(reader);
-    replaceTabPage(tab, reader, url.fileName(), url.fileName());
+    replaceTabPage(tab, reader, tabTitleForUrl(url), url.fileName());
     const QMimeType epubMime = QMimeDatabase().mimeTypeForName(QStringLiteral("application/epub+zip"));
     m_tabWidget->setTabIcon(tab, QIcon::fromTheme(epubMime.iconName()));
     return true;
@@ -642,7 +658,7 @@ bool Shell::openPdfViewInTab(int tab, const QUrl &url)
     applyTitlebarSafeAreaOptOut(reader);
 
     m_tabs[tab] = TabState(reader);
-    replaceTabPage(tab, reader, url.fileName(), url.fileName());
+    replaceTabPage(tab, reader, tabTitleForUrl(url), url.fileName());
     const QMimeType pdfMime = QMimeDatabase().mimeTypeForName(QStringLiteral("application/pdf"));
     m_tabWidget->setTabIcon(tab, QIcon::fromTheme(pdfMime.iconName()));
     return true;
@@ -2207,7 +2223,7 @@ void Shell::openNewTab(const QUrl &url, const QString &serializedOptions)
         if (reader->open(url)) {
             applyTitlebarSafeAreaOptOut(reader);
             m_tabs.append(TabState(reader));
-            m_tabWidget->addTab(reader, url.fileName());
+            m_tabWidget->addTab(reader, tabTitleForUrl(url));
             m_tabWidget->setTabToolTip(newIndex, url.fileName());
             const QMimeType epubMime = QMimeDatabase().mimeTypeForName(QStringLiteral("application/epub+zip"));
             m_tabWidget->setTabIcon(newIndex, QIcon::fromTheme(epubMime.iconName()));
@@ -2226,7 +2242,7 @@ void Shell::openNewTab(const QUrl &url, const QString &serializedOptions)
         if (reader->open(url)) {
             applyTitlebarSafeAreaOptOut(reader);
             m_tabs.append(TabState(reader));
-            m_tabWidget->addTab(reader, url.fileName());
+            m_tabWidget->addTab(reader, tabTitleForUrl(url));
             m_tabWidget->setTabToolTip(newIndex, url.fileName());
             const QMimeType pdfMime = QMimeDatabase().mimeTypeForName(QStringLiteral("application/pdf"));
             m_tabWidget->setTabIcon(newIndex, QIcon::fromTheme(pdfMime.iconName()));

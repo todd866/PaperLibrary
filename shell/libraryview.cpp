@@ -2696,6 +2696,7 @@ void LibraryView::setupPapersShelf()
         });
     }
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
+        prebuildCorpusShelves();
         showShelfGuide();
         requestCorpusCovers();
         scheduleCorpusPrewarm();
@@ -2961,6 +2962,22 @@ int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sect
     return row;
 }
 
+void LibraryView::prebuildCorpusShelves()
+{
+    if (!m_paperModel || !m_paperModel->isLoaded()) {
+        return;
+    }
+
+    for (const Shelf shelf : std::as_const(m_visibleShelves)) {
+        PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
+        if (!sections) {
+            continue;
+        }
+        attachCorpusShelf(shelf);
+        sections->rowCount(); // setSourceModel() already rebuilt rows; keep this path hot before first click.
+    }
+}
+
 void LibraryView::scheduleCorpusPrewarm()
 {
     if (!m_paperModel || !m_paperModel->isLoaded()) {
@@ -3107,7 +3124,25 @@ void LibraryView::tileClicked(const QModelIndex &index)
             showPaperNotice(i18nc("@info after activating a corpus tile with no PDF on disk", "PDF not local — restore in PaperLibrary"));
             return;
         }
-        activate(QUrl::fromLocalFile(pdfPath), -1.0);
+        const QUrl url = QUrl::fromLocalFile(pdfPath);
+        const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+        const QString detail = index.data(PaperLibraryModel::DetailRole).toString().trimmed();
+        const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
+        const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString().trimmed();
+        const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString().trimmed();
+        QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+        tags.removeAll(QString());
+        if (!title.isEmpty()) {
+            m_store->setTitle(url, title);
+        }
+        if (!tags.isEmpty()) {
+            m_store->setTags(url, tags);
+        }
+        const QString description = joinCompact({detail, priority, intent, relation});
+        if (!description.isEmpty()) {
+            m_store->setDescription(url, description);
+        }
+        activate(url, -1.0);
         return;
     }
     activate(index.data(UrlRole).toUrl(), index.data(ProgressRole).toDouble());
