@@ -183,6 +183,8 @@ private:
     void shelfChanged(int index);
     bool usesCorpusList(Shelf shelf) const;
     void configureCorpusShelf(Shelf shelf);
+    void setPaperSectionMode(Shelf shelf, int mode);
+    int paperSectionMode(Shelf shelf) const;
     void syncPaperSectionButton();
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
@@ -222,6 +224,7 @@ private:
     QToolButton *m_paperSectionButton = nullptr;
     QAction *m_paperSectionActions[7] = {};
     ViewMode m_viewModes[DocumentShelfCount] = {FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode};
+    int m_paperSectionModes[DocumentShelfCount + 1] = {};
     QLineEdit *m_searchField;
     QTimer *m_searchDebounce;
     QProcess *m_contentSearch = nullptr;

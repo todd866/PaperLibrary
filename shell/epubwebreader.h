@@ -9,6 +9,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -20,6 +21,10 @@
 class KZip;
 class QCloseEvent;
 class QHideEvent;
+class QLabel;
+class QModelIndex;
+class QStandardItemModel;
+class QTreeView;
 class QWebEnginePage;
 class QWebEngineProfile;
 class QWebEngineUrlRequestInterceptor;
@@ -28,6 +33,13 @@ class QWebEngineView;
 
 namespace EpubWebReaderCore
 {
+struct EpubNavigationEntry {
+    QString title;
+    QString fragment;
+    int spineIndex = -1;
+    int level = 1;
+};
+
 struct EpubInspection {
     bool isEpub = false;
     bool drmProtected = false;
@@ -35,6 +47,7 @@ struct EpubInspection {
     QString packagePath;
     QString opfDir;
     QStringList spine;
+    QList<EpubNavigationEntry> navigation;
     QHash<QString, QString> manifestMediaTypesByPath;
     QHash<QString, QString> manifestPathsByHref;
     QString title;
@@ -97,13 +110,18 @@ public:
     static void registerUrlScheme();
     static void configureBuildTreeRuntime();
     static bool canOpen(const QUrl &url);
+    static bool readerMotionEnabled();
+    static void setReaderMotionEnabled(bool enabled);
     static ScrollMode globalScrollMode();
     static void setGlobalScrollMode(ScrollMode mode);
 
     bool open(const QUrl &url);
     QUrl url() const;
+    QWidget *outlineWidget() const;
+    bool hasOutline() const;
     ScrollMode scrollMode() const;
     bool hasBookScrollModeOverride() const;
+    void applyReaderMotionSetting();
     void reload();
     void jumpToApproximateProgress(double progress);
     void saveReadingPosition();
@@ -118,6 +136,7 @@ Q_SIGNALS:
     void titleChanged(const QString &title);
     void loadFinished(bool ok);
     void renderProcessTerminated(const QString &message);
+    void outlineAvailableChanged(bool available);
     void scrollModeChanged(EpubWebReader::ScrollMode mode, bool hasBookOverride);
 
 protected:
@@ -125,11 +144,14 @@ protected:
     void hideEvent(QHideEvent *event) override;
 
 private:
-    bool loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd = false);
+    bool loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd = false, const QString &fragment = QString());
     void installReaderScripts();
     void applyPendingScrollOffset();
     void applyScrollMode();
     void saveScrollOffset(double scrollOffset);
+    void rebuildOutlineModel();
+    void selectCurrentNavigationEntry();
+    void jumpToNavigationEntry(const QModelIndex &index);
     QUrl urlForSpineItem(int spineIndex) const;
 
     QUrl m_url;
@@ -137,6 +159,7 @@ private:
     QString m_bookId;
     QString m_bookTitle;
     QStringList m_spine;
+    QList<EpubWebReaderCore::EpubNavigationEntry> m_navigationEntries;
     int m_spineIndex = 0;
     double m_pendingScrollOffset = 0.0;
     bool m_havePendingScrollOffset = false;
@@ -148,6 +171,10 @@ private:
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
     QWebEngineView *m_view = nullptr;
+    QWidget *m_outlineWidget = nullptr;
+    QLabel *m_outlineTitle = nullptr;
+    QTreeView *m_outlineView = nullptr;
+    QStandardItemModel *m_outlineModel = nullptr;
     QWebEngineUrlSchemeHandler *m_schemeHandler = nullptr;
     QWebEngineUrlRequestInterceptor *m_requestInterceptor = nullptr;
 };

@@ -390,6 +390,97 @@ static LibraryView::ViewMode viewModeFromName(const QString &name)
     return LibraryView::FrequentMode;
 }
 
+static const char *paperSectionModeConfigKey(LibraryView::Shelf shelf)
+{
+    switch (shelf) {
+    case LibraryView::BooksShelf:
+        return "PaperSectionModeBooks";
+    case LibraryView::TextbooksShelf:
+        return "PaperSectionModeTextbooks";
+    case LibraryView::MedicineShelf:
+        return "PaperSectionModeMedicine";
+    case LibraryView::MndShelf:
+        return "PaperSectionModeMnd";
+    case LibraryView::WorkShelf:
+        return "PaperSectionModeWork";
+    case LibraryView::FictionShelf:
+        return "PaperSectionModeFiction";
+    case LibraryView::NonfictionShelf:
+        return "PaperSectionModeNonfiction";
+    case LibraryView::PapersShelf:
+        return "PaperSectionModePapers";
+    case LibraryView::PdfShelf:
+        break;
+    }
+    return "PaperSectionModePapers";
+}
+
+static int defaultPaperSectionModeForShelf(LibraryView::Shelf shelf)
+{
+    switch (shelf) {
+    case LibraryView::BooksShelf:
+    case LibraryView::TextbooksShelf:
+    case LibraryView::NonfictionShelf:
+        return PaperLibrarySectionedModel::ByTopic;
+    case LibraryView::WorkShelf:
+        return PaperLibrarySectionedModel::ByProject;
+    case LibraryView::MedicineShelf:
+    case LibraryView::MndShelf:
+    case LibraryView::FictionShelf:
+    case LibraryView::PapersShelf:
+    case LibraryView::PdfShelf:
+        break;
+    }
+    return PaperLibrarySectionedModel::ReadNext;
+}
+
+static QString paperSectionModeName(int mode)
+{
+    switch (mode) {
+    case PaperLibrarySectionedModel::ByTopic:
+        return QStringLiteral("Topic");
+    case PaperLibrarySectionedModel::ByProject:
+        return QStringLiteral("Project");
+    case PaperLibrarySectionedModel::ByType:
+        return QStringLiteral("Type");
+    case PaperLibrarySectionedModel::BySource:
+        return QStringLiteral("Source");
+    case PaperLibrarySectionedModel::ByYear:
+        return QStringLiteral("Year");
+    case PaperLibrarySectionedModel::ByJournal:
+        return QStringLiteral("Journal");
+    case PaperLibrarySectionedModel::ReadNext:
+        break;
+    }
+    return QStringLiteral("Focus");
+}
+
+static int paperSectionModeFromName(const QString &name, int fallback)
+{
+    if (name == QLatin1String("Topic")) {
+        return PaperLibrarySectionedModel::ByTopic;
+    }
+    if (name == QLatin1String("Project")) {
+        return PaperLibrarySectionedModel::ByProject;
+    }
+    if (name == QLatin1String("Type")) {
+        return PaperLibrarySectionedModel::ByType;
+    }
+    if (name == QLatin1String("Source")) {
+        return PaperLibrarySectionedModel::BySource;
+    }
+    if (name == QLatin1String("Year")) {
+        return PaperLibrarySectionedModel::ByYear;
+    }
+    if (name == QLatin1String("Journal")) {
+        return PaperLibrarySectionedModel::ByJournal;
+    }
+    if (name == QLatin1String("Focus")) {
+        return PaperLibrarySectionedModel::ReadNext;
+    }
+    return fallback;
+}
+
 static QString compactPublicationTypeKey(QString label)
 {
     label = label.trimmed().toCaseFolded();
@@ -492,10 +583,12 @@ static CoverGenerator::CoverSpec corpusCoverSpecForIndex(const QModelIndex &inde
 {
     CoverGenerator::CoverSpec spec;
     spec.title = index.data(Qt::DisplayRole).toString();
-    spec.authors = index.data(PaperLibraryModel::AuthorsRole).toString();
-    spec.yearJournal = joinCompact({index.data(PaperLibraryModel::YearRole).toString(), index.data(PaperLibraryModel::JournalRole).toString()});
+    const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+    const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
+    spec.authors = intent.isEmpty() ? index.data(PaperLibraryModel::AuthorsRole).toString() : intent;
+    spec.yearJournal = relation.isEmpty() ? joinCompact({index.data(PaperLibraryModel::YearRole).toString(), index.data(PaperLibraryModel::JournalRole).toString()}) : relation;
     const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
-    spec.tag = tags.value(0, index.data(PaperLibrarySectionedModel::ThumbnailSeedRole).toString());
+    spec.tag = tags.value(0, intent.isEmpty() ? index.data(PaperLibrarySectionedModel::ThumbnailSeedRole).toString() : intent);
     return spec;
 }
 
@@ -857,6 +950,9 @@ private:
         const QString seed = index.data(PaperLibrarySectionedModel::ThumbnailSeedRole).toString();
         const QString title = index.data(Qt::DisplayRole).toString();
         const QString detail = index.data(PaperLibraryModel::DetailRole).toString();
+        const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+        const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
+        const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
         const bool missing = index.data(PaperLibraryModel::MissingRole).toBool();
 
@@ -884,7 +980,7 @@ private:
         muted.setAlphaF(0.50);
         painter->setFont(kindFont);
         painter->setPen(muted);
-        const QString topLabel = focus.isEmpty() || focus == kind ? kind : focus;
+        const QString topLabel = !focus.isEmpty() && focus != kind ? focus : kind;
         painter->drawText(coverRect.adjusted(10, 10, -10, -10), Qt::AlignLeft | Qt::AlignTop, QFontMetrics(kindFont).elidedText(topLabel, Qt::ElideRight, coverRect.width() - 20));
 
         QFont titleFont = option.font;
@@ -906,23 +1002,31 @@ private:
         painter->setFont(metaFont);
         painter->setPen(metaColor);
         const int metaTop = qMax(y + 4, coverRect.bottom() - 54);
-        QString meta = detail;
-        if (missing) {
-            const QString missingLabel = i18nc("@info on a corpus tile whose PDF is not local", "PDF not local");
-            meta = meta.isEmpty() ? missingLabel : meta + QStringLiteral(" · ") + missingLabel;
+        QString meta = intent;
+        if (!priority.isEmpty() && priority != intent && priority != detail) {
+            meta = joinCompact({priority, meta});
+        }
+        if (meta.isEmpty()) {
+            meta = detail;
+        }
+        if (missing && !meta.contains(QStringLiteral("PDF not local"))) {
+            meta = joinCompact({meta, i18nc("@info on a corpus tile whose PDF is not local", "PDF not local")});
         }
         if (!meta.isEmpty()) {
             painter->drawText(QRect(coverRect.left() + 10, metaTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 20));
         }
 
-        if (!tags.isEmpty()) {
+        QString tagRow = relation;
+        if (tagRow.isEmpty() && !tags.isEmpty()) {
+            tagRow = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
+        }
+        if (!tagRow.isEmpty()) {
             QColor tagColor = palette.color(QPalette::Text);
             tagColor.setAlphaF(0.58);
             QFont tagFont = smallerFont(option.font);
             tagFont.setBold(true);
             painter->setFont(tagFont);
             painter->setPen(tagColor);
-            const QString tagRow = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
             painter->drawText(coverRect.adjusted(10, 0, -10, -8), Qt::AlignLeft | Qt::AlignBottom, QFontMetrics(tagFont).elidedText(tagRow, Qt::ElideRight, coverRect.width() - 20));
         }
     }
@@ -978,6 +1082,10 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
         m_viewModes[shelf] = viewModeFromName(partGeneralConfig().readEntry(viewModeConfigKey(static_cast<Shelf>(shelf)), QString()));
     }
+    for (int shelf = PdfShelf; shelf <= PapersShelf; ++shelf) {
+        const Shelf typedShelf = static_cast<Shelf>(shelf);
+        m_paperSectionModes[shelf] = paperSectionModeFromName(partGeneralConfig().readEntry(paperSectionModeConfigKey(typedShelf), QString()), defaultPaperSectionModeForShelf(typedShelf));
+    }
 
     // A quiet menu button next to the shelf switch chooses the arrangement
     m_viewModeButton = new QToolButton(this);
@@ -1019,10 +1127,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
         action->setCheckable(true);
         action->setActionGroup(paperSectionGroup);
         connect(action, &QAction::triggered, this, [this, mode]() {
-            if (m_paperSections) {
-                m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(mode));
-                syncPaperSectionButton();
-            }
+            setPaperSectionMode(activeShelf(), mode);
         });
         m_paperSectionActions[mode] = action;
     }
@@ -1530,6 +1635,19 @@ bool LibraryView::isMndEntry(const ShelfEntry &entry)
 bool LibraryView::isPsychiatryEntry(const ShelfEntry &entry)
 {
     const QString haystack = smartShelfHaystack(entry);
+    if (containsAnyNeedle(haystack,
+                          {QStringLiteral("great depression"),
+                           QStringLiteral("robert caro"),
+                           QStringLiteral("robert a. caro"),
+                           QStringLiteral("path to power"),
+                           QStringLiteral("means of ascent"),
+                           QStringLiteral("master of the senate"),
+                           QStringLiteral("passage of power"),
+                           QStringLiteral("years of lyndon johnson"),
+                           QStringLiteral("lyndon b. johnson"),
+                           QStringLiteral("presidential biography")})) {
+        return false;
+    }
     return containsAnyNeedle(haystack,
                              {QStringLiteral("psychiat"),
                               QStringLiteral("mental health"),
@@ -1571,7 +1689,17 @@ bool LibraryView::isPoliticsEntry(const ShelfEntry &entry)
                               QStringLiteral("congress"),
                               QStringLiteral("democracy"),
                               QStringLiteral("government"),
-                              QStringLiteral("public policy")});
+                              QStringLiteral("public policy"),
+                              QStringLiteral("presidential biography"),
+                              QStringLiteral("robert caro"),
+                              QStringLiteral("robert a. caro"),
+                              QStringLiteral("lyndon johnson"),
+                              QStringLiteral("lyndon b. johnson"),
+                              QStringLiteral("years of lyndon johnson"),
+                              QStringLiteral("path to power"),
+                              QStringLiteral("means of ascent"),
+                              QStringLiteral("master of the senate"),
+                              QStringLiteral("passage of power")});
 }
 
 bool LibraryView::isWorkEntry(const ShelfEntry &entry)
@@ -1613,9 +1741,15 @@ bool LibraryView::isNonfictionEntry(const ShelfEntry &entry)
     return isAnthropologyEntry(entry) || isPoliticsEntry(entry)
         || containsAnyNeedle(haystack,
                              {QStringLiteral("robert caro"),
+                              QStringLiteral("robert a. caro"),
                               QStringLiteral("lyndon johnson"),
                               QStringLiteral("lyndon b. johnson"),
                               QStringLiteral("lbj"),
+                              QStringLiteral("years of lyndon johnson"),
+                              QStringLiteral("path to power"),
+                              QStringLiteral("means of ascent"),
+                              QStringLiteral("master of the senate"),
+                              QStringLiteral("passage of power"),
                               QStringLiteral("nonfiction"),
                               QStringLiteral("non-fiction"),
                               QStringLiteral("biography"),
@@ -1747,6 +1881,16 @@ void LibraryView::enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata 
         focus = QStringLiteral("Medicine");
     }
     if (!focus.isEmpty()) {
+        if (focus == QLatin1String("Politics") || focus == QLatin1String("Anthropology") || focus == QLatin1String("Fiction") || focus == QLatin1String("Non-fiction")) {
+            QStringList filteredTags;
+            for (const QString &tag : std::as_const(tags)) {
+                const QString key = compactPublicationTypeKey(tag);
+                if (key != QLatin1String("psychiatry") && key != QLatin1String("medicine")) {
+                    filteredTags.append(tag);
+                }
+            }
+            tags = filteredTags;
+        }
         prependUnique(focus);
     }
 
@@ -2078,9 +2222,17 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         if (!corpusCover.isNull() && !generatedCardShowing) {
             return {index.data(Qt::DisplayRole).toString(), false};
         }
-        const QString detail = index.data(PaperLibraryModel::DetailRole).toString();
-        if (!detail.isEmpty()) {
-            return {detail, true};
+        const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
+        if (!relation.isEmpty()) {
+            return {relation, true};
+        }
+        const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+        if (!intent.isEmpty()) {
+            return {intent, true};
+        }
+        const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
+        if (!priority.isEmpty()) {
+            return {priority, true};
         }
         return {QStringList(index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList().mid(0, 2)).join(QStringLiteral(" · ")), true};
     }
@@ -2202,7 +2354,35 @@ void LibraryView::configureCorpusShelf(Shelf shelf)
         m_paperSections->setSmartFilter(PaperLibrarySectionedModel::Papers);
         break;
     }
+    m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
     syncPaperSectionButton();
+}
+
+void LibraryView::setPaperSectionMode(Shelf shelf, int mode)
+{
+    if (shelf < PdfShelf || shelf > PapersShelf || mode < PaperLibrarySectionedModel::ReadNext || mode > PaperLibrarySectionedModel::ByJournal) {
+        return;
+    }
+    m_paperSectionModes[shelf] = mode;
+    KConfigGroup config = partGeneralConfig();
+    config.writeEntry(paperSectionModeConfigKey(shelf), paperSectionModeName(mode));
+    config.sync();
+    if (m_paperSections && usesCorpusList(shelf) && activeShelf() == shelf) {
+        m_paperSections->setSectionMode(static_cast<PaperLibrarySectionedModel::SectionMode>(mode));
+    }
+    syncPaperSectionButton();
+}
+
+int LibraryView::paperSectionMode(Shelf shelf) const
+{
+    if (shelf < PdfShelf || shelf > PapersShelf) {
+        return PaperLibrarySectionedModel::ReadNext;
+    }
+    const int mode = m_paperSectionModes[shelf];
+    if (mode < PaperLibrarySectionedModel::ReadNext || mode > PaperLibrarySectionedModel::ByJournal) {
+        return defaultPaperSectionModeForShelf(shelf);
+    }
+    return mode;
 }
 
 void LibraryView::syncPaperSectionButton()
@@ -2210,15 +2390,10 @@ void LibraryView::syncPaperSectionButton()
     if (!m_paperSections || !m_paperSectionButton) {
         return;
     }
-    for (QAction *action : m_paperSectionActions) {
-        if (action && action->isChecked()) {
-            m_paperSectionButton->setText(action->text());
-            return;
-        }
-    }
-    if (m_paperSectionActions[PaperLibrarySectionedModel::ReadNext]) {
-        m_paperSectionActions[PaperLibrarySectionedModel::ReadNext]->setChecked(true);
-        m_paperSectionButton->setText(m_paperSectionActions[PaperLibrarySectionedModel::ReadNext]->text());
+    const int mode = paperSectionMode(activeShelf());
+    if (mode >= PaperLibrarySectionedModel::ReadNext && mode <= PaperLibrarySectionedModel::ByJournal && m_paperSectionActions[mode]) {
+        m_paperSectionActions[mode]->setChecked(true);
+        m_paperSectionButton->setText(m_paperSectionActions[mode]->text());
     }
 }
 
@@ -2387,11 +2562,20 @@ void LibraryView::showContextMenu(const QPoint &pos)
     }
     if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
         const QString relatedQuery = index.data(PaperLibrarySectionedModel::RelatedQueryRole).toString();
+        const QString relationHint = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
         const QString pdfPath = m_paperSections ? m_paperSections->resolvePath(index) : QString();
         const bool downranked = index.data(PaperLibrarySectionedModel::DownrankedRole).toBool();
 
         QMenu menu(this);
-        QAction *relatedAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Find Related"));
+        QString relatedLabel = relationHint;
+        if (relatedLabel.startsWith(QStringLiteral("Related: "))) {
+            relatedLabel.remove(0, 9);
+        }
+        if (relatedLabel.isEmpty()) {
+            relatedLabel = relatedQuery;
+        }
+        QAction *relatedAction = menu.addAction(relatedQuery.isEmpty() ? i18nc("@action:inmenu on a corpus tile", "Find Related")
+                                                                       : i18nc("@action:inmenu on a corpus tile", "Find Related: %1", relatedLabel));
         relatedAction->setEnabled(!relatedQuery.isEmpty());
         QAction *downrankAction = menu.addAction(downranked ? i18nc("@action:inmenu on a corpus tile", "Undo Thumbs Down") : i18nc("@action:inmenu on a corpus tile", "Thumbs Down"));
         QAction *clearSearchAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Clear Search"));

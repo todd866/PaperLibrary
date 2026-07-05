@@ -54,6 +54,7 @@
 #include <QObject>
 #include <QPainter>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QProxyStyle>
 #include <QScreen>
 #include <QStackedWidget>
@@ -72,6 +73,7 @@
 #include "chrometabwidget.h"
 #include "chrometoolbar.h"
 #include <QWindow>
+#include <QEasingCurve>
 #if defined(Q_OS_MACOS)
 #include "macostitlebar.h"
 #endif
@@ -97,6 +99,7 @@ static constexpr char SIDEBAR_VISIBLE_KEY[] = "ShowSidebar";
 static constexpr char QT_PDF_READER_KEY[] = "UseQtPdfReaderForPdf";
 static constexpr char APPLE_BOOKS_SCAN_KEY[] = "ScanAppleBooksOnStartup";
 static constexpr char LIBRARY_AUTO_TAG_KEY[] = "LibraryAutoTag";
+static constexpr char READER_MOTION_KEY[] = "ReaderMotion";
 
 namespace
 {
@@ -231,6 +234,18 @@ public:
         // somehow calculates a (0,-1) minimum size, and then Qt gets angry
         // that negative sizes is not possible.
         setMinimumSize(10, 10);
+        m_widthAnimation = new QPropertyAnimation(this, "maximumWidth", this);
+        m_widthAnimation->setDuration(180);
+        m_widthAnimation->setEasingCurve(QEasingCurve::OutCubic);
+        connect(m_widthAnimation, &QPropertyAnimation::finished, this, [this]() {
+            const bool hide = m_hideAfterAnimation;
+            m_hideAfterAnimation = false;
+            if (hide) {
+                QDockWidget::setVisible(false);
+            }
+            setMinimumSize(10, 10);
+            setMaximumWidth(QWIDGETSIZE_MAX);
+        });
     }
 
     bool isLocked() const
@@ -263,6 +278,52 @@ public:
         m_stackedWidget->setCurrentWidget(widget);
     }
 
+    void setAnimatedVisible(bool visible, bool animated)
+    {
+        if (!animated || isFloating()) {
+            if (m_widthAnimation) {
+                m_widthAnimation->stop();
+            }
+            m_hideAfterAnimation = false;
+            setMinimumSize(10, 10);
+            setMaximumWidth(QWIDGETSIZE_MAX);
+            QDockWidget::setVisible(visible);
+            return;
+        }
+
+        if (m_widthAnimation) {
+            m_widthAnimation->stop();
+        }
+        const int targetWidth = qBound(220, qMax(width(), m_lastDockWidth), 360);
+        if (visible) {
+            m_hideAfterAnimation = false;
+            m_lastDockWidth = targetWidth;
+            setMinimumWidth(1);
+            setMaximumWidth(1);
+            QDockWidget::setVisible(true);
+            if (m_widthAnimation) {
+                m_widthAnimation->setStartValue(1);
+                m_widthAnimation->setEndValue(targetWidth);
+                m_widthAnimation->start();
+            }
+            return;
+        }
+
+        if (!isVisible()) {
+            return;
+        }
+        m_lastDockWidth = qMax(width(), m_lastDockWidth);
+        m_hideAfterAnimation = true;
+        setMinimumWidth(1);
+        if (m_widthAnimation) {
+            m_widthAnimation->setStartValue(qMax(1, width()));
+            m_widthAnimation->setEndValue(1);
+            m_widthAnimation->start();
+        } else {
+            QDockWidget::setVisible(false);
+        }
+    }
+
     /**
      * Reserve @p height at the top of the dock so its content clears the
      * macOS traffic lights when the strip lives in the titlebar (the left
@@ -271,7 +332,8 @@ public:
      */
     void setTitlebarClearance(int height)
     {
-        m_dumbTitleWidget->setFixedHeight(qMax(0, height));
+        m_dumbTitleWidget->setFixedHeight(0);
+        m_stackedWidget->setContentsMargins(0, qMax(0, height), 0, 0);
     }
 
 private:
@@ -287,6 +349,9 @@ private:
 
     QStackedWidget *m_stackedWidget = nullptr;
     QWidget *m_dumbTitleWidget = nullptr;
+    QPropertyAnimation *m_widthAnimation = nullptr;
+    int m_lastDockWidth = 260;
+    bool m_hideAfterAnimation = false;
 };
 
 Shell::Shell(const QString &serializedOptions)
@@ -488,6 +553,20 @@ void Shell::connectEpubWebReader(EpubWebReader *reader)
             syncEpubScrollModeActions();
         }
     });
+    connect(reader, &EpubWebReader::outlineAvailableChanged, this, [this, reader](bool available) {
+        const int tab = findTabIndex(reader);
+        if (tab < 0 || tab != m_tabWidget->currentIndex()) {
+            return;
+        }
+        if (m_pdfShowSidebarAction) {
+            m_pdfShowSidebarAction->setEnabled(available);
+        }
+        if (!available) {
+            m_sidebar->setAnimatedVisible(false, PdfView::readerMotionEnabled());
+        } else if (m_sidebarVisibleOnDocTabs) {
+            m_sidebar->setAnimatedVisible(true, PdfView::readerMotionEnabled());
+        }
+    });
 }
 
 void Shell::connectPdfView(PdfView *reader)
@@ -514,9 +593,9 @@ void Shell::connectPdfView(PdfView *reader)
             m_pdfShowSidebarAction->setEnabled(available);
         }
         if (!available) {
-            m_sidebar->hide();
+            m_sidebar->setAnimatedVisible(false, PdfView::readerMotionEnabled());
         } else if (m_sidebarVisibleOnDocTabs) {
-            m_sidebar->show();
+            m_sidebar->setAnimatedVisible(true, PdfView::readerMotionEnabled());
         }
     });
 }
@@ -564,6 +643,14 @@ bool Shell::openPdfViewInTab(int tab, const QUrl &url)
 }
 
 void Shell::removePdfSideContainer(PdfView *reader)
+{
+    if (!reader || !reader->outlineWidget()) {
+        return;
+    }
+    m_sidebar->removeWidget(reader->outlineWidget());
+}
+
+void Shell::removeEpubSideContainer(EpubWebReader *reader)
 {
     if (!reader || !reader->outlineWidget()) {
         return;
@@ -1013,6 +1100,9 @@ void Shell::readSettings()
         m_showSidebarAction->setChecked(m_sidebarVisibleOnDocTabs);
     }
     m_lockSidebarAction->setChecked(m_sidebar->isLocked());
+    if (m_readerMotionAction) {
+        m_readerMotionAction->setChecked(sidebarGroup.readEntry(READER_MOTION_KEY, true));
+    }
 }
 
 void Shell::writeSettings()
@@ -1277,6 +1367,23 @@ void Shell::setupActions()
         for (const TabState &state : m_tabs) {
             if (state.libraryView) {
                 state.libraryView->refresh();
+            }
+        }
+    });
+
+    m_readerMotionAction = actionCollection()->addAction(QStringLiteral("reader-motion"));
+    m_readerMotionAction->setText(i18n("Reader Motion"));
+    m_readerMotionAction->setCheckable(true);
+    {
+        const KConfigGroup group = KSharedConfig::openConfig()->group(GeneralGroupKey());
+        m_readerMotionAction->setChecked(group.readEntry(READER_MOTION_KEY, true));
+    }
+    connect(m_readerMotionAction, &QAction::triggered, this, [this](bool checked) {
+        PdfView::setReaderMotionEnabled(checked);
+        EpubWebReader::setReaderMotionEnabled(checked);
+        for (TabState &state : m_tabs) {
+            if (state.epubReader) {
+                state.epubReader->applyReaderMotionSetting();
             }
         }
     });
@@ -1853,10 +1960,11 @@ void Shell::setActiveTab(int tab)
         return;
     }
 
-    if (m_showSidebarAction) {
-        m_showSidebarAction->disconnect(m_sidebar);
-        m_showSidebarAction = nullptr;
+    if (m_showSidebarConnection) {
+        disconnect(m_showSidebarConnection);
+        m_showSidebarConnection = {};
     }
+    m_showSidebarAction = nullptr;
 
     m_tabWidget->setCurrentIndex(tab);
     setEpubFontActionsEnabled(m_tabs[tab].epubReader != nullptr);
@@ -1879,10 +1987,32 @@ void Shell::setActiveTab(int tab)
     }
 
     if (m_tabs[tab].epubReader) {
+        EpubWebReader *const reader = m_tabs[tab].epubReader;
         hideXmlGuiToolbars();
-        m_tabWidget->toolbar()->clearDocument();
-        m_sidebar->hide();
-        setCaption(m_tabs[tab].epubReader->url().fileName());
+
+        QWidget *const outlineWidget = reader->outlineWidget();
+        if (outlineWidget && m_sidebar->indexOf(outlineWidget) == -1) {
+            m_sidebar->addWidget(outlineWidget);
+        }
+        if (outlineWidget) {
+            m_sidebar->setCurrentWidget(outlineWidget);
+        }
+
+        const bool outlineAvailable = reader->hasOutline();
+        m_showSidebarAction = m_pdfShowSidebarAction;
+        if (m_showSidebarAction) {
+            m_showSidebarAction->setEnabled(outlineAvailable);
+            m_showSidebarAction->setChecked(outlineAvailable && m_sidebarVisibleOnDocTabs);
+            m_showSidebarConnection = connect(m_showSidebarAction, &QAction::triggered, this, [this](bool visible) {
+                if (m_sidebar) {
+                    m_sidebar->setAnimatedVisible(visible, PdfView::readerMotionEnabled());
+                }
+            });
+        }
+
+        m_tabWidget->toolbar()->setNavigationAction(m_pdfShowSidebarAction);
+        m_sidebar->setAnimatedVisible(outlineAvailable && m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
+        setCaption(reader->url().fileName());
         m_printAction->setEnabled(false);
         m_closeAction->setEnabled(true);
         return;
@@ -1903,14 +2033,17 @@ void Shell::setActiveTab(int tab)
         const bool outlineAvailable = reader->hasOutline();
         m_showSidebarAction = m_pdfShowSidebarAction;
         if (m_showSidebarAction) {
-            m_showSidebarAction->disconnect(m_sidebar);
             m_showSidebarAction->setEnabled(outlineAvailable);
             m_showSidebarAction->setChecked(outlineAvailable && m_sidebarVisibleOnDocTabs);
-            connect(m_showSidebarAction, &QAction::triggered, m_sidebar, &Sidebar::setVisible);
+            m_showSidebarConnection = connect(m_showSidebarAction, &QAction::triggered, this, [this](bool visible) {
+                if (m_sidebar) {
+                    m_sidebar->setAnimatedVisible(visible, PdfView::readerMotionEnabled());
+                }
+            });
         }
 
         m_tabWidget->toolbar()->setPdfView(reader, m_pdfShowSidebarAction);
-        m_sidebar->setVisible(outlineAvailable && m_sidebarVisibleOnDocTabs);
+        m_sidebar->setAnimatedVisible(outlineAvailable && m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
         setCaption(reader->url().fileName());
         m_printAction->setEnabled(false);
         m_closeAction->setEnabled(true);
@@ -1946,6 +2079,7 @@ void Shell::closeTab(int tab)
         EpubWebReader *const reader = m_tabs[tab].epubReader;
         const QUrl url = reader->url();
         reader->saveReadingPosition();
+        removeEpubSideContainer(reader);
         reader->disconnect(this);
         reader->deleteLater();
 

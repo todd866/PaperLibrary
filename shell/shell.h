@@ -15,6 +15,7 @@
 #include "config-paperlibrary.h"
 #include <QAction>
 #include <QList>
+#include <QMetaObject>
 #include <QMimeDatabase>
 #include <QMimeType>
 #include <QPointer>
@@ -148,6 +149,7 @@ private:
     bool shouldUseEpubWebReader(const QUrl &url) const;
     bool openEpubWebReaderInTab(int tab, const QUrl &url);
     void connectEpubWebReader(EpubWebReader *reader);
+    void removeEpubSideContainer(EpubWebReader *reader);
     bool shouldUsePdfView(const QUrl &url) const;
     bool openPdfViewInTab(int tab, const QUrl &url);
     void connectPdfView(PdfView *reader);
@@ -248,6 +250,7 @@ private:
     QAction *m_prevTabAction;
     QAction *m_undoCloseTab;
     QAction *m_showSidebarAction = nullptr;
+    QMetaObject::Connection m_showSidebarConnection;
     QAction *m_lockSidebarAction = nullptr;
     QAction *m_epubFontIncreaseAction = nullptr;
     QAction *m_epubFontDecreaseAction = nullptr;
@@ -259,6 +262,7 @@ private:
     QAction *m_epubBookContinuousAction = nullptr;
     QAction *m_scanAppleBooksAction = nullptr;
     QAction *m_autoTagLibraryAction = nullptr;
+    QAction *m_readerMotionAction = nullptr;
     QAction *m_pdfShowSidebarAction = nullptr;
     QAction *m_pdfFindAction = nullptr;
     QAction *m_pdfFindNextAction = nullptr;

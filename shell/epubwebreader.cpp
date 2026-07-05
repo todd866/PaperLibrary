@@ -10,6 +10,7 @@
 #include <KArchiveFile>
 #ifndef PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY
 #include <KConfigGroup>
+#include <KLocalizedString>
 #include <KSharedConfig>
 #endif
 #include <KZip>
@@ -22,14 +23,22 @@
 #include <QJsonDocument>
 #include <QMimeDatabase>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QXmlStreamReader>
 
 #ifndef PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY
+#include <QAbstractItemView>
 #include <QBuffer>
 #include <QCloseEvent>
+#include <QFrame>
 #include <QHideEvent>
+#include <QItemSelectionModel>
+#include <QLabel>
 #include <QPointer>
+#include <QStandardItem>
+#include <QStandardItemModel>
 #include <QTimer>
+#include <QTreeView>
 #include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
@@ -281,6 +290,295 @@ bool isSpineMediaType(const QString &mediaType)
         || normalized == QLatin1String("text/x-oeb1-document");
 }
 
+QString localXmlName(QString name)
+{
+    const qsizetype colon = name.lastIndexOf(QLatin1Char(':'));
+    if (colon >= 0) {
+        name = name.mid(colon + 1);
+    }
+    return name.toLower();
+}
+
+QString xmlAttributeValue(const QXmlStreamAttributes &attributes, const QString &wantedName)
+{
+    for (const QXmlStreamAttribute &attribute : attributes) {
+        if (localXmlName(attribute.name().toString()) == wantedName || localXmlName(attribute.qualifiedName().toString()) == wantedName) {
+            return attribute.value().toString();
+        }
+    }
+    return QString();
+}
+
+bool tokenListContains(const QString &value, const QString &wantedToken)
+{
+    const QString wanted = wantedToken.toLower();
+    const QStringList tokens = value.toLower().split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    for (const QString &token : tokens) {
+        if (token == wanted || token.endsWith(QStringLiteral(":") + wanted)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString archiveBaseDir(const QString &archivePath)
+{
+    const QString dir = QFileInfo(archivePath).path();
+    return dir == QLatin1String(".") ? QString() : dir;
+}
+
+QString hrefFragmentPart(const QString &href)
+{
+    const QUrl url = QUrl::fromEncoded(href.trimmed().toUtf8(), QUrl::TolerantMode);
+    QString fragment = url.fragment(QUrl::FullyDecoded);
+    if (!fragment.isEmpty()) {
+        return fragment;
+    }
+
+    const qsizetype hash = href.indexOf(QLatin1Char('#'));
+    if (hash < 0 || hash + 1 >= href.size()) {
+        return QString();
+    }
+    return QUrl::fromPercentEncoding(href.mid(hash + 1).toUtf8());
+}
+
+QString readablePathTitle(const QString &path, int fallbackIndex)
+{
+    QString title = QFileInfo(path).completeBaseName();
+    title.replace(QRegularExpression(QStringLiteral("[_-]+")), QStringLiteral(" "));
+    title = normalizedText(title);
+    if (title.isEmpty()) {
+        title = QStringLiteral("Section %1").arg(fallbackIndex + 1);
+    }
+    return title;
+}
+
+int spineIndexForHref(const QString &baseDir, const QString &href, const QStringList &spine, const QHash<QString, QString> &manifestPathsByHref)
+{
+    QStringList candidates;
+    const auto appendResolved = [&candidates, &manifestPathsByHref](const QString &candidate) {
+        if (candidate.isEmpty()) {
+            return;
+        }
+        appendCandidate(candidates, candidate);
+        appendCandidate(candidates, manifestPathsByHref.value(candidate));
+    };
+
+    for (const QString &candidate : resolvePackageHrefCandidates(baseDir, href)) {
+        appendResolved(candidate);
+    }
+    for (const QString &candidate : resolvePackageHrefCandidates(QString(), href)) {
+        appendResolved(candidate);
+    }
+
+    for (const QString &candidate : std::as_const(candidates)) {
+        const int index = spine.indexOf(candidate);
+        if (index >= 0) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+void appendNavigationEntry(QList<EpubNavigationEntry> *entries, const QString &title, const QString &fragment, int spineIndex, int level)
+{
+    if (!entries || spineIndex < 0) {
+        return;
+    }
+    const QString cleanTitle = normalizedText(title);
+    if (cleanTitle.isEmpty()) {
+        return;
+    }
+    const int cleanLevel = qMax(1, level);
+    for (const EpubNavigationEntry &entry : std::as_const(*entries)) {
+        if (entry.spineIndex == spineIndex && entry.title == cleanTitle && entry.fragment == fragment) {
+            return;
+        }
+    }
+    entries->append({cleanTitle, fragment, spineIndex, cleanLevel});
+}
+
+QList<EpubNavigationEntry> navigationFromNavDocument(const KZip &zip,
+                                                     const QString &navPath,
+                                                     const QStringList &spine,
+                                                     const QHash<QString, QString> &manifestPathsByHref)
+{
+    QList<EpubNavigationEntry> fallbackEntries;
+    QList<EpubNavigationEntry> tocEntries;
+    const QByteArray navBytes = readArchiveFile(zip, navPath);
+    if (navBytes.isEmpty()) {
+        return {};
+    }
+
+    QXmlStreamReader xml(navBytes);
+    const QString navBaseDir = archiveBaseDir(navPath);
+    bool insideNav = false;
+    bool currentNavIsToc = false;
+    int navDepth = 0;
+    int listDepth = 0;
+    QList<EpubNavigationEntry> currentEntries;
+
+    while (!xml.atEnd()) {
+        const QXmlStreamReader::TokenType token = xml.readNext();
+        if (token == QXmlStreamReader::StartElement) {
+            const QString tag = localXmlName(xml.name().toString());
+            const QXmlStreamAttributes attributes = xml.attributes();
+            if (!insideNav && tag == QLatin1String("nav")) {
+                insideNav = true;
+                currentNavIsToc = tokenListContains(xmlAttributeValue(attributes, QStringLiteral("type")), QStringLiteral("toc"))
+                    || tokenListContains(xmlAttributeValue(attributes, QStringLiteral("epub:type")), QStringLiteral("toc"));
+                navDepth = 1;
+                listDepth = 0;
+                currentEntries.clear();
+                continue;
+            }
+            if (!insideNav) {
+                continue;
+            }
+
+            ++navDepth;
+            if (tag == QLatin1String("ol") || tag == QLatin1String("ul")) {
+                ++listDepth;
+            } else if (tag == QLatin1String("a")) {
+                const QString href = xmlAttributeValue(attributes, QStringLiteral("href"));
+                const int spineIndex = spineIndexForHref(navBaseDir, href, spine, manifestPathsByHref);
+                const QString title = xml.readElementText(QXmlStreamReader::IncludeChildElements);
+                appendNavigationEntry(&currentEntries, title, hrefFragmentPart(href), spineIndex, listDepth);
+                --navDepth;
+            }
+            continue;
+        }
+
+        if (token != QXmlStreamReader::EndElement || !insideNav) {
+            continue;
+        }
+
+        const QString tag = localXmlName(xml.name().toString());
+        if (tag == QLatin1String("ol") || tag == QLatin1String("ul")) {
+            listDepth = qMax(0, listDepth - 1);
+        }
+        --navDepth;
+        if (tag == QLatin1String("nav") || navDepth <= 0) {
+            if (currentNavIsToc && !currentEntries.isEmpty()) {
+                tocEntries = currentEntries;
+                break;
+            }
+            if (fallbackEntries.isEmpty()) {
+                fallbackEntries = currentEntries;
+            }
+            insideNav = false;
+            currentNavIsToc = false;
+            navDepth = 0;
+            listDepth = 0;
+            currentEntries.clear();
+        }
+    }
+
+    return tocEntries.isEmpty() ? fallbackEntries : tocEntries;
+}
+
+QList<EpubNavigationEntry> navigationFromNcx(const KZip &zip,
+                                             const QString &ncxPath,
+                                             const QStringList &spine,
+                                             const QHash<QString, QString> &manifestPathsByHref)
+{
+    struct NcxPoint {
+        QString title;
+        QString href;
+        int level = 1;
+        int entryIndex = -1;
+    };
+
+    QList<EpubNavigationEntry> entries;
+    QList<NcxPoint> stack;
+    const QByteArray ncxBytes = readArchiveFile(zip, ncxPath);
+    if (ncxBytes.isEmpty()) {
+        return entries;
+    }
+
+    const QString ncxBaseDir = archiveBaseDir(ncxPath);
+    auto materializeTop = [&]() {
+        if (stack.isEmpty()) {
+            return;
+        }
+        NcxPoint &point = stack.last();
+        if (point.entryIndex >= 0) {
+            if (!point.title.trimmed().isEmpty()) {
+                entries[point.entryIndex].title = normalizedText(point.title);
+            }
+            return;
+        }
+        const int spineIndex = spineIndexForHref(ncxBaseDir, point.href, spine, manifestPathsByHref);
+        QString title = point.title;
+        if (title.trimmed().isEmpty()) {
+            title = readablePathTitle(point.href, spineIndex);
+        }
+        const int previousSize = entries.size();
+        appendNavigationEntry(&entries, title, hrefFragmentPart(point.href), spineIndex, point.level);
+        if (entries.size() > previousSize) {
+            point.entryIndex = entries.size() - 1;
+        }
+    };
+
+    QXmlStreamReader xml(ncxBytes);
+    while (!xml.atEnd()) {
+        const QXmlStreamReader::TokenType token = xml.readNext();
+        if (token == QXmlStreamReader::StartElement) {
+            const QString tag = localXmlName(xml.name().toString());
+            if (tag == QLatin1String("navpoint")) {
+                stack.append({QString(), QString(), static_cast<int>(stack.size()) + 1, -1});
+            } else if (tag == QLatin1String("content") && !stack.isEmpty()) {
+                stack.last().href = xmlAttributeValue(xml.attributes(), QStringLiteral("src"));
+                materializeTop();
+            } else if (tag == QLatin1String("text") && !stack.isEmpty()) {
+                stack.last().title = normalizedText(xml.readElementText(QXmlStreamReader::IncludeChildElements));
+                materializeTop();
+            }
+        } else if (token == QXmlStreamReader::EndElement && localXmlName(xml.name().toString()) == QLatin1String("navpoint") && !stack.isEmpty()) {
+            materializeTop();
+            stack.removeLast();
+        }
+    }
+
+    return entries;
+}
+
+QString headingTitleFromMarkup(const QByteArray &data)
+{
+    QString documentTitle;
+    QXmlStreamReader xml(data);
+    while (!xml.atEnd()) {
+        if (xml.readNext() != QXmlStreamReader::StartElement) {
+            continue;
+        }
+        const QString tag = localXmlName(xml.name().toString());
+        if (tag == QLatin1String("h1") || tag == QLatin1String("h2") || tag == QLatin1String("h3")) {
+            const QString heading = normalizedText(xml.readElementText(QXmlStreamReader::IncludeChildElements));
+            if (!heading.isEmpty()) {
+                return heading;
+            }
+        }
+        if (tag == QLatin1String("title") && documentTitle.isEmpty()) {
+            documentTitle = normalizedText(xml.readElementText(QXmlStreamReader::IncludeChildElements));
+        }
+    }
+    return documentTitle;
+}
+
+QList<EpubNavigationEntry> fallbackNavigationFromSpine(const KZip &zip, const QStringList &spine)
+{
+    QList<EpubNavigationEntry> entries;
+    for (int i = 0; i < spine.size(); ++i) {
+        const QByteArray data = readArchiveFile(zip, spine.at(i));
+        QString title = headingTitleFromMarkup(data);
+        if (title.isEmpty()) {
+            title = readablePathTitle(spine.at(i), i);
+        }
+        appendNavigationEntry(&entries, title, QString(), i, 1);
+    }
+    return entries;
+}
+
 EpubInspection inspectEpub(const QString &path)
 {
     EpubInspection result;
@@ -317,6 +615,9 @@ EpubInspection inspectEpub(const QString &path)
     QHash<QString, QString> mediaTypeById;
     QHash<QString, QStringList> pathsByBasename;
     QStringList spineIds;
+    QString navDocumentPath;
+    QString ncxPath;
+    QString spineTocId;
 
     QXmlStreamReader xml(opfBytes);
     while (!xml.atEnd()) {
@@ -356,9 +657,18 @@ EpubInspection inspectEpub(const QString &path)
                 }
             }
             const QString properties = attributes.value(QLatin1String("properties")).toString();
-            if (properties.split(QLatin1Char(' '), Qt::SkipEmptyParts).contains(QLatin1String("rendition:layout-pre-paginated"))) {
+            if (tokenListContains(properties, QStringLiteral("rendition:layout-pre-paginated"))) {
                 result.fixedLayout = true;
             }
+            if (navDocumentPath.isEmpty() && tokenListContains(properties, QStringLiteral("nav"))) {
+                navDocumentPath = pathInZip;
+            }
+            if (ncxPath.isEmpty() && (mediaType.trimmed().compare(QLatin1String("application/x-dtbncx+xml"), Qt::CaseInsensitive) == 0
+                                      || pathInZip.endsWith(QLatin1String(".ncx"), Qt::CaseInsensitive))) {
+                ncxPath = pathInZip;
+            }
+        } else if (xml.name() == QLatin1String("spine")) {
+            spineTocId = attributes.value(QLatin1String("toc")).toString();
         } else if (xml.name() == QLatin1String("itemref")) {
             const QString linear = attributes.value(QLatin1String("linear")).toString();
             if (linear.compare(QLatin1String("no"), Qt::CaseInsensitive) != 0) {
@@ -408,8 +718,24 @@ EpubInspection inspectEpub(const QString &path)
         }
     }
 
+    if (ncxPath.isEmpty() && !spineTocId.isEmpty()) {
+        ncxPath = pathById.value(spineTocId);
+    }
+
     if (result.title.trimmed().isEmpty()) {
         result.title = QFileInfo(path).completeBaseName();
+    }
+
+    if (!result.spine.isEmpty()) {
+        if (!navDocumentPath.isEmpty()) {
+            result.navigation = navigationFromNavDocument(zip, navDocumentPath, result.spine, result.manifestPathsByHref);
+        }
+        if (result.navigation.isEmpty() && !ncxPath.isEmpty()) {
+            result.navigation = navigationFromNcx(zip, ncxPath, result.spine, result.manifestPathsByHref);
+        }
+        if (result.navigation.isEmpty()) {
+            result.navigation = fallbackNavigationFromSpine(zip, result.spine);
+        }
     }
 
     return result;
@@ -599,11 +925,14 @@ constexpr auto EpubScheme = "paperlibrary-epub";
 constexpr auto PositionsGroup = "EpubWebReader Positions";
 constexpr auto SettingsGroup = "EpubWebReader Settings";
 constexpr auto BookScrollModesGroup = "EpubWebReader Book Scroll Modes";
+constexpr auto GeneralGroup = "General";
 constexpr auto FontScaleStepKey = "FontScaleStep";
 constexpr auto ScrollModeKey = "ScrollMode";
+constexpr auto ReaderMotionKey = "ReaderMotion";
 constexpr auto PaginatedScrollMode = "paginated";
 constexpr auto ContinuousScrollMode = "continuous";
 constexpr auto ReaderCommandPrefix = ".paperlibrary/";
+constexpr int NavigationEntryIndexRole = Qt::UserRole + 1;
 
 void epubReaderLog(const QString &message)
 {
@@ -925,6 +1254,43 @@ EpubWebReader::EpubWebReader(QWidget *parent)
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+
+    m_outlineWidget = new QWidget;
+    m_outlineWidget->setObjectName(QStringLiteral("paperlibrary_epub_outline"));
+    m_outlineWidget->setStyleSheet(QStringLiteral(
+        "QWidget#paperlibrary_epub_outline { background: palette(base); }"
+        "QLabel#paperlibrary_epub_outline_title { font-weight: 650; color: palette(text); }"));
+    auto *outlineLayout = new QVBoxLayout(m_outlineWidget);
+    outlineLayout->setContentsMargins(12, 12, 10, 12);
+    outlineLayout->setSpacing(8);
+
+    m_outlineTitle = new QLabel(i18n("Contents"), m_outlineWidget);
+    m_outlineTitle->setObjectName(QStringLiteral("paperlibrary_epub_outline_title"));
+    outlineLayout->addWidget(m_outlineTitle);
+
+    m_outlineModel = new QStandardItemModel(this);
+    m_outlineView = new QTreeView(m_outlineWidget);
+    m_outlineView->setObjectName(QStringLiteral("paperlibrary_epub_outline_tree"));
+    m_outlineView->setModel(m_outlineModel);
+    m_outlineView->setHeaderHidden(true);
+    m_outlineView->setFrameShape(QFrame::NoFrame);
+    m_outlineView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_outlineView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_outlineView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_outlineView->setUniformRowHeights(true);
+    m_outlineView->setRootIsDecorated(true);
+    m_outlineView->setExpandsOnDoubleClick(false);
+    m_outlineView->setIndentation(14);
+    m_outlineView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_outlineView->setStyleSheet(QStringLiteral(
+        "QTreeView { border: none; background: transparent; outline: 0; }"
+        "QTreeView::item { min-height: 24px; padding: 4px 6px; border-radius: 5px; }"
+        "QTreeView::item:selected { background: rgba(0, 122, 255, 46); }"
+        "QTreeView::item:hover { background: rgba(127, 127, 127, 34); }"));
+    outlineLayout->addWidget(m_outlineView, 1);
+
+    connect(m_outlineView, &QTreeView::clicked, this, &EpubWebReader::jumpToNavigationEntry);
+    connect(m_outlineView, &QTreeView::activated, this, &EpubWebReader::jumpToNavigationEntry);
 }
 
 EpubWebReader::~EpubWebReader()
@@ -1008,6 +1374,19 @@ bool EpubWebReader::canOpen(const QUrl &url)
     return inspection.supported();
 }
 
+bool EpubWebReader::readerMotionEnabled()
+{
+    const KConfigGroup group = KSharedConfig::openConfig()->group(QString::fromLatin1(GeneralGroup));
+    return group.readEntry(ReaderMotionKey, true);
+}
+
+void EpubWebReader::setReaderMotionEnabled(bool enabled)
+{
+    KConfigGroup group = KSharedConfig::openConfig()->group(QString::fromLatin1(GeneralGroup));
+    group.writeEntry(ReaderMotionKey, enabled);
+    group.sync();
+}
+
 bool EpubWebReader::open(const QUrl &url)
 {
     if (!url.isLocalFile()) {
@@ -1043,6 +1422,7 @@ bool EpubWebReader::open(const QUrl &url)
         m_bookTitle = info.completeBaseName();
     }
     m_spine = inspection.spine;
+    m_navigationEntries = inspection.navigation;
     m_spineIndex = 0;
     m_pendingScrollOffset = 0.0;
     m_havePendingScrollOffset = false;
@@ -1052,14 +1432,17 @@ bool EpubWebReader::open(const QUrl &url)
     if (!m_hasBookScrollModeOverride) {
         m_scrollMode = globalScrollMode();
     }
+    rebuildOutlineModel();
+    Q_EMIT outlineAvailableChanged(hasOutline());
 
-    epubReaderLog(QStringLiteral("open path=%1 book-id=%2 title=%3 package=%4 opf-dir=%5 spine-count=%6 first-spine=%7 scroll-mode=%8%9")
+    epubReaderLog(QStringLiteral("open path=%1 book-id=%2 title=%3 package=%4 opf-dir=%5 spine-count=%6 nav-count=%7 first-spine=%8 scroll-mode=%9%10")
                       .arg(m_epubPath,
                            m_bookId,
                            m_bookTitle,
                            inspection.packagePath,
                            inspection.opfDir,
                            QString::number(m_spine.size()),
+                           QString::number(m_navigationEntries.size()),
                            m_spine.isEmpty() ? QString() : m_spine.constFirst(),
                            scrollModeValue(m_scrollMode),
                            m_hasBookScrollModeOverride ? QStringLiteral(" override") : QString()));
@@ -1162,6 +1545,7 @@ bool EpubWebReader::open(const QUrl &url)
         const int index = m_spine.indexOf(path);
         if (index >= 0) {
             m_spineIndex = index;
+            selectCurrentNavigationEntry();
             saveReadingPosition();
         }
     });
@@ -1237,6 +1621,16 @@ QUrl EpubWebReader::url() const
     return m_url;
 }
 
+QWidget *EpubWebReader::outlineWidget() const
+{
+    return m_outlineWidget;
+}
+
+bool EpubWebReader::hasOutline() const
+{
+    return m_outlineModel && m_outlineModel->rowCount() > 0;
+}
+
 EpubWebReader::ScrollMode EpubWebReader::scrollMode() const
 {
     return m_scrollMode;
@@ -1245,6 +1639,16 @@ EpubWebReader::ScrollMode EpubWebReader::scrollMode() const
 bool EpubWebReader::hasBookScrollModeOverride() const
 {
     return m_hasBookScrollModeOverride;
+}
+
+void EpubWebReader::applyReaderMotionSetting()
+{
+    if (!m_page) {
+        return;
+    }
+    const QString script = QStringLiteral("(function(){ if (!window.__paperLibraryEpub) return %1; return window.__paperLibraryEpub.setReaderMotion(%1); })();")
+                               .arg(readerMotionEnabled() ? QStringLiteral("true") : QStringLiteral("false"));
+    m_page->runJavaScript(script, QWebEngineScript::ApplicationWorld);
 }
 
 void EpubWebReader::reload()
@@ -1340,7 +1744,87 @@ void EpubWebReader::setScrollMode(ScrollMode mode)
     Q_EMIT scrollModeChanged(m_scrollMode, m_hasBookScrollModeOverride);
 }
 
-bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd)
+void EpubWebReader::rebuildOutlineModel()
+{
+    if (!m_outlineModel) {
+        return;
+    }
+
+    m_outlineModel->clear();
+    QList<QStandardItem *> parentStack;
+    QStandardItem *const root = m_outlineModel->invisibleRootItem();
+    for (int i = 0; i < m_navigationEntries.size(); ++i) {
+        const EpubNavigationEntry &entry = m_navigationEntries.at(i);
+        if (entry.spineIndex < 0 || entry.spineIndex >= m_spine.size() || entry.title.trimmed().isEmpty()) {
+            continue;
+        }
+
+        auto *item = new QStandardItem(entry.title);
+        item->setEditable(false);
+        item->setData(i, NavigationEntryIndexRole);
+        item->setToolTip(entry.title);
+
+        const int level = qBound(1, entry.level, static_cast<int>(parentStack.size()) + 1);
+        while (parentStack.size() >= level) {
+            parentStack.removeLast();
+        }
+        QStandardItem *const parent = parentStack.isEmpty() ? root : parentStack.constLast();
+        parent->appendRow(item);
+        parentStack.append(item);
+    }
+
+    if (m_outlineView) {
+        m_outlineView->expandToDepth(1);
+        selectCurrentNavigationEntry();
+    }
+}
+
+void EpubWebReader::selectCurrentNavigationEntry()
+{
+    if (!m_outlineModel || !m_outlineView || m_spineIndex < 0) {
+        return;
+    }
+
+    QModelIndex bestIndex;
+    int bestSpineIndex = -1;
+    const auto visit = [&](const auto &self, const QModelIndex &parent) -> void {
+        const int rows = m_outlineModel->rowCount(parent);
+        for (int row = 0; row < rows; ++row) {
+            const QModelIndex index = m_outlineModel->index(row, 0, parent);
+            const int entryIndex = index.data(NavigationEntryIndexRole).toInt();
+            if (entryIndex >= 0 && entryIndex < m_navigationEntries.size()) {
+                const int candidateSpine = m_navigationEntries.at(entryIndex).spineIndex;
+                if (candidateSpine <= m_spineIndex && candidateSpine >= bestSpineIndex) {
+                    bestSpineIndex = candidateSpine;
+                    bestIndex = index;
+                }
+            }
+            self(self, index);
+        }
+    };
+    visit(visit, QModelIndex());
+
+    if (!bestIndex.isValid()) {
+        return;
+    }
+    const QSignalBlocker blocker(m_outlineView->selectionModel());
+    m_outlineView->setCurrentIndex(bestIndex);
+    m_outlineView->selectionModel()->select(bestIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    m_outlineView->scrollTo(bestIndex, QAbstractItemView::PositionAtCenter);
+}
+
+void EpubWebReader::jumpToNavigationEntry(const QModelIndex &index)
+{
+    const int entryIndex = index.data(NavigationEntryIndexRole).toInt();
+    if (entryIndex < 0 || entryIndex >= m_navigationEntries.size()) {
+        return;
+    }
+
+    const EpubNavigationEntry entry = m_navigationEntries.at(entryIndex);
+    loadSpineItem(entry.spineIndex, 0.0, false, entry.fragment);
+}
+
+bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd, const QString &fragment)
 {
     if (!m_page || spineIndex < 0 || spineIndex >= m_spine.size()) {
         return false;
@@ -1349,13 +1833,18 @@ bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scro
     m_pendingScrollToEnd = scrollToEnd;
     m_pendingScrollOffset = scrollToEnd ? 0.0 : cleanRestoredScrollOffset(scrollOffset);
     m_havePendingScrollOffset = m_pendingScrollToEnd || m_pendingScrollOffset > 0.0;
-    const QUrl spineUrl = urlForSpineItem(m_spineIndex);
-    epubReaderLog(QStringLiteral("loadSpineItem spine-index=%1 spine=%2 url=%3 pending-scroll=%4")
+    QUrl spineUrl = urlForSpineItem(m_spineIndex);
+    if (!fragment.isEmpty()) {
+        spineUrl.setFragment(fragment, QUrl::DecodedMode);
+    }
+    epubReaderLog(QStringLiteral("loadSpineItem spine-index=%1 spine=%2 url=%3 pending-scroll=%4 fragment=%5")
                       .arg(QString::number(m_spineIndex),
                            m_spine.at(m_spineIndex),
                            QString::fromUtf8(spineUrl.toEncoded()),
-                           m_pendingScrollToEnd ? QStringLiteral("end") : QString::number(m_pendingScrollOffset, 'f', 0)));
+                           m_pendingScrollToEnd ? QStringLiteral("end") : QString::number(m_pendingScrollOffset, 'f', 0),
+                           fragment));
     m_page->load(spineUrl);
+    selectCurrentNavigationEntry();
     if (!m_pendingScrollToEnd) {
         saveReadingPosition();
     }
@@ -1373,6 +1862,7 @@ void EpubWebReader::installReaderScripts()
     js.replace(QStringLiteral("__PAPERLIBRARY_READER_CSS__"), jsStringLiteral(css));
     js.replace(QStringLiteral("__PAPERLIBRARY_INITIAL_FONT_SCALE_STEP__"), QString::number(m_fontScaleStep));
     js.replace(QStringLiteral("__PAPERLIBRARY_SCROLL_MODE__"), jsStringLiteral(scrollModeValue(m_scrollMode)));
+    js.replace(QStringLiteral("__PAPERLIBRARY_READER_MOTION__"), readerMotionEnabled() ? QStringLiteral("true") : QStringLiteral("false"));
 
     QWebEngineScript script;
     script.setName(QStringLiteral("PaperLibrary EPUB pagination"));

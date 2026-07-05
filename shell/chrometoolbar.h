@@ -39,6 +39,7 @@ public:
     explicit ChromeToolbar(QWidget *parent = nullptr);
 
     void clearDocument();
+    void setNavigationAction(QAction *showSidebarAction);
     void setPdfView(PdfView *reader, QAction *showSidebarAction);
 
     /** The button wired to the named document action; test and tooling hook. */

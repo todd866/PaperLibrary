@@ -149,6 +149,21 @@ static SyntheticRecord politicsRecord()
             QStringLiteral("2026-04-25T00:00:00+00:00")};
 }
 
+static SyntheticRecord caroRecord()
+{
+    return {QStringLiteral("md5-synthetic-caro-9"),
+            QString(),
+            QString(),
+            QString(),
+            QStringLiteral("The Path to Power"),
+            QStringLiteral("Robert A. Caro"),
+            QStringLiteral("1982"),
+            QStringLiteral("(book)"),
+            667788,
+            QStringLiteral("book:pdf"),
+            QStringLiteral("2026-04-30T00:00:00+00:00")};
+}
+
 static QByteArray recordLine(const SyntheticRecord &record)
 {
     QJsonObject object;
@@ -187,6 +202,7 @@ private Q_SLOTS:
     void testDatabaseEnrichment();
     void testDatabaseInPathWithSpecialCharacters();
     void testSectionedModelSmartShelves();
+    void testCaroBiographyDoesNotMatchPsychiatry();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
     void testDestroyAfterLoad();
@@ -519,6 +535,9 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QCOMPARE(sections.rowCount(), 1);
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::PdfPathRole).toString(), mndPdfPath);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("MD project core paper"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to MD project review set"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::PriorityHintRole).toString(), QStringLiteral("MD project review set"));
     sections.setCoverForPath(mndPdfPath, QStringLiteral("cover-token"), false);
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::CoverPixmapRole).toString(), QStringLiteral("cover-token"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::GeneratedCoverRole).toBool(), false);
@@ -526,12 +545,15 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     sections.setSmartFilter(PaperLibrarySectionedModel::Medicine);
     QCOMPARE(sections.rowCount(), 1); // Medicine is medical textbooks, not every medical paper
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Fundamentals of Widget Physiology"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Medical textbook"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Related: physiology"));
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Psychiatry);
     QCOMPARE(sections.rowCount(), 1);
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Psychiatry"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailSeedRole).toString(), QStringLiteral("Psychiatry"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Psychiatry training"));
     QVERIFY(sections.data(sections.index(0), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Psychiatry")));
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Anthropology);
@@ -573,6 +595,31 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QVERIFY(mndRow >= 0);
     QCOMPARE(sections.data(sections.index(mndRow), PaperLibrarySectionedModel::DownrankedRole).toBool(), true);
     QCOMPARE(sections.data(sections.index(sections.rowCount() - 1), Qt::DisplayRole).toString(), mndTitle);
+}
+
+void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
+{
+    const QString corpusDir = writeCatalog({caroRecord(), psychiatryRecord()});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Psychiatry);
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("The Path to Power"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Politics"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Political biography"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to LBJ / US power"));
+    QVERIFY(sections.data(sections.index(0), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()

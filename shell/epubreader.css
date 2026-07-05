@@ -84,6 +84,10 @@ html.paperlibrary-spine-enter-previous body {
     animation: paperlibrary-spine-enter-previous 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+html.paperlibrary-motion-reduced body {
+    animation: none !important;
+}
+
 @keyframes paperlibrary-spine-exit-next {
     from {
         transform: translateX(0);

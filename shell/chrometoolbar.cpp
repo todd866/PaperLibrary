@@ -296,6 +296,18 @@ void ChromeToolbar::clearDocument()
     hide();
 }
 
+void ChromeToolbar::setNavigationAction(QAction *showSidebarAction)
+{
+    clearPdfMode();
+    clearButtonActions();
+
+    setButtonAction(QStringLiteral("show_leftpanel"), showSidebarAction);
+    m_zoomLevelButton->setVisible(false);
+    m_overflowMenu->clear();
+    m_overflowButton->setVisible(false);
+    show();
+}
+
 void ChromeToolbar::setPdfView(PdfView *reader, QAction *showSidebarAction)
 {
     clearPdfMode();

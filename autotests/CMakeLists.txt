@@ -42,6 +42,12 @@ ecm_add_test(epubimportertest.cpp ../shell/epubimporter.cpp ../shell/applebooksp
     LINK_LIBRARIES Qt6::Test Qt6::Gui Qt6::Sql KF6::Archive
 )
 
+ecm_add_test(epubwebreadertest.cpp ../shell/epubwebreader.cpp
+    TEST_NAME "epubwebreadertest"
+    LINK_LIBRARIES Qt6::Test Qt6::Xml KF6::Archive
+)
+target_compile_definitions(epubwebreadertest PRIVATE PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY)
+
 ecm_add_test(epubreadercorpustest.cpp ../shell/epubwebreader.cpp
     TEST_NAME "epubreadercorpustest"
     LINK_LIBRARIES Qt6::Core Qt6::Xml KF6::Archive

@@ -13,6 +13,8 @@
 #include <KSharedConfig>
 
 #include <QAction>
+#include <QAbstractAnimation>
+#include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QContextMenuEvent>
 #include <QCryptographicHash>
@@ -23,6 +25,9 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QFrame>
+#include <QEasingCurve>
+#include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
 #include <QHideEvent>
 #include <QHBoxLayout>
@@ -51,6 +56,7 @@
 #include <QPdfView>
 #include <QProcess>
 #include <QProgressBar>
+#include <QPropertyAnimation>
 #include <QSaveFile>
 #include <QScreen>
 #include <QScrollBar>
@@ -59,6 +65,9 @@
 #include <QResizeEvent>
 #include <QStandardPaths>
 #include <QStandardItemModel>
+#include <QStyledItemDelegate>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -71,6 +80,8 @@
 namespace
 {
 constexpr auto PositionsGroup = "PdfView Positions";
+constexpr auto GeneralGroup = "General";
+constexpr auto ReaderMotionKey = "ReaderMotion";
 constexpr double MinZoom = 0.10;
 constexpr double MaxZoom = 8.0;
 constexpr int AiNavigationWordBudget = 50000;
@@ -129,6 +140,120 @@ public:
         return QIdentityProxyModel::data(index, role);
     }
 };
+
+static int navigationPageOneBased(const QModelIndex &index)
+{
+    bool ok = false;
+    int page = index.data(AiNavigationPageRole).toInt(&ok);
+    if (ok && page >= 0) {
+        return page + 1;
+    }
+    page = index.data(static_cast<int>(QPdfBookmarkModel::Role::Page)).toInt(&ok);
+    return ok && page >= 0 ? page + 1 : 0;
+}
+
+static int navigationLevel(const QModelIndex &index)
+{
+    bool ok = false;
+    const int aiLevel = index.data(AiNavigationLevelRole).toInt(&ok);
+    if (ok && aiLevel > 0) {
+        return aiLevel;
+    }
+    int level = 1;
+    QModelIndex parent = index.parent();
+    while (parent.isValid()) {
+        ++level;
+        parent = parent.parent();
+    }
+    return qBound(1, level, 4);
+}
+
+class NavigationTreeDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        size.setHeight(qMax(size.height(), 28));
+        return size;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        const QString title = opt.text;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        const bool selected = option.state.testFlag(QStyle::State_Selected);
+        const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
+        if (selected || hovered) {
+            QColor background = selected ? option.palette.color(QPalette::Highlight) : option.palette.color(QPalette::Text);
+            background.setAlphaF(selected ? 0.16 : 0.06);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(background);
+            painter->drawRoundedRect(option.rect.adjusted(4, 3, -4, -3), 6, 6);
+        }
+
+        const int page = navigationPageOneBased(index);
+        QFont badgeFont = option.font;
+        badgeFont.setPointSizeF(qMax(8.0, option.font.pointSizeF() * 0.78));
+        const QFontMetrics badgeMetrics(badgeFont);
+        const QString pageText = page > 0 ? QString::number(page) : QString();
+        const int badgeWidth = pageText.isEmpty() ? 0 : qMax(28, badgeMetrics.horizontalAdvance(pageText) + 14);
+        QRect badgeRect;
+        if (badgeWidth > 0) {
+            badgeRect = QRect(option.rect.right() - badgeWidth - 8, option.rect.center().y() - 9, badgeWidth, 18);
+        }
+
+        QRect textRect = option.rect.adjusted(10, 0, badgeWidth > 0 ? -(badgeWidth + 18) : -10, 0);
+        QFont titleFont = option.font;
+        const int level = navigationLevel(index);
+        if (level == 1) {
+            titleFont.setBold(true);
+        }
+        painter->setFont(titleFont);
+        QColor textColor = selected ? option.palette.color(QPalette::HighlightedText) : option.palette.color(QPalette::Text);
+        if (!selected && level > 1) {
+            textColor.setAlphaF(0.78);
+        }
+        painter->setPen(textColor);
+        painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(titleFont).elidedText(title, Qt::ElideRight, textRect.width()));
+
+        if (!pageText.isEmpty()) {
+            QColor badgeBackground = option.palette.color(QPalette::Text);
+            badgeBackground.setAlphaF(selected ? 0.18 : 0.08);
+            QColor badgeText = selected ? option.palette.color(QPalette::HighlightedText) : option.palette.color(QPalette::Text);
+            badgeText.setAlphaF(selected ? 0.95 : 0.62);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(badgeBackground);
+            painter->drawRoundedRect(badgeRect, 9, 9);
+            painter->setFont(badgeFont);
+            painter->setPen(badgeText);
+            painter->drawText(badgeRect, Qt::AlignCenter, pageText);
+        }
+        painter->restore();
+    }
+};
+
+static void configureNavigationTree(QTreeView *view)
+{
+    view->setHeaderHidden(true);
+    view->setUniformRowHeights(true);
+    view->setAlternatingRowColors(false);
+    view->setFrameShape(QFrame::NoFrame);
+    view->setIndentation(15);
+    view->setSelectionBehavior(QAbstractItemView::SelectRows);
+    view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    view->setTextElideMode(Qt::ElideRight);
+    view->setMouseTracking(true);
+    view->setItemDelegate(new NavigationTreeDelegate(view));
+}
 
 bool shouldOpenExternalPdfUrl(const QUrl &url)
 {
@@ -1466,6 +1591,10 @@ PdfView::PdfView(QWidget *parent)
     m_view->setDocumentMargins(QMargins(20, 20, 20, 20));
     m_searchModel->setDocument(m_document);
     m_view->setSearchModel(m_searchModel);
+    m_pageTransitionOverlay = new QLabel(m_view->viewport());
+    m_pageTransitionOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_pageTransitionOverlay->setScaledContents(false);
+    m_pageTransitionOverlay->hide();
 
     setupFindBar();
     auto *layout = new QVBoxLayout(this);
@@ -1478,25 +1607,50 @@ PdfView::PdfView(QWidget *parent)
     m_bookmarkTitleModel->setSourceModel(m_bookmarkModel);
 
     m_outlineWidget->setObjectName(QStringLiteral("paperlibrary_pdf_outline"));
+    m_outlineWidget->setAttribute(Qt::WA_StyledBackground, true);
+    m_outlineWidget->setStyleSheet(QStringLiteral(R"(
+        QWidget#paperlibrary_pdf_outline {
+            background: palette(window);
+        }
+        QLabel#paperlibrary_pdf_outline_title,
+        QLabel#paperlibrary_pdf_ai_navigation_title {
+            font-weight: 600;
+            color: palette(text);
+        }
+        QLabel#paperlibrary_pdf_ai_navigation_status {
+            color: palette(mid);
+        }
+        QTreeView#paperlibrary_pdf_outline_view,
+        QTreeView#paperlibrary_pdf_ai_navigation_view {
+            border: 0;
+            background: transparent;
+            outline: 0;
+            padding: 2px 4px 4px 4px;
+        }
+        QToolButton#paperlibrary_pdf_ai_navigation_button {
+            border: 1px solid palette(midlight);
+            border-radius: 5px;
+            padding: 4px 8px;
+        }
+    )"));
     auto *outlineLayout = new QVBoxLayout(m_outlineWidget);
-    outlineLayout->setContentsMargins(0, 0, 0, 0);
-    outlineLayout->setSpacing(0);
+    outlineLayout->setContentsMargins(0, 6, 0, 0);
+    outlineLayout->setSpacing(2);
 
     m_outlineTitle = new QLabel(i18n("Contents"), m_outlineWidget);
     m_outlineTitle->setObjectName(QStringLiteral("paperlibrary_pdf_outline_title"));
-    m_outlineTitle->setContentsMargins(10, 8, 10, 6);
+    m_outlineTitle->setContentsMargins(12, 10, 10, 4);
     outlineLayout->addWidget(m_outlineTitle);
 
     m_outlineView->setObjectName(QStringLiteral("paperlibrary_pdf_outline_view"));
     m_outlineView->setModel(m_bookmarkTitleModel);
-    m_outlineView->setHeaderHidden(true);
-    m_outlineView->setUniformRowHeights(true);
-    m_outlineView->setAlternatingRowColors(false);
+    configureNavigationTree(m_outlineView);
     outlineLayout->addWidget(m_outlineView, 1);
 
     auto *aiNavigationHeader = new QWidget(m_outlineWidget);
+    aiNavigationHeader->setObjectName(QStringLiteral("paperlibrary_pdf_ai_navigation_header"));
     auto *aiNavigationHeaderLayout = new QHBoxLayout(aiNavigationHeader);
-    aiNavigationHeaderLayout->setContentsMargins(10, 8, 8, 4);
+    aiNavigationHeaderLayout->setContentsMargins(12, 8, 8, 4);
     aiNavigationHeaderLayout->setSpacing(6);
 
     auto *aiNavigationTitle = new QLabel(i18n("AI Navigation"), aiNavigationHeader);
@@ -1509,6 +1663,7 @@ PdfView::PdfView(QWidget *parent)
     connect(m_aiNavigationAction, &QAction::triggered, this, &PdfView::generateAiNavigation);
 
     m_aiNavigationButton = new QToolButton(aiNavigationHeader);
+    m_aiNavigationButton->setObjectName(QStringLiteral("paperlibrary_pdf_ai_navigation_button"));
     m_aiNavigationButton->setAutoRaise(true);
     m_aiNavigationButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_aiNavigationButton->setDefaultAction(m_aiNavigationAction);
@@ -1532,9 +1687,7 @@ PdfView::PdfView(QWidget *parent)
     m_aiNavigationView = new QTreeView(m_outlineWidget);
     m_aiNavigationView->setObjectName(QStringLiteral("paperlibrary_pdf_ai_navigation_view"));
     m_aiNavigationView->setModel(m_aiNavigationModel);
-    m_aiNavigationView->setHeaderHidden(true);
-    m_aiNavigationView->setUniformRowHeights(true);
-    m_aiNavigationView->setAlternatingRowColors(false);
+    configureNavigationTree(m_aiNavigationView);
     m_aiNavigationView->hide();
     outlineLayout->addWidget(m_aiNavigationView, 1);
 
@@ -1598,6 +1751,19 @@ bool PdfView::canOpen(const QUrl &url)
 
     const QMimeType mime = QMimeDatabase().mimeTypeForFile(info);
     return mime.inherits(QStringLiteral("application/pdf"));
+}
+
+bool PdfView::readerMotionEnabled()
+{
+    const KConfigGroup group = KSharedConfig::openConfig()->group(QString::fromLatin1(GeneralGroup));
+    return group.readEntry(ReaderMotionKey, true);
+}
+
+void PdfView::setReaderMotionEnabled(bool enabled)
+{
+    KConfigGroup group = KSharedConfig::openConfig()->group(QString::fromLatin1(GeneralGroup));
+    group.writeEntry(ReaderMotionKey, enabled);
+    group.sync();
 }
 
 bool PdfView::open(const QUrl &url)
@@ -1717,7 +1883,7 @@ void PdfView::jumpToApproximateProgress(double progress)
         return;
     }
     const int page = qBound(0, static_cast<int>(qRound(progress * pages)) - 1, pages - 1);
-    m_view->pageNavigator()->jump(page, QPointF(), zoomFactor());
+    jumpToPage(page, QPointF(), zoomFactor(), false);
 }
 
 void PdfView::goToPageOneBased(int page)
@@ -1728,7 +1894,71 @@ void PdfView::goToPageOneBased(int page)
     }
 
     const int zeroBasedPage = qBound(1, page, pages) - 1;
-    m_view->pageNavigator()->jump(zeroBasedPage, QPointF(), zoomFactor());
+    jumpToPage(zeroBasedPage, QPointF(), zoomFactor(), true);
+}
+
+void PdfView::jumpToPage(int zeroBasedPage, const QPointF &location, qreal zoom, bool animated)
+{
+    if (!m_view || !m_view->pageNavigator() || zeroBasedPage < 0 || zeroBasedPage >= pageCount()) {
+        return;
+    }
+
+    const int currentPage = currentPageOneBased() - 1;
+    const int direction = zeroBasedPage > currentPage ? 1 : zeroBasedPage < currentPage ? -1 : 0;
+    QPixmap snapshot;
+    if (animated && direction != 0 && readerMotionEnabled() && isVisible() && m_view->viewport() && m_view->viewport()->isVisible()) {
+        snapshot = m_view->viewport()->grab();
+    }
+
+    m_view->pageNavigator()->jump(zeroBasedPage, location, zoom);
+
+    if (!snapshot.isNull()) {
+        animatePageTurn(snapshot, direction);
+    }
+}
+
+void PdfView::animatePageTurn(const QPixmap &snapshot, int direction)
+{
+    if (!m_pageTransitionOverlay || !m_view || !m_view->viewport()) {
+        return;
+    }
+
+    if (m_pageTransitionOverlay->graphicsEffect()) {
+        m_pageTransitionOverlay->setGraphicsEffect(nullptr);
+    }
+    m_pageTransitionOverlay->setPixmap(snapshot);
+    m_pageTransitionOverlay->setGeometry(m_view->viewport()->rect());
+    m_pageTransitionOverlay->move(0, 0);
+    m_pageTransitionOverlay->show();
+    m_pageTransitionOverlay->raise();
+
+    auto *effect = new QGraphicsOpacityEffect(m_pageTransitionOverlay);
+    effect->setOpacity(1.0);
+    m_pageTransitionOverlay->setGraphicsEffect(effect);
+
+    const int travel = qBound(36, m_view->viewport()->width() / 10, 96);
+    auto *position = new QPropertyAnimation(m_pageTransitionOverlay, "pos", m_pageTransitionOverlay);
+    position->setDuration(170);
+    position->setStartValue(QPoint(0, 0));
+    position->setEndValue(QPoint(direction > 0 ? -travel : travel, 0));
+    position->setEasingCurve(QEasingCurve::OutCubic);
+
+    auto *opacity = new QPropertyAnimation(effect, "opacity", m_pageTransitionOverlay);
+    opacity->setDuration(170);
+    opacity->setStartValue(1.0);
+    opacity->setEndValue(0.0);
+    opacity->setEasingCurve(QEasingCurve::OutCubic);
+
+    connect(opacity, &QPropertyAnimation::finished, this, [this]() {
+        if (!m_pageTransitionOverlay) {
+            return;
+        }
+        m_pageTransitionOverlay->hide();
+        m_pageTransitionOverlay->clear();
+        m_pageTransitionOverlay->move(0, 0);
+    });
+    position->start(QAbstractAnimation::DeleteWhenStopped);
+    opacity->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void PdfView::previousPage()
@@ -1907,7 +2137,7 @@ void PdfView::jumpToBookmark(const QModelIndex &index)
     const QPointF location = sourceIndex.data(static_cast<int>(QPdfBookmarkModel::Role::Location)).toPointF();
     bool zoomOk = false;
     const qreal bookmarkZoom = sourceIndex.data(static_cast<int>(QPdfBookmarkModel::Role::Zoom)).toReal(&zoomOk);
-    m_view->pageNavigator()->jump(page, location, zoomOk ? bookmarkZoom : zoomFactor());
+    jumpToPage(page, location, zoomOk ? bookmarkZoom : zoomFactor(), true);
 }
 
 void PdfView::generateAiNavigation()
@@ -2218,7 +2448,7 @@ void PdfView::rebuildAiNavigationModel()
     QStandardItem *levelParents[3] = {nullptr, nullptr, nullptr};
     for (const AiNavigationEntry &entry : std::as_const(m_aiNavigationEntries)) {
         const int level = qBound(1, entry.level, 3);
-        auto *item = new QStandardItem(i18n("%1  p. %2", entry.title, entry.pageOneBased));
+        auto *item = new QStandardItem(entry.title);
         item->setEditable(false);
         item->setData(entry.pageOneBased - 1, AiNavigationPageRole);
         item->setData(level, AiNavigationLevelRole);
@@ -2253,7 +2483,7 @@ void PdfView::jumpToAiNavigationEntry(const QModelIndex &index)
         return;
     }
 
-    m_view->pageNavigator()->jump(page, QPointF(), zoomFactor());
+    jumpToPage(page, QPointF(), zoomFactor(), true);
 }
 
 void PdfView::saveAiNavigationCache() const

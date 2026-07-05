@@ -207,6 +207,19 @@ static bool recordMatchesMnd(const QString &text)
 
 static bool recordMatchesPsychiatry(const QString &text)
 {
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("great depression"),
+                           QStringLiteral("robert caro"),
+                           QStringLiteral("robert a. caro"),
+                           QStringLiteral("path to power"),
+                           QStringLiteral("means of ascent"),
+                           QStringLiteral("master of the senate"),
+                           QStringLiteral("passage of power"),
+                           QStringLiteral("years of lyndon johnson"),
+                           QStringLiteral("lyndon b. johnson"),
+                           QStringLiteral("presidential biography")})) {
+        return false;
+    }
     return containsAnyNeedle(text,
                              {QStringLiteral("psychiat"),
                               QStringLiteral("mental health"),
@@ -293,12 +306,30 @@ static bool recordMatchesFiction(const QString &text)
 
 static bool recordMatchesCaroLbj(const QString &text)
 {
-    return containsAnyNeedle(text, {QStringLiteral("robert caro"), QStringLiteral("lyndon johnson"), QStringLiteral("lyndon b. johnson"), QStringLiteral("lbj"), QStringLiteral("years of lyndon johnson")});
+    return containsAnyNeedle(text,
+                             {QStringLiteral("robert caro"),
+                              QStringLiteral("robert a. caro"),
+                              QStringLiteral("lyndon johnson"),
+                              QStringLiteral("lyndon b. johnson"),
+                              QStringLiteral("lbj"),
+                              QStringLiteral("years of lyndon johnson"),
+                              QStringLiteral("path to power"),
+                              QStringLiteral("means of ascent"),
+                              QStringLiteral("master of the senate"),
+                              QStringLiteral("passage of power")});
 }
 
 static bool recordMatchesPolitics(const QString &text)
 {
-    return containsAnyNeedle(text, {QStringLiteral("politics"), QStringLiteral("political"), QStringLiteral("congress"), QStringLiteral("democracy"), QStringLiteral("government"), QStringLiteral("public policy")});
+    return recordMatchesCaroLbj(text)
+        || containsAnyNeedle(text,
+                             {QStringLiteral("politics"),
+                              QStringLiteral("political"),
+                              QStringLiteral("congress"),
+                              QStringLiteral("democracy"),
+                              QStringLiteral("government"),
+                              QStringLiteral("public policy"),
+                              QStringLiteral("presidential biography")});
 }
 
 static bool recordMatchesGraeber(const QString &text)
@@ -1057,6 +1088,291 @@ static QString relatedQueryFor(const QString &text, const QString &source, const
     return journal.isEmpty() ? sourceBucketFor(source) : journal;
 }
 
+static QString corpusMetadataHint(const QModelIndex &index)
+{
+    const QString year = index.data(PaperLibraryModel::YearRole).toString();
+    QString journal = index.data(PaperLibraryModel::JournalRole).toString();
+    if (journal == QLatin1String("(book)")) {
+        journal.clear();
+    }
+    return joinNonEmpty({year == QLatin1String("None") ? QString() : year, journal});
+}
+
+static QString corpusPriorityHintFor(const QModelIndex &index, const QString &text, const QString &source, const QString &journal)
+{
+    if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
+        return QStringLiteral("Pinned");
+    }
+    if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
+        return QStringLiteral("Continue reading");
+    }
+    if (source == QLatin1String("md-project-review-set")) {
+        return QStringLiteral("MD project review set");
+    }
+    if (recordMatchesBeyondBayes(text, source, journal)) {
+        return QStringLiteral("Beyond Bayes revision");
+    }
+    if (recordMatchesPeerReview(text, source)) {
+        return QStringLiteral("Peer review queue");
+    }
+    const int citedBy = index.data(PaperLibraryModel::CitedByCountRole).toInt();
+    if (citedBy >= 100) {
+        return QStringLiteral("Cited by %1").arg(citedBy);
+    }
+    if (index.data(PaperLibraryModel::MissingRole).toBool()) {
+        return QStringLiteral("PDF not local");
+    }
+    if (index.data(PaperLibraryModel::AddedRole).toString() >= QLatin1String("2026-06")) {
+        return QStringLiteral("Recently added");
+    }
+    return corpusMetadataHint(index);
+}
+
+static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filter, const QModelIndex &index, const QString &text, const QString &source, const QString &journal)
+{
+    const QString focus = focusBucketFor(index, text, source, journal);
+    const QString topic = topicBucketFor(text, source, journal);
+    const QString priority = corpusPriorityHintFor(index, text, source, journal);
+    if (priority == QLatin1String("Pinned") || priority == QLatin1String("Continue reading")) {
+        return priority;
+    }
+
+    switch (filter) {
+    case PaperLibrarySectionedModel::Papers:
+        if (!focus.isEmpty() && focus != QLatin1String("General Research")) {
+            return focus + QStringLiteral(" paper");
+        }
+        if (topic != QLatin1String("General Research")) {
+            return topic + QStringLiteral(" paper");
+        }
+        return QStringLiteral("Reading candidate");
+    case PaperLibrarySectionedModel::Books:
+        if (recordMatchesFiction(text)) {
+            return QStringLiteral("Long-form fiction");
+        }
+        if (recordMatchesCaroLbj(text)) {
+            return QStringLiteral("Political biography");
+        }
+        if (recordMatchesAnthropology(text)) {
+            return QStringLiteral("Anthropology / social theory");
+        }
+        if (recordMatchesPolitics(text)) {
+            return QStringLiteral("Politics and history");
+        }
+        return QStringLiteral("Long-form reading");
+    case PaperLibrarySectionedModel::Textbooks:
+        return topic == QLatin1String("General Research") ? QStringLiteral("Reference textbook") : topic + QStringLiteral(" reference");
+    case PaperLibrarySectionedModel::Medicine:
+        if (recordMatchesMnd(text)) {
+            return QStringLiteral("Clinical MND reference");
+        }
+        if (recordMatchesPsychiatry(text)) {
+            return QStringLiteral("Psychiatry training");
+        }
+        if (recordMatchesPaediatrics(text)) {
+            return QStringLiteral("Paeds rotation");
+        }
+        if (recordMatchesObgyn(text)) {
+            return QStringLiteral("OBGYN rotation");
+        }
+        return QStringLiteral("Medical textbook");
+    case PaperLibrarySectionedModel::Psychiatry:
+        return QStringLiteral("Psychiatry training");
+    case PaperLibrarySectionedModel::Mnd:
+        if (source == QLatin1String("md-project-review-set")) {
+            return QStringLiteral("MD project core paper");
+        }
+        return topic == QLatin1String("MND / ALS") ? QStringLiteral("MND project paper") : topic;
+    case PaperLibrarySectionedModel::Work:
+        if (recordMatchesBeyondBayes(text, source, journal)) {
+            return QStringLiteral("Beyond Bayes work");
+        }
+        if (recordMatchesPeerReview(text, source)) {
+            return QStringLiteral("Peer review work");
+        }
+        return QStringLiteral("Active work item");
+    case PaperLibrarySectionedModel::Anthropology:
+        return QStringLiteral("Anthropology / social theory");
+    case PaperLibrarySectionedModel::Politics:
+        return QStringLiteral("Politics and history");
+    case PaperLibrarySectionedModel::Fiction:
+        return recordMatchesGameOfThrones(text) ? QStringLiteral("A Song of Ice and Fire") : QStringLiteral("Fiction queue");
+    case PaperLibrarySectionedModel::Nonfiction:
+        if (recordMatchesCaroLbj(text)) {
+            return QStringLiteral("Political biography");
+        }
+        if (recordMatchesAnthropology(text)) {
+            return QStringLiteral("Anthropology / social theory");
+        }
+        if (recordMatchesPolitics(text)) {
+            return QStringLiteral("Politics and history");
+        }
+        return QStringLiteral("Non-fiction reading");
+    }
+    return QStringLiteral("Reading candidate");
+}
+
+static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter filter, const QModelIndex &index, const QString &text, const QString &source, const QString &journal)
+{
+    if (index.data(PaperLibraryModel::MissingRole).toBool()) {
+        return QStringLiteral("Needs local PDF");
+    }
+    if (filter == PaperLibrarySectionedModel::Work) {
+        if (recordMatchesBeyondBayes(text, source, journal)) {
+            return QStringLiteral("Linked to Beyond Bayes");
+        }
+        if (recordMatchesPeerReview(text, source)) {
+            return QStringLiteral("Linked to peer-review stack");
+        }
+    }
+    if (filter == PaperLibrarySectionedModel::Medicine) {
+        if (recordMatchesMnd(text)) {
+            return QStringLiteral("Bridge: medicine + MND");
+        }
+        if (recordMatchesPsychiatry(text)) {
+            return QStringLiteral("Bridge: medicine + psychiatry");
+        }
+        if (recordMatchesPaediatrics(text)) {
+            return QStringLiteral("Rotation: paeds");
+        }
+        if (recordMatchesObgyn(text)) {
+            return QStringLiteral("Rotation: OBGYN");
+        }
+    }
+    if (filter == PaperLibrarySectionedModel::Mnd && source == QLatin1String("md-project-review-set")) {
+        return QStringLiteral("Linked to MD project review set");
+    }
+    if (filter == PaperLibrarySectionedModel::Fiction && recordMatchesGameOfThrones(text)) {
+        return QStringLiteral("Continue the series");
+    }
+    if ((filter == PaperLibrarySectionedModel::Nonfiction || filter == PaperLibrarySectionedModel::Books) && recordMatchesCaroLbj(text)) {
+        return QStringLiteral("Linked to LBJ / US power");
+    }
+    if ((filter == PaperLibrarySectionedModel::Nonfiction || filter == PaperLibrarySectionedModel::Books) && recordMatchesAnthropology(text)) {
+        return QStringLiteral("Adjacent: anthropology");
+    }
+
+    const QString related = relatedQueryFor(text, source, journal);
+    if (!related.isEmpty() && related != QLatin1String("General Research")) {
+        return QStringLiteral("Related: %1").arg(related);
+    }
+    const QString metadata = corpusMetadataHint(index);
+    return metadata.isEmpty() ? QStringLiteral("Find adjacent items") : metadata;
+}
+
+static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row, PaperLibrarySectionedModel::SmartFilter filter)
+{
+    const QModelIndex index = source->index(row);
+    const QString haystack = index.data(PaperLibraryModel::HaystackRole).toString();
+    const QString sourceName = index.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
+    const QString journal = index.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
+    const QString text = haystack + QLatin1Char('\n') + sourceName;
+
+    int score = 1000;
+    if (index.data(PaperLibraryModel::PinnedRole).toBool()) {
+        score -= 700;
+    }
+    if (index.data(PaperLibraryModel::AccessCountRole).toInt() > 0) {
+        score -= 600;
+    }
+    if (!index.data(PaperLibraryModel::MissingRole).toBool()) {
+        score -= 60;
+    } else {
+        score += 180;
+    }
+
+    switch (filter) {
+    case PaperLibrarySectionedModel::Papers:
+        if (recordMatchesMnd(text)) {
+            score -= 320;
+        }
+        if (recordMatchesBeyondBayes(text, sourceName, journal) || recordMatchesPeerReview(text, sourceName)) {
+            score -= 280;
+        }
+        if (recordMatchesPsychiatry(text) || recordMatchesPaediatrics(text) || recordMatchesObgyn(text)) {
+            score -= 200;
+        }
+        if (topicBucketFor(text, sourceName, journal) == QLatin1String("Methods & Statistics")) {
+            score -= 160;
+        }
+        break;
+    case PaperLibrarySectionedModel::Books:
+    case PaperLibrarySectionedModel::Nonfiction:
+        if (recordMatchesCaroLbj(text)) {
+            score -= 280;
+        }
+        if (recordMatchesAnthropology(text) || recordMatchesPolitics(text)) {
+            score -= 220;
+        }
+        break;
+    case PaperLibrarySectionedModel::Textbooks:
+        if (recordMatchesMedicine(text) || topicBucketFor(text, sourceName, journal) == QLatin1String("Methods & Statistics")) {
+            score -= 220;
+        }
+        break;
+    case PaperLibrarySectionedModel::Medicine:
+        if (recordMatchesMnd(text) || recordMatchesPsychiatry(text)) {
+            score -= 260;
+        }
+        if (recordMatchesPaediatrics(text) || recordMatchesObgyn(text)) {
+            score -= 220;
+        }
+        break;
+    case PaperLibrarySectionedModel::Mnd:
+        if (sourceName == QLatin1String("md-project-review-set")) {
+            score -= 360;
+        }
+        if (containsAnyNeedle(text, {QStringLiteral("biomarker"), QStringLiteral("neurofilament"), QStringLiteral("diagnos"), QStringLiteral("trial")})) {
+            score -= 240;
+        }
+        break;
+    case PaperLibrarySectionedModel::Work:
+        if (recordMatchesBeyondBayes(text, sourceName, journal)) {
+            score -= 300;
+        }
+        if (recordMatchesPeerReview(text, sourceName)) {
+            score -= 260;
+        }
+        break;
+    case PaperLibrarySectionedModel::Fiction:
+        if (recordMatchesGameOfThrones(text)) {
+            score -= 260;
+        }
+        break;
+    case PaperLibrarySectionedModel::Psychiatry:
+        score -= 220;
+        break;
+    case PaperLibrarySectionedModel::Anthropology:
+    case PaperLibrarySectionedModel::Politics:
+        score -= 180;
+        break;
+    }
+
+    const int citedBy = index.data(PaperLibraryModel::CitedByCountRole).toInt();
+    if (citedBy > 0) {
+        score -= qMin(citedBy, 250) / 5;
+    }
+    const QString added = index.data(PaperLibraryModel::AddedRole).toString();
+    if (added >= QLatin1String("2026-06")) {
+        score -= 80;
+    } else if (added >= QLatin1String("2026")) {
+        score -= 30;
+    }
+    return score;
+}
+
+static bool sourceRowLikelyBefore(const PaperLibraryModel *source, int leftRow, int rightRow);
+
+static bool sourceRowLikelyBeforeForShelf(const PaperLibraryModel *source, int leftRow, int rightRow, PaperLibrarySectionedModel::SmartFilter filter)
+{
+    const int leftScore = sourceRowShelfPriorityScore(source, leftRow, filter);
+    const int rightScore = sourceRowShelfPriorityScore(source, rightRow, filter);
+    if (leftScore != rightScore) {
+        return leftScore < rightScore;
+    }
+    return sourceRowLikelyBefore(source, leftRow, rightRow);
+}
+
 static bool sourceRowLikelyBefore(const PaperLibraryModel *source, int leftRow, int rightRow)
 {
     const QModelIndex left = source->index(leftRow);
@@ -1204,6 +1520,22 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     const QString source = sourceIndex.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
     const QString journal = sourceIndex.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
     const QString text = sourceIndex.data(PaperLibraryModel::HaystackRole).toString() + QLatin1Char('\n') + source;
+    if (role == ShelfIntentRole) {
+        return corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
+    }
+    if (role == RelationHintRole) {
+        return corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
+    }
+    if (role == PriorityHintRole) {
+        return corpusPriorityHintFor(sourceIndex, text, source, journal);
+    }
+    if (role == Qt::ToolTipRole) {
+        return joinNonEmpty({sourceIndex.data(Qt::DisplayRole).toString(),
+                             sourceIndex.data(PaperLibraryModel::DetailRole).toString(),
+                             corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal),
+                             corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal),
+                             sourceIndex.data(Qt::ToolTipRole).toString()});
+    }
     if (role == KindRole) {
         if (recordMatchesTextbook(text, source)) {
             return QStringLiteral("TEXTBOOK");
@@ -1532,7 +1864,7 @@ void PaperLibrarySectionedModel::rebuild()
             if (leftDownranked != rightDownranked) {
                 return !leftDownranked;
             }
-            return sourceRowLikelyBefore(m_source, leftRow, rightRow);
+            return sourceRowLikelyBeforeForShelf(m_source, leftRow, rightRow, m_smartFilter);
         });
         for (const int sourceRow : sourceRowsForSection) {
             m_rows.append({false, sourceRow, QString()});

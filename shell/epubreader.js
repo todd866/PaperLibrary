@@ -5,6 +5,7 @@
     const styleId = "paperlibrary-reader-style";
     const initialFontScaleStep = __PAPERLIBRARY_INITIAL_FONT_SCALE_STEP__;
     const initialScrollMode = __PAPERLIBRARY_SCROLL_MODE__;
+    const initialReaderMotion = __PAPERLIBRARY_READER_MOTION__;
     const minFontScaleStep = -5;
     const maxFontScaleStep = 7;
     const baseFontSize = 18;
@@ -25,6 +26,7 @@
     let wheelLockedDirection = 0;
     let wheelQuietTimer = 0;
     let scrollMode = normalizeScrollMode(initialScrollMode);
+    let readerMotion = initialReaderMotion !== false;
 
     function installStyle() {
         let style = document.getElementById(styleId);
@@ -34,6 +36,7 @@
             (document.head || document.documentElement).appendChild(style);
         }
         applyScrollModeClass();
+        applyReaderMotionClass();
         applyFontScaleStep(fontScaleStep);
     }
 
@@ -73,6 +76,10 @@
     function applyScrollModeClass() {
         document.documentElement.classList.toggle("paperlibrary-scroll-paginated", isPaginated());
         document.documentElement.classList.toggle("paperlibrary-scroll-continuous", !isPaginated());
+    }
+
+    function applyReaderMotionClass() {
+        document.documentElement.classList.toggle("paperlibrary-motion-reduced", !readerMotion);
     }
 
     function fontSizeForStep(step) {
@@ -230,7 +237,7 @@
 
     function playSpineEntryAnimation() {
         const direction = takeSpineSlideDirection();
-        if (!direction) {
+        if (!direction || !readerMotion) {
             return;
         }
         wheelLocked = true;
@@ -249,6 +256,10 @@
         }
         lastBoundaryNavigation = now;
         const command = direction > 0 ? "next" : "previous";
+        if (!readerMotion) {
+            window.location.assign(window.location.protocol + "//" + window.location.host + "/.paperlibrary/" + command);
+            return true;
+        }
         const className = direction > 0 ? "paperlibrary-spine-exit-next" : "paperlibrary-spine-exit-previous";
         document.documentElement.classList.add(className);
         window.name = spineSlideWindowNamePrefix + (direction > 0 ? "1" : "-1");
@@ -323,6 +334,12 @@
             setScrollOffset(ratio * maxScrollLeft(), { smooth: false });
         }, 80);
         return scrollMode;
+    }
+
+    function setReaderMotion(enabled) {
+        readerMotion = enabled !== false;
+        applyReaderMotionClass();
+        return readerMotion;
     }
 
     function handleKey(event) {
@@ -406,7 +423,8 @@
         pageStep: pageStep,
         relayout: relayout,
         setFontScaleStep: setFontScaleStep,
-        setScrollMode: setScrollMode
+        setScrollMode: setScrollMode,
+        setReaderMotion: setReaderMotion
     };
 
     function initialize() {

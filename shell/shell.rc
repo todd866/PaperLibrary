@@ -22,6 +22,7 @@
    <Action name="epub-scroll-book-continuous" />
    <Separator/>
    <Action name="scan-apple-books-on-startup" />
+   <Action name="reader-motion" />
    <Action name="library-auto-tag" />
    <DefineGroup append="configure_merge" name="configure_merge" />
   </Menu>

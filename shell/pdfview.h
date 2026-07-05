@@ -8,6 +8,7 @@
 #define PAPERLIBRARY_PDFVIEW_H
 
 #include <QList>
+#include <QPointF>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -24,6 +25,7 @@ class QPdfDocument;
 class QPdfPageNavigator;
 class QPdfSearchModel;
 class QPdfView;
+class QPixmap;
 class QProcess;
 class QProgressBar;
 class QLineEdit;
@@ -48,6 +50,8 @@ public:
     ~PdfView() override;
 
     static bool canOpen(const QUrl &url);
+    static bool readerMotionEnabled();
+    static void setReaderMotionEnabled(bool enabled);
 
     bool open(const QUrl &url);
     QUrl url() const;
@@ -105,6 +109,8 @@ private:
     void resetFindState();
     void setupFindBar();
     QString positionKey() const;
+    void jumpToPage(int zeroBasedPage, const QPointF &location, qreal zoom, bool animated);
+    void animatePageTurn(const QPixmap &snapshot, int direction);
     void generateAiNavigation();
     void cancelAiNavigationRun();
     void resetAiNavigationForDocument();
@@ -143,6 +149,7 @@ private:
     QToolButton *m_aiNavigationButton = nullptr;
     QTreeView *m_aiNavigationView = nullptr;
     QStandardItemModel *m_aiNavigationModel = nullptr;
+    QLabel *m_pageTransitionOverlay = nullptr;
     QProcess *m_aiNavigationProcess = nullptr;
     QString m_claudeExecutable;
     QString m_aiNavigationCachePath;
