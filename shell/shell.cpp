@@ -2358,7 +2358,7 @@ void Shell::jumpToBooksProgressWhenReady(const QUrl &url, double progress)
     }
 }
 
-void Shell::openImportedBundle(const QUrl &bundleUrl, const QString &serializedOptions)
+void Shell::openImportedBundle(const QUrl &bundleUrl, const QString &serializedOptions, bool openInNewTab)
 {
     const EpubImporter::Result result = EpubImporter::import(bundleUrl.toLocalFile());
     if (result.status != EpubImporter::Status::Imported) {
@@ -2382,23 +2382,32 @@ void Shell::openImportedBundle(const QUrl &bundleUrl, const QString &serializedO
     // Open the local copy through the normal path (records it in the store, so
     // its next open is direct) and carry the Apple Books reading position over.
     const QUrl localUrl = QUrl::fromLocalFile(result.importedPath);
-    openUrl(localUrl, serializedOptions);
+    if (openInNewTab) {
+        openNewTab(localUrl, serializedOptions);
+    } else {
+        openUrl(localUrl, serializedOptions);
+    }
     jumpToBooksProgressWhenReady(localUrl, result.progress);
 }
 
 void Shell::openFromLibrary(const QUrl &url, double booksProgress)
 {
-    // Activation navigates the library tab it happened on (normally the
-    // current tab already; being explicit keeps programmatic activations honest)
+    // Library tabs are the control panel. Activating a tile should open the
+    // document beside it, leaving the library available for the next choice.
     const int senderTab = findTabIndex(sender());
     if (senderTab >= 0 && senderTab != m_tabWidget->currentIndex()) {
         setActiveTab(senderTab);
     }
 
     // A directory-bundle EPUB imports on open (openUrl → openImportedBundle),
-    // which itself lands the reading position from Apple Books; the tile's
-    // progress only applies to documents opened directly, in place, here.
-    openUrl(url);
+    // which itself lands the reading position from Apple Books. Library opens
+    // keep the library tab and put the imported copy in a document tab.
+    if (EpubImporter::isDirectoryBundle(url)) {
+        openImportedBundle(url, QString(), true);
+        return;
+    }
+
+    openNewTab(url, QString());
     jumpToBooksProgressWhenReady(url, booksProgress);
 }
 

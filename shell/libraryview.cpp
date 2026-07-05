@@ -848,15 +848,7 @@ public:
         } else if (corpusTile) {
             drawCorpusCard(painter, coverRect, index, option, palette);
         } else {
-            // Placeholder: a quiet palette-derived sheet with a format label
-            painter->fillPath(coverClip, blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), 0.06));
-            QFont formatFont = option.font;
-            formatFont.setBold(true);
-            QColor formatColor = palette.color(QPalette::Text);
-            formatColor.setAlphaF(0.35);
-            painter->setFont(formatFont);
-            painter->setPen(formatColor);
-            painter->drawText(coverRect, Qt::AlignCenter, index.data(LibraryView::FormatRole).toString());
+            drawDocumentCard(painter, coverRect, index, option, palette);
         }
 
         // Translucent outline so white covers keep a soft edge (the page
@@ -1162,6 +1154,82 @@ private:
         }
     }
 
+    static void drawDocumentCard(QPainter *painter, const QRect &coverRect, const QModelIndex &index, const QStyleOptionViewItem &option, const QPalette &palette)
+    {
+        const QString title = index.data(Qt::DisplayRole).toString();
+        const QString format = index.data(LibraryView::FormatRole).toString();
+        const QStringList tags = index.data(LibraryView::TagsRole).toStringList();
+        const QString description = index.data(LibraryView::DescriptionRole).toString();
+        const QString seed = QStringList({format, tags.value(0), title}).join(QLatin1Char(' '));
+        const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
+        QColor accent = CoverGenerator::accentColor(seed, darkMode);
+
+        QPainterPath clip;
+        clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
+        const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.12 : 0.055);
+        painter->fillPath(clip, blendColors(cardBase, accent, darkMode ? 0.34 : 0.26));
+
+        QColor spine = accent;
+        spine.setAlphaF(0.92);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(spine);
+        painter->drawRect(QRect(coverRect.left(), coverRect.top(), 8, coverRect.height()));
+        painter->drawRect(QRect(coverRect.left(), coverRect.top(), coverRect.width(), 8));
+
+        QColor wash = accent;
+        wash.setAlphaF(darkMode ? 0.24 : 0.18);
+        painter->setBrush(wash);
+        painter->drawEllipse(QRectF(coverRect.right() - 52, coverRect.top() + 18, 78, 78));
+        painter->drawRoundedRect(QRectF(coverRect.left() + 14, coverRect.bottom() - 40, coverRect.width() - 28, 22), 5, 5);
+
+        QColor panel = palette.color(QPalette::Base);
+        panel.setAlphaF(darkMode ? 0.70 : 0.82);
+        painter->setBrush(panel);
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(13, 31, -10, -10), 5, 5);
+
+        QFont labelFont = smallerFont(option.font);
+        labelFont.setBold(true);
+        QColor muted = palette.color(QPalette::Text);
+        muted.setAlphaF(0.52);
+        painter->setFont(labelFont);
+        painter->setPen(muted);
+        painter->drawText(coverRect.adjusted(14, 11, -10, -10), Qt::AlignLeft | Qt::AlignTop, QFontMetrics(labelFont).elidedText(format.isEmpty() ? i18nc("@label generated tile cover", "DOCUMENT") : format, Qt::ElideRight, coverRect.width() - 24));
+
+        QFont titleFont = option.font;
+        titleFont.setBold(true);
+        painter->setFont(titleFont);
+        painter->setPen(palette.color(QPalette::Text));
+        const QFontMetrics titleMetrics(titleFont);
+        const QStringList lines = wrapTitle(title, titleFont, coverRect.width() - 28, 4);
+        int y = coverRect.top() + 43;
+        for (const QString &line : lines) {
+            painter->drawText(QRect(coverRect.left() + 15, y, coverRect.width() - 30, titleMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
+            y += titleMetrics.height();
+        }
+
+        const QFont metaFont = smallerFont(option.font);
+        const QFontMetrics metaMetrics(metaFont);
+        QColor metaColor = palette.color(QPalette::Text);
+        metaColor.setAlphaF(0.58);
+        painter->setFont(metaFont);
+        painter->setPen(metaColor);
+        QString meta = description;
+        if (meta.isEmpty() && !tags.isEmpty()) {
+            meta = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
+        }
+        if (!meta.isEmpty()) {
+            painter->drawText(QRect(coverRect.left() + 15, coverRect.bottom() - 35, coverRect.width() - 30, metaMetrics.height() * 2),
+                              Qt::AlignLeft | Qt::AlignTop,
+                              metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 30));
+        }
+
+        QColor rim = accent;
+        rim.setAlphaF(darkMode ? 0.70 : 0.48);
+        painter->setPen(QPen(rim, 1.5));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(0.7, 0.7, -0.7, -0.7), CoverRadius, CoverRadius);
+    }
+
     static void drawCoverShadow(QPainter *painter, const QRect &coverRect)
     {
         // Ambient shadow in the page view's language: translucent black,
@@ -1288,7 +1356,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     connect(m_searchDebounce, &QTimer::timeout, this, &LibraryView::startContentSearch);
     m_shelfRenderTimer = new QTimer(this);
     m_shelfRenderTimer->setSingleShot(true);
-    m_shelfRenderTimer->setInterval(45);
+    m_shelfRenderTimer->setInterval(0);
     connect(m_shelfRenderTimer, &QTimer::timeout, this, &LibraryView::renderPendingShelf);
 
     m_openButton = new QPushButton(i18n("Open File…"), this);
@@ -2560,7 +2628,6 @@ void LibraryView::shelfChanged(int index)
     if (m_corpusCoverWarmupTimer) {
         m_corpusCoverWarmupTimer->stop();
     }
-    m_corpusPrewarmActive = false;
     if (m_shelfRenderTimer) {
         m_shelfRenderTimer->start();
     } else {
@@ -2583,6 +2650,8 @@ void LibraryView::renderPendingShelf()
 void LibraryView::renderShelf(Shelf shelf, bool animate)
 {
     const bool corpus = usesCorpusList(shelf);
+    const bool wasUpdatesEnabled = m_grid->updatesEnabled();
+    m_grid->setUpdatesEnabled(false);
     if (corpus) {
         configureCorpusShelf(shelf);
         PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
@@ -2622,6 +2691,8 @@ void LibraryView::renderShelf(Shelf shelf, bool animate)
     if (!searchQuery().isEmpty()) {
         applySearch(); // the content search follows the active shelf
     }
+    m_grid->setUpdatesEnabled(wasUpdatesEnabled);
+    m_grid->viewport()->update();
 }
 
 bool LibraryView::usesCorpusList(Shelf shelf) const
@@ -2802,7 +2873,7 @@ void LibraryView::scheduleCorpusPrewarm()
     }
     m_corpusPrewarmIndex = 0;
     m_corpusPrewarmActive = true;
-    QTimer::singleShot(220, this, &LibraryView::prewarmNextCorpusShelf);
+    QTimer::singleShot(0, this, &LibraryView::prewarmNextCorpusShelf);
 }
 
 void LibraryView::prewarmNextCorpusShelf()
@@ -2814,10 +2885,6 @@ void LibraryView::prewarmNextCorpusShelf()
         m_corpusPrewarmActive = false;
         return;
     }
-    if (m_coverLoader && m_coverLoader->pendingWorkCount() > 130) {
-        QTimer::singleShot(650, this, &LibraryView::prewarmNextCorpusShelf);
-        return;
-    }
     if (m_corpusPrewarmIndex >= m_corpusPrewarmQueue.size()) {
         m_corpusPrewarmActive = false;
         return;
@@ -2825,10 +2892,11 @@ void LibraryView::prewarmNextCorpusShelf()
 
     const Shelf shelf = m_corpusPrewarmQueue.at(m_corpusPrewarmIndex++);
     attachCorpusShelf(shelf);
-    if (PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf)) {
+    if ((!m_coverLoader || m_coverLoader->pendingWorkCount() <= 130) && paperSectionsForShelf(shelf)) {
+        PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
         requestCorpusCoversForSections(sections, 0, 12);
     }
-    QTimer::singleShot(420, this, &LibraryView::prewarmNextCorpusShelf);
+    QTimer::singleShot(45, this, &LibraryView::prewarmNextCorpusShelf);
 }
 
 void LibraryView::ensurePapersFresh()

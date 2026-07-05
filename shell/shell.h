@@ -183,7 +183,7 @@ private:
      * fresh import. DRM'd, not-yet-downloaded and failed imports surface a
      * clear message rather than the raw "could not open" error.
      */
-    void openImportedBundle(const QUrl &bundleUrl, const QString &serializedOptions);
+    void openImportedBundle(const QUrl &bundleUrl, const QString &serializedOptions, bool openInNewTab = false);
 
     /** Land the document at @p url on @p progress (0..1) once its pages load; a no-op for progress < 0. */
     void jumpToBooksProgressWhenReady(const QUrl &url, double progress);
