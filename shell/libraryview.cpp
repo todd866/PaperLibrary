@@ -35,6 +35,7 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QProcess>
@@ -81,6 +82,7 @@ static constexpr int ProgressGap = 7;
 static constexpr int ProgressBarHeight = 4;
 static constexpr int GridSpacing = 12;
 static constexpr int CorpusCoverHeight = 158;
+static constexpr int DownrankDragDistance = 48;
 
 /**
  * Renders cover thumbnails asynchronously through macOS QuickLook
@@ -2046,6 +2048,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_grid->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_grid->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_grid->viewport()->setAutoFillBackground(false);
+    m_grid->viewport()->installEventFilter(this);
     m_grid->setItemDelegate(new LibraryTileDelegate(m_grid));
     configureTileGrid();
     m_grid->setModel(modelForShelf(PdfShelf));
@@ -3865,6 +3868,69 @@ void LibraryView::showPaperNotice(const QString &text, bool autoHide)
     }
 }
 
+bool LibraryView::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_grid && watched == m_grid->viewport()) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            resetTileDrag();
+            if (mouseEvent->button() == Qt::LeftButton) {
+                const QModelIndex index = m_grid->indexAt(mouseEvent->position().toPoint());
+                if (index.isValid() && !isLibraryHeaderIndex(index)) {
+                    m_tileDragIndex = index;
+                    m_tileDragPressPos = mouseEvent->position().toPoint();
+                    m_tileDragCandidate = true;
+                }
+            }
+            break;
+        }
+        case QEvent::MouseMove: {
+            if (!m_tileDragCandidate || !(static_cast<QMouseEvent *>(event)->buttons() & Qt::LeftButton)) {
+                break;
+            }
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            const QPoint delta = mouseEvent->position().toPoint() - m_tileDragPressPos;
+            if (delta.y() >= DownrankDragDistance && delta.y() > std::abs(delta.x())) {
+                if (!m_tileDragArmed) {
+                    m_tileDragArmed = true;
+                    m_grid->viewport()->setCursor(Qt::ClosedHandCursor);
+                    if (usesCorpusList(activeShelf())) {
+                        showPaperNotice(i18nc("@info while dragging a library tile downward", "Release to move this lower in the feed"), false);
+                    }
+                }
+                event->accept();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseButtonRelease: {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() != Qt::LeftButton || !m_tileDragCandidate) {
+                break;
+            }
+            const QPoint delta = mouseEvent->position().toPoint() - m_tileDragPressPos;
+            const bool shouldDownrank = m_tileDragArmed || (delta.y() >= DownrankDragDistance && delta.y() > std::abs(delta.x()));
+            const QModelIndex index = QModelIndex(m_tileDragIndex);
+            resetTileDrag();
+            if (shouldDownrank) {
+                downrankTile(index);
+                event->accept();
+                return true;
+            }
+            break;
+        }
+        case QEvent::Leave:
+        case QEvent::MouseButtonDblClick:
+            resetTileDrag();
+            break;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void LibraryView::connectGridSelectionContext()
 {
     if (m_gridSelectionConnection) {
@@ -3916,6 +3982,52 @@ void LibraryView::updateSelectedTileContext(const QModelIndex &index)
     }
 
     showPaperNotice(parts.join(QStringLiteral("  |  ")), false);
+}
+
+bool LibraryView::downrankTile(const QModelIndex &index)
+{
+    if (!index.isValid() || isLibraryHeaderIndex(index)) {
+        return false;
+    }
+
+    const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+    if (index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
+        if (index.data(PaperLibrarySectionedModel::DownrankedRole).toBool()) {
+            return false;
+        }
+        auto *sections = qobject_cast<PaperLibrarySectionedModel *>(const_cast<QAbstractItemModel *>(index.model()));
+        if (!sections) {
+            return false;
+        }
+        sections->setDownranked(index, true);
+        showPaperNotice(title.isEmpty() ? i18nc("@info after dragging a corpus tile downward", "Moved lower in the feed")
+                                        : i18nc("@info after dragging a corpus tile downward", "Moved lower in the feed: %1", title),
+                        true);
+        return true;
+    }
+
+    const QUrl url = index.data(UrlRole).toUrl();
+    if (!url.isValid() || index.data(DownrankedRole).toBool()) {
+        return false;
+    }
+    m_store->setDownranked(url, true);
+    refresh();
+    if (m_paperNotice) {
+        showPaperNotice(title.isEmpty() ? i18nc("@info after dragging a library tile downward", "Moved lower in the feed")
+                                        : i18nc("@info after dragging a library tile downward", "Moved lower in the feed: %1", title),
+                        true);
+    }
+    return true;
+}
+
+void LibraryView::resetTileDrag()
+{
+    m_tileDragCandidate = false;
+    m_tileDragArmed = false;
+    m_tileDragIndex = QPersistentModelIndex();
+    if (m_grid && m_grid->viewport()) {
+        m_grid->viewport()->unsetCursor();
+    }
 }
 
 QList<QUrl> LibraryView::shelfUrls(Shelf shelf) const

@@ -14,6 +14,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
 #include <QListView>
 #include <QPainter>
 #include <QSignalSpy>
@@ -201,6 +202,7 @@ private Q_SLOTS:
     void testBooksShelfStaysWithLocalEbooks();
     void testLocalBookClassificationIgnoresStaleTags();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
+    void testDraggingTileDownDownranksLocalBook();
     void testCorpusActivationStoresCuratedMetadata();
     void testStarterPackEmptySetupTile();
     void testStarterPackInstalledMetadataTooltip();
@@ -578,6 +580,74 @@ void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()
     QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
     QCOMPARE(activatedSpy.count(), 1);
     QCOMPARE(activatedSpy.takeFirst().at(0).toUrl(), url);
+}
+
+void LibraryViewTest::testDraggingTileDownDownranksLocalBook()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    auto addBook = [this, &store](const QString &fileName, const QString &title, int opens) {
+        const QString path = m_dir->filePath(fileName);
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) {
+            return QUrl();
+        }
+        file.write("not a real epub; enough for a local fixture path\n");
+        file.close();
+        const QUrl url = QUrl::fromLocalFile(path);
+        store.setTitle(url, title);
+        store.setTags(url, {QStringLiteral("Book")});
+        for (int i = 0; i < opens; ++i) {
+            store.recordOpen(url, QDateTime(QDate(2026, 7, 5), QTime(10, 0).addSecs(i)));
+        }
+        return url;
+    };
+
+    const QUrl topBook = addBook(QStringLiteral("books/Master of the Senate.epub"), QStringLiteral("Master of the Senate"), 4);
+    const QUrl otherBook = addBook(QStringLiteral("books/A Game Of Thrones.epub"), QStringLiteral("A Game Of Thrones"), 1);
+    QVERIFY(topBook.isValid());
+    QVERIFY(otherBook.isValid());
+
+    LibraryView view(&store, nullptr, true);
+    view.resize(700, 520);
+    view.refresh();
+    view.layout()->activate();
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    grid->resize(680, 440);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
+    QVERIFY(booksTab >= 0);
+    shelves->setCurrentIndex(booksTab);
+    QTRY_VERIFY(grid->model());
+    QTRY_VERIFY(grid->model()->rowCount() >= 2);
+
+    auto findTitleIndex = [grid](const QString &title) {
+        for (int row = 0; row < grid->model()->rowCount(); ++row) {
+            const QModelIndex index = grid->model()->index(row, 0);
+            if (index.data(Qt::DisplayRole).toString() == title) {
+                return index;
+            }
+        }
+        return QModelIndex();
+    };
+
+    const QModelIndex index = findTitleIndex(QStringLiteral("Master of the Senate"));
+    QVERIFY(index.isValid());
+    grid->scrollTo(index);
+    grid->doItemsLayout();
+    QRect rect = grid->visualRect(index);
+    QVERIFY(!rect.isEmpty());
+    const QPoint start = rect.center();
+    const QPoint finish = start + QPoint(0, 90);
+
+    QTest::mousePress(grid->viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(grid->viewport(), finish);
+    QTest::mouseRelease(grid->viewport(), Qt::LeftButton, Qt::NoModifier, finish);
+
+    QTRY_VERIFY(store.isDownranked(topBook));
 }
 
 void LibraryViewTest::testCorpusActivationStoresCuratedMetadata()

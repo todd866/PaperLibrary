@@ -11,6 +11,8 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
+#include <QPersistentModelIndex>
+#include <QPoint>
 #include <QUrl>
 #include <QWidget>
 
@@ -135,6 +137,7 @@ protected:
     void showEvent(QShowEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     struct ShelfEntry {
@@ -215,6 +218,8 @@ private:
     void showPaperNotice(const QString &text, bool autoHide = true);
     void connectGridSelectionContext();
     void updateSelectedTileContext(const QModelIndex &index);
+    bool downrankTile(const QModelIndex &index);
+    void resetTileDrag();
     void tileClicked(const QModelIndex &index);
     void activateCurrentTile();
     void selectFirstTile();
@@ -283,6 +288,10 @@ private:
     QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
     QPropertyAnimation *m_gridFadeAnimation = nullptr;
     QMetaObject::Connection m_gridSelectionConnection;
+    QPersistentModelIndex m_tileDragIndex;
+    QPoint m_tileDragPressPos;
+    bool m_tileDragCandidate = false;
+    bool m_tileDragArmed = false;
     QElapsedTimer m_lastShelfRender;
     int m_pendingShelfIndex = -1;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
