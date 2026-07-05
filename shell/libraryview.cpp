@@ -696,13 +696,89 @@ static QString progressTooltipLine(double progress)
     return i18nc("@info:tooltip Apple Books reading progress", "Progress: %1%", qRound(qBound(0.0, progress, 1.0) * 100));
 }
 
+static QString curatedLocalTitleFor(const QString &text)
+{
+    const QString lower = text.toCaseFolded();
+    if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("america that went to war"))) {
+        return QStringLiteral("1941: The America That Went to War");
+    }
+    if (lower.contains(QLatin1String("game of thrones"))) {
+        return QStringLiteral("A Game of Thrones");
+    }
+    if (lower.contains(QLatin1String("everything was forever until it was no more"))) {
+        return QStringLiteral("Everything Was Forever Until It Was No More");
+    }
+    if (lower.contains(QLatin1String("dawn of everything"))) {
+        return QStringLiteral("The Dawn of Everything");
+    }
+    if (lower.contains(QLatin1String("bullshit jobs"))) {
+        return QStringLiteral("Bullshit Jobs");
+    }
+    if (lower.contains(QLatin1String("debt the first 5000 years")) || lower.contains(QLatin1String("debt the first 5,000 years"))) {
+        return QStringLiteral("Debt: The First 5,000 Years");
+    }
+    if (lower.contains(QLatin1String("cities made differently"))) {
+        return QStringLiteral("Cities Made Differently");
+    }
+    if (lower.contains(QLatin1String("utopia of rules"))) {
+        return QStringLiteral("The Utopia of Rules");
+    }
+    if (lower.contains(QLatin1String("pirate enlightenment"))) {
+        return QStringLiteral("Pirate Enlightenment");
+    }
+    if (lower.contains(QLatin1String("path to power"))) {
+        return QStringLiteral("The Path to Power");
+    }
+    if (lower.contains(QLatin1String("means of ascent"))) {
+        return QStringLiteral("Means of Ascent");
+    }
+    if (lower.contains(QLatin1String("master of the senate"))) {
+        return QStringLiteral("Master of the Senate");
+    }
+    if (lower.contains(QLatin1String("passage of power"))) {
+        return QStringLiteral("The Passage of Power");
+    }
+    if (lower.contains(QLatin1String("power broker"))) {
+        return QStringLiteral("The Power Broker");
+    }
+    if (lower.contains(QLatin1String("working researching interviewing writing"))) {
+        return QStringLiteral("Working: Researching, Interviewing, Writing");
+    }
+    if (lower.contains(QLatin1String("why work")) && lower.contains(QLatin1String("leisure society"))) {
+        return QStringLiteral("Why Work?");
+    }
+    if (lower.contains(QLatin1String("on kings")) && lower.contains(QLatin1String("graeber"))) {
+        return QStringLiteral("On Kings");
+    }
+    return QString();
+}
+
+static QString cleanedLocalTitle(QString title, const QUrl &url)
+{
+    const QString pathBase = QFileInfo(url.isLocalFile() ? url.toLocalFile() : url.fileName()).completeBaseName();
+    const QString curated = curatedLocalTitleFor(QStringList({title, pathBase}).join(QLatin1Char(' ')));
+    if (!curated.isEmpty()) {
+        return curated;
+    }
+
+    if (title.trimmed().isEmpty()) {
+        title = pathBase;
+    }
+    title.replace(QLatin1Char('_'), QLatin1Char(' '));
+    title.replace(QRegularExpression(QStringLiteral("\\bAnna[’']s Archive\\b"), QRegularExpression::CaseInsensitiveOption), QString());
+    title.remove(QRegularExpression(QStringLiteral("\\b[0-9a-fA-F]{32}\\b")));
+    title.remove(QRegularExpression(QStringLiteral("\\b97[89][0-9]{10}\\b")));
+    title.remove(QRegularExpression(QStringLiteral("\\s+[0-9a-fA-F]{8}$")));
+    title.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    title = title.simplified();
+
+    const QString curatedAfterCleanup = curatedLocalTitleFor(title);
+    return curatedAfterCleanup.isEmpty() ? title : curatedAfterCleanup;
+}
+
 static QString cleanedFilenameTitle(const QUrl &url)
 {
-    QString title = QFileInfo(url.isLocalFile() ? url.toLocalFile() : url.fileName()).completeBaseName();
-    title.replace(QLatin1Char('_'), QLatin1Char(' '));
-    title.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
-    title.replace(QRegularExpression(QStringLiteral("\\s+-\\s+")), QStringLiteral(" - "));
-    return title.simplified();
+    return cleanedLocalTitle(QString(), url);
 }
 
 static CoverGenerator::CoverSpec corpusCoverSpecForIndex(const QModelIndex &index)
@@ -2228,7 +2304,7 @@ void LibraryView::refresh()
     pdfs.reserve(pdfEntries.size());
     for (const LibraryStore::Entry &entry : pdfEntries) {
         // Title precedence: curated store title, else filename sans extension
-        const QString title = entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title;
+        const QString title = cleanedLocalTitle(entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title, entry.url);
         ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
         enrichShelfEntry(shelfEntry);
         pdfs.append(shelfEntry);
@@ -2272,6 +2348,7 @@ void LibraryView::refresh()
         if (title.isEmpty()) {
             title = cleanedFilenameTitle(entry.url);
         }
+        title = cleanedLocalTitle(title, entry.url);
         const EpubCover::Metadata *metadata = nullptr;
         if (entry.url.isLocalFile()) {
             metadata = &epubMetadataFor(entry.url.toLocalFile());
@@ -2294,6 +2371,7 @@ void LibraryView::refresh()
         if (title.isEmpty()) {
             title = cleanedFilenameTitle(url);
         }
+        title = cleanedLocalTitle(title, url);
         const EpubCover::Metadata metadata = EpubCover::metadata(book.path);
         ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
         enrichShelfEntry(shelfEntry, &metadata);
@@ -3332,35 +3410,39 @@ void LibraryView::applyContentSearchResults(Shelf shelf, const QString &query, c
 
 QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
 {
-    QStandardItem *item = new QStandardItem(entry.title);
+    ShelfEntry displayEntry = entry;
+    displayEntry.title = cleanedLocalTitle(displayEntry.title, displayEntry.url);
+    enrichShelfEntry(displayEntry);
+
+    QStandardItem *item = new QStandardItem(displayEntry.title);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    item->setData(entry.url, UrlRole);
-    item->setData(entry.pinned, PinnedRole);
-    item->setData(entry.downranked, DownrankedRole);
-    item->setData(entry.progress, ProgressRole);
-    item->setData(entry.format, FormatRole);
-    QStringList shownTags = entry.tags;
+    item->setData(displayEntry.url, UrlRole);
+    item->setData(displayEntry.pinned, PinnedRole);
+    item->setData(displayEntry.downranked, DownrankedRole);
+    item->setData(displayEntry.progress, ProgressRole);
+    item->setData(displayEntry.format, FormatRole);
+    QStringList shownTags = displayEntry.tags;
     if (shownTags.isEmpty()) {
-        const QString inferred = focusTagFor(entry);
+        const QString inferred = focusTagFor(displayEntry);
         if (!inferred.isEmpty()) {
             shownTags.append(inferred);
         }
     }
     item->setData(shownTags, TagsRole);
-    item->setData(entry.description, DescriptionRole);
-    item->setAccessibleText(entry.title);
-    QString tooltipDescription = entry.description;
-    if (entry.url.isLocalFile()) {
-        const QString filePath = entry.url.toLocalFile();
+    item->setData(displayEntry.description, DescriptionRole);
+    item->setAccessibleText(displayEntry.title);
+    QString tooltipDescription = displayEntry.description;
+    if (displayEntry.url.isLocalFile()) {
+        const QString filePath = displayEntry.url.toLocalFile();
         // What a typographic card would say for this entry. Books get
         // their byline, foot and fallback description from the EPUB's own
         // OPF metadata — curated store metadata, when present, wins
-        CoverGenerator::CoverSpec spec {entry.title, QString(), QString(), shownTags.value(0)};
-        if (entry.format == QLatin1String("EPUB")) {
+        CoverGenerator::CoverSpec spec {displayEntry.title, QString(), QString(), shownTags.value(0)};
+        if (displayEntry.format == QLatin1String("EPUB")) {
             const EpubCover::Metadata &metadata = epubMetadataFor(filePath);
             spec.authors = metadata.creators;
             spec.yearJournal = metadata.year;
-            if (entry.description.isEmpty()) {
+            if (displayEntry.description.isEmpty()) {
                 item->setData(metadata.description, DescriptionRole);
                 tooltipDescription = metadata.description;
             }
@@ -3373,9 +3455,9 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
             m_coverLoader->requestCover(filePath, spec);
         }
     }
-    QStringList tooltipLines = {joinCompact({entry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}), progressTooltipLine(entry.progress), tooltipDescription};
-    tooltipLines.append(entry.detailLines);
-    item->setToolTip(libraryTileTooltip(entry.title, tooltipLines));
+    QStringList tooltipLines = {joinCompact({displayEntry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}), progressTooltipLine(displayEntry.progress), tooltipDescription};
+    tooltipLines.append(displayEntry.detailLines);
+    item->setToolTip(libraryTileTooltip(displayEntry.title, tooltipLines));
     return item;
 }
 

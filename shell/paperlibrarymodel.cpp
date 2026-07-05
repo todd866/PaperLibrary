@@ -17,6 +17,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -44,6 +45,89 @@ static const char DOWNRANKED_SLUGS_KEY[] = "DownrankedSlugs";
 static constexpr int MaxCorpusFeedRows = 360;
 static constexpr int MaxCorpusSearchRows = 720;
 static constexpr int MaxCorpusRowsPerSection = 90;
+
+static QString curatedDisplayTitleFor(const QString &text)
+{
+    const QString lower = text.toCaseFolded();
+    if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("america that went to war"))) {
+        return QStringLiteral("1941: The America That Went to War");
+    }
+    if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("william m. christie"))) {
+        return QStringLiteral("1941: The America That Went to War");
+    }
+    if (lower.contains(QLatin1String("game of thrones"))) {
+        return QStringLiteral("A Game of Thrones");
+    }
+    if (lower.contains(QLatin1String("everything was forever until it was no more"))) {
+        return QStringLiteral("Everything Was Forever Until It Was No More");
+    }
+    if (lower.contains(QLatin1String("dawn of everything"))) {
+        return QStringLiteral("The Dawn of Everything");
+    }
+    if (lower.contains(QLatin1String("bullshit jobs"))) {
+        return QStringLiteral("Bullshit Jobs");
+    }
+    if (lower.contains(QLatin1String("debt the first 5000 years")) || lower.contains(QLatin1String("debt the first 5,000 years"))) {
+        return QStringLiteral("Debt: The First 5,000 Years");
+    }
+    if (lower.contains(QLatin1String("cities made differently"))) {
+        return QStringLiteral("Cities Made Differently");
+    }
+    if (lower.contains(QLatin1String("utopia of rules"))) {
+        return QStringLiteral("The Utopia of Rules");
+    }
+    if (lower.contains(QLatin1String("pirate enlightenment"))) {
+        return QStringLiteral("Pirate Enlightenment");
+    }
+    if (lower.contains(QLatin1String("path to power"))) {
+        return QStringLiteral("The Path to Power");
+    }
+    if (lower.contains(QLatin1String("means of ascent"))) {
+        return QStringLiteral("Means of Ascent");
+    }
+    if (lower.contains(QLatin1String("master of the senate"))) {
+        return QStringLiteral("Master of the Senate");
+    }
+    if (lower.contains(QLatin1String("passage of power"))) {
+        return QStringLiteral("The Passage of Power");
+    }
+    if (lower.contains(QLatin1String("power broker"))) {
+        return QStringLiteral("The Power Broker");
+    }
+    if (lower.contains(QLatin1String("working researching interviewing writing"))) {
+        return QStringLiteral("Working: Researching, Interviewing, Writing");
+    }
+    if (lower.contains(QLatin1String("why work")) && lower.contains(QLatin1String("leisure society"))) {
+        return QStringLiteral("Why Work?");
+    }
+    if (lower.contains(QLatin1String("on kings")) && lower.contains(QLatin1String("graeber"))) {
+        return QStringLiteral("On Kings");
+    }
+    return QString();
+}
+
+static QString cleanedDisplayTitle(QString title, const QString &path = QString(), const QString &context = QString())
+{
+    const QString pathBase = QFileInfo(path).completeBaseName();
+    const QString curated = curatedDisplayTitleFor(QStringList({title, pathBase, context}).join(QLatin1Char(' ')));
+    if (!curated.isEmpty()) {
+        return curated;
+    }
+
+    if (title.trimmed().isEmpty()) {
+        title = pathBase;
+    }
+    title.replace(QLatin1Char('_'), QLatin1Char(' '));
+    title.replace(QRegularExpression(QStringLiteral("\\bAnna[’']s Archive\\b"), QRegularExpression::CaseInsensitiveOption), QString());
+    title.remove(QRegularExpression(QStringLiteral("\\b[0-9a-fA-F]{32}\\b")));
+    title.remove(QRegularExpression(QStringLiteral("\\b97[89][0-9]{10}\\b")));
+    title.remove(QRegularExpression(QStringLiteral("\\s+[0-9a-fA-F]{8}$")));
+    title.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    title = title.simplified();
+
+    const QString curatedAfterCleanup = curatedDisplayTitleFor(title);
+    return curatedAfterCleanup.isEmpty() ? title : curatedAfterCleanup;
+}
 
 static QString derivedPdfPath(const QString &corpusDir, const QString &slug)
 {
@@ -231,6 +315,12 @@ static bool recordMatchesPsychiatry(const QString &text)
 {
     if (containsAnyNeedle(text,
                           {QStringLiteral("great depression"),
+                           QStringLiteral("world war"),
+                           QStringLiteral("america that went to war"),
+                           QStringLiteral("went to war"),
+                           QStringLiteral("submarine warfare"),
+                           QStringLiteral("military history"),
+                           QStringLiteral("wwii"),
                            QStringLiteral("robert caro"),
                            QStringLiteral("robert a. caro"),
                            QStringLiteral("path to power"),
@@ -456,6 +546,15 @@ static bool recordMatchesNonfiction(const QString &text, const QString &source, 
                                                                                                                    {QStringLiteral("nonfiction"),
                                                                                                                     QStringLiteral("biography"),
                                                                                                                     QStringLiteral("history"),
+                                                                                                                    QStringLiteral("world war"),
+                                                                                                                    QStringLiteral("went to war"),
+                                                                                                                    QStringLiteral("america that went to war"),
+                                                                                                                    QStringLiteral("submarine warfare"),
+                                                                                                                    QStringLiteral("military history"),
+                                                                                                                    QStringLiteral("conservation"),
+                                                                                                                    QStringLiteral("ecology"),
+                                                                                                                    QStringLiteral("environment"),
+                                                                                                                    QStringLiteral("almanac"),
                                                                                                                     QStringLiteral("memoir"),
                                                                                                                     QStringLiteral("essay"),
                                                                                                                     QStringLiteral("politics"),
@@ -973,11 +1072,12 @@ QList<PaperLibraryModel::Record> PaperLibraryModel::parseCatalog(const QByteArra
         record.doi = object.value(QLatin1String("doi")).toString();
         record.pmid = object.value(QLatin1String("pmid")).toString();
         record.citeKey = object.value(QLatin1String("cite_key")).toString();
-        record.title = object.value(QLatin1String("title")).toString();
+        const QString rawTitle = object.value(QLatin1String("title")).toString();
         record.authors = object.value(QLatin1String("authors")).toString();
         record.year = object.value(QLatin1String("year")).toString();
         record.journal = object.value(QLatin1String("journal")).toString();
         record.source = object.value(QLatin1String("source")).toString();
+        record.title = cleanedDisplayTitle(rawTitle, QString(), QStringList({record.authors, record.year, record.journal, record.source}).join(QLatin1Char(' ')));
         record.addedTs = object.value(QLatin1String("added_ts")).toString();
         record.bytes = static_cast<qint64>(object.value(QLatin1String("bytes")).toDouble());
 
@@ -1995,7 +2095,7 @@ static QString focusSectionLabel(QString section)
 static QString focusFallbackTitle(const QString &path, const QString &id)
 {
     const QString base = QFileInfo(path).completeBaseName().trimmed();
-    return base.isEmpty() ? id : base;
+    return cleanedDisplayTitle(base.isEmpty() ? id : base, path);
 }
 
 static QString focusDetail(const QString &authors, const QString &year, const QString &journal)
@@ -2103,6 +2203,8 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
         entry.order = order++;
         if (entry.title.isEmpty()) {
             entry.title = focusFallbackTitle(entry.path, entry.id);
+        } else {
+            entry.title = cleanedDisplayTitle(entry.title, entry.path);
         }
         if (entry.sectionLabel.isEmpty()) {
             entry.sectionLabel = shelfName;

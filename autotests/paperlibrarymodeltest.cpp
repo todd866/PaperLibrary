@@ -373,6 +373,7 @@ private Q_SLOTS:
     void testFocusManifestDrivesWorkShelf();
     void testReadingManifestDrivesReadingShelves();
     void testCaroBiographyDoesNotMatchPsychiatry();
+    void testImportedBookMetadataIsCleanedAndReclassified();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
     void testDestroyAfterLoad();
@@ -1105,8 +1106,8 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
         object.insert(QStringLiteral("section"), section);
         manifest.append(object);
     };
-    appendReadingEntry(QStringLiteral("file-fiction-current"), QStringLiteral("A Game Of Thrones"), fictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current fiction; recently opened"), QStringLiteral("00-fiction-current"));
-    appendReadingEntry(QStringLiteral("file-nonfiction-current"), QStringLiteral("Everything Was Forever Until It Was No More"), currentNonfictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current nonfiction; recently opened"), QStringLiteral("03-nonfiction-current"));
+    appendReadingEntry(QStringLiteral("file-fiction-current"), QStringLiteral("A Game Of Thrones 52314094"), fictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current fiction; recently opened"), QStringLiteral("00-fiction-current"));
+    appendReadingEntry(QStringLiteral("file-nonfiction-current"), QStringLiteral("Everything Was Forever Until It Was No More 2f314c74"), currentNonfictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current nonfiction; recently opened"), QStringLiteral("03-nonfiction-current"));
     appendReadingEntry(QStringLiteral("file-caro"), QStringLiteral("The Path to Power"), caroEpub, QStringLiteral("epub"), QStringLiteral("book:epub"), QStringLiteral("Caro/LBJ nonfiction"), QStringLiteral("01-nonfiction-politics"));
     appendReadingEntry(QStringLiteral("file-graeber"), QStringLiteral("Bullshit Jobs"), graeberPdf, QStringLiteral("pdf"), QStringLiteral("book:pdf"), QStringLiteral("anthropology/nonfiction"), QStringLiteral("02-nonfiction-anthropology"));
     appendReadingEntry(QStringLiteral("file-unrelated"), QStringLiteral("Unrelated Methods Paper"), unrelatedPdf, QStringLiteral("pdf"), QStringLiteral("synthetic"), QStringLiteral("methods paper"), QStringLiteral("04-other"));
@@ -1126,7 +1127,7 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Books);
     QCOMPARE(sections.rowCount(), 3);
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game Of Thrones"));
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game of Thrones"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::KindRole).toString(), QStringLiteral("EPUB"));
     QCOMPARE(sections.resolvePath(sections.index(0)), fictionEpub);
     QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Everything Was Forever Until It Was No More"));
@@ -1134,7 +1135,7 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
     QCOMPARE(sections.rowCount(), 1);
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game Of Thrones"));
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game of Thrones"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Fiction Current"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("current fiction"));
 
@@ -1144,7 +1145,7 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
     for (int row = 0; row < sections.rowCount(); ++row) {
         nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
     }
-    QVERIFY(!nonfictionTitles.contains(QStringLiteral("A Game Of Thrones")));
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("A Game of Thrones")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Everything Was Forever Until It Was No More")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Path to Power")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Bullshit Jobs")));
@@ -1192,6 +1193,46 @@ void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
     QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Political biography"));
     QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to LBJ / US power"));
     QVERIFY(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
+}
+
+void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
+{
+    SyntheticRecord warHistory = gadgetRecord();
+    warHistory.slug = QStringLiteral("md5-synthetic-war-history-19");
+    warHistory.title = QStringLiteral("1941 The America That Went To War");
+    warHistory.authors = QStringLiteral("William M. Christie");
+    warHistory.year = QStringLiteral("2015");
+    warHistory.journal = QStringLiteral("(book)");
+    warHistory.source = QStringLiteral("book:epub");
+    warHistory.citeKey = QStringLiteral("christie1941war");
+
+    SyntheticRecord noisyGraeber = anthropologyRecord();
+    noisyGraeber.slug = QStringLiteral("md5-synthetic-graeber-noisy");
+    noisyGraeber.title = QStringLiteral("The Dawn of Everything A New History of Humanity David Graeber, David Wengrow First american edition, 2021 11 09 Farrar, Straus and Giroux 9780141991061 80b8ab295de7310780edd18c6cbb768c Anna's Archive");
+
+    const QString corpusDir = writeCatalog({warHistory, noisyGraeber, psychiatryRecord()});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Psychiatry);
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+    QStringList nonfictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("1941: The America That Went to War")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("The Dawn of Everything")));
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("1941")));
+    QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("Anna")));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()

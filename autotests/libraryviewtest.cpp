@@ -534,7 +534,7 @@ void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
         return QStringList();
     };
 
-    const QStringList warTags = tagsForTitle(QStringLiteral("1941"));
+    const QStringList warTags = tagsForTitle(QStringLiteral("1941: The America That Went to War"));
     QVERIFY(warTags.contains(QStringLiteral("Non-fiction")));
     QVERIFY(warTags.contains(QStringLiteral("Book")));
     QVERIFY(!warTags.contains(QStringLiteral("Psychiatry")));
@@ -544,7 +544,7 @@ void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
     QVERIFY(caroTags.contains(QStringLiteral("Book")));
     QVERIFY(!caroTags.contains(QStringLiteral("Fiction")));
 
-    const QStringList thronesTags = tagsForTitle(QStringLiteral("A Game Of Thrones"));
+    const QStringList thronesTags = tagsForTitle(QStringLiteral("A Game of Thrones"));
     QVERIFY(thronesTags.contains(QStringLiteral("Fiction")));
     QVERIFY(thronesTags.contains(QStringLiteral("Book")));
     QVERIFY(!thronesTags.contains(QStringLiteral("Non-fiction")));
