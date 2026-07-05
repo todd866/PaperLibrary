@@ -88,6 +88,15 @@ URLs and rights notes with every item.
 - Sync-first architecture: sync metadata, shelves, navigation, annotations,
   progress, and user signals before attempting full document streaming.
 
+## Public Release Rules
+
+The product rules for public shelves, focus manifests, BYO-token AI behavior,
+privacy, performance, and release tests live in:
+
+```text
+docs/public-release-rules.md
+```
+
 ## Attribution
 
 PaperLibrary is based on KDE Okular:
