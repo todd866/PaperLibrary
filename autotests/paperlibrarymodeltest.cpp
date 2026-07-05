@@ -1210,7 +1210,39 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     noisyGraeber.slug = QStringLiteral("md5-synthetic-graeber-noisy");
     noisyGraeber.title = QStringLiteral("The Dawn of Everything A New History of Humanity David Graeber, David Wengrow First american edition, 2021 11 09 Farrar, Straus and Giroux 9780141991061 80b8ab295de7310780edd18c6cbb768c Anna's Archive");
 
-    const QString corpusDir = writeCatalog({warHistory, noisyGraeber, psychiatryRecord()});
+    SyntheticRecord ref13Graeber = anthropologyRecord();
+    ref13Graeber.slug = QStringLiteral("md5-synthetic-ref13-graeber");
+    ref13Graeber.title = QStringLiteral("ref13 graeber 2011");
+    ref13Graeber.authors.clear();
+    ref13Graeber.year.clear();
+    ref13Graeber.journal = QStringLiteral("(book)");
+    ref13Graeber.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord sandCounty = gadgetRecord();
+    sandCounty.slug = QStringLiteral("md5-synthetic-sand-county");
+    sandCounty.title = QStringLiteral("Aldo Leopold_ A Sand County Almanac & Other Writings on");
+    sandCounty.authors = QStringLiteral("Aldo Leopold; Curt Meine");
+    sandCounty.year = QStringLiteral("2013");
+    sandCounty.journal = QStringLiteral("(book)");
+    sandCounty.source = QStringLiteral("book:epub");
+
+    SyntheticRecord parable = gadgetRecord();
+    parable.slug = QStringLiteral("md5-synthetic-parable");
+    parable.title = QStringLiteral("Octavia Butler - Parable 01");
+    parable.authors = QStringLiteral("Octavia Butler");
+    parable.year = QStringLiteral("1993");
+    parable.journal = QStringLiteral("(book)");
+    parable.source = QStringLiteral("book:epub");
+
+    SyntheticRecord dawnCommentary = gadgetRecord();
+    dawnCommentary.slug = QStringLiteral("10-9999-synthetic-dawn-commentary");
+    dawnCommentary.title = QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything");
+    dawnCommentary.authors = QStringLiteral("Daniel Hoyer");
+    dawnCommentary.year = QStringLiteral("2022");
+    dawnCommentary.journal = QStringLiteral("Synthetic Cliodynamics");
+    dawnCommentary.source = QStringLiteral("imported");
+
+    const QString corpusDir = writeCatalog({warHistory, noisyGraeber, ref13Graeber, sandCounty, parable, dawnCommentary, psychiatryRecord()});
 
     PaperLibraryModel model;
     QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
@@ -1231,8 +1263,19 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     }
     QVERIFY(nonfictionTitles.contains(QStringLiteral("1941: The America That Went to War")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Dawn of Everything")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Debt: The First 5,000 Years")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything")));
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("1941")));
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("ref13 graeber 2011")));
     QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("Anna")));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
+    QStringList fictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        fictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(fictionTitles.contains(QStringLiteral("Parable of the Sower")));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()

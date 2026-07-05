@@ -49,58 +49,84 @@ static constexpr int MaxCorpusRowsPerSection = 90;
 static QString curatedDisplayTitleFor(const QString &text)
 {
     const QString lower = text.toCaseFolded();
+    const QString simplified = lower.simplified();
+    const bool bookish = lower.contains(QLatin1String("book:")) || lower.contains(QLatin1String("aa_book")) || lower.contains(QLatin1String("(book)"))
+        || lower.contains(QLatin1String("anna")) || lower.contains(QLatin1String("imported-books")) || lower.contains(QLatin1String(".epub"))
+        || lower.contains(QLatin1String(".azw3")) || lower.contains(QLatin1String(".mobi")) || lower.contains(QLatin1String("bantam books"))
+        || lower.contains(QLatin1String("penguin")) || lower.contains(QLatin1String("melville")) || lower.contains(QLatin1String("farrar"))
+        || lower.contains(QLatin1String("mit press")) || lower.contains(QLatin1String("pm press"));
     if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("america that went to war"))) {
         return QStringLiteral("1941: The America That Went to War");
     }
     if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("william m. christie"))) {
         return QStringLiteral("1941: The America That Went to War");
     }
-    if (lower.contains(QLatin1String("game of thrones"))) {
-        return QStringLiteral("A Game of Thrones");
+    if (lower.contains(QLatin1String("aldo leopold")) && lower.contains(QLatin1String("sand county almanac"))) {
+        return QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation");
     }
-    if (lower.contains(QLatin1String("everything was forever until it was no more"))) {
-        return QStringLiteral("Everything Was Forever Until It Was No More");
-    }
-    if (lower.contains(QLatin1String("dawn of everything"))) {
-        return QStringLiteral("The Dawn of Everything");
-    }
-    if (lower.contains(QLatin1String("bullshit jobs"))) {
-        return QStringLiteral("Bullshit Jobs");
-    }
-    if (lower.contains(QLatin1String("debt the first 5000 years")) || lower.contains(QLatin1String("debt the first 5,000 years"))) {
+    if (lower.contains(QLatin1String("ref13 graeber 2011"))) {
         return QStringLiteral("Debt: The First 5,000 Years");
     }
-    if (lower.contains(QLatin1String("cities made differently"))) {
+    if (lower.contains(QLatin1String("parable of the sower")) || (lower.contains(QLatin1String("octavia butler")) && lower.contains(QLatin1String("parable")))) {
+        return QStringLiteral("Parable of the Sower");
+    }
+    if (lower.contains(QLatin1String("red mars")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")) || simplified.startsWith(QLatin1String("red mars")))) {
+        return QStringLiteral("Red Mars");
+    }
+    if (lower.contains(QLatin1String("new york 2140")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")) || simplified.startsWith(QLatin1String("new york 2140")))) {
+        return QStringLiteral("New York 2140");
+    }
+    if (lower.contains(QLatin1String("antarctica")) && (lower.contains(QLatin1String("novel")) || lower.contains(QLatin1String("kim stanley robinson")))) {
+        return QStringLiteral("Antarctica");
+    }
+    if (lower.contains(QLatin1String("game of thrones")) && (bookish || simplified.startsWith(QLatin1String("a game of thrones")))) {
+        return QStringLiteral("A Game of Thrones");
+    }
+    if ((lower.contains(QLatin1String("everything was forever until it was no more")) || lower.contains(QLatin1String("everything was forever, until it was no more")))
+        && (bookish || simplified.startsWith(QLatin1String("everything was forever")))) {
+        return QStringLiteral("Everything Was Forever Until It Was No More");
+    }
+    if (lower.contains(QLatin1String("dawn of everything")) && (bookish || simplified.startsWith(QLatin1String("the dawn of everything")))) {
+        return QStringLiteral("The Dawn of Everything");
+    }
+    if (lower.contains(QLatin1String("bullshit jobs")) && (bookish || simplified.startsWith(QLatin1String("bullshit jobs")))) {
+        return QStringLiteral("Bullshit Jobs");
+    }
+    if ((lower.contains(QLatin1String("debt the first 5000 years")) || lower.contains(QLatin1String("debt the first 5,000 years")) || simplified.startsWith(QLatin1String("debt graeber")))
+        && bookish) {
+        return QStringLiteral("Debt: The First 5,000 Years");
+    }
+    if (lower.contains(QLatin1String("cities made differently")) && (bookish || simplified.startsWith(QLatin1String("cities made differently")))) {
         return QStringLiteral("Cities Made Differently");
     }
-    if (lower.contains(QLatin1String("utopia of rules"))) {
+    if (lower.contains(QLatin1String("utopia of rules")) && (bookish || simplified.startsWith(QLatin1String("the utopia of rules")))) {
         return QStringLiteral("The Utopia of Rules");
     }
-    if (lower.contains(QLatin1String("pirate enlightenment"))) {
+    if (lower.contains(QLatin1String("pirate enlightenment")) && (bookish || simplified.startsWith(QLatin1String("pirate enlightenment")))) {
         return QStringLiteral("Pirate Enlightenment");
     }
-    if (lower.contains(QLatin1String("path to power"))) {
+    if (lower.contains(QLatin1String("path to power")) && (bookish || simplified.startsWith(QLatin1String("the path to power")))) {
         return QStringLiteral("The Path to Power");
     }
-    if (lower.contains(QLatin1String("means of ascent"))) {
+    if (lower.contains(QLatin1String("means of ascent")) && (bookish || simplified.startsWith(QLatin1String("means of ascent")) || simplified.startsWith(QLatin1String("the years of lyndon johnson means of ascent")))) {
         return QStringLiteral("Means of Ascent");
     }
-    if (lower.contains(QLatin1String("master of the senate"))) {
+    if (lower.contains(QLatin1String("master of the senate")) && (bookish || simplified.startsWith(QLatin1String("master of the senate")))) {
         return QStringLiteral("Master of the Senate");
     }
-    if (lower.contains(QLatin1String("passage of power"))) {
+    if (lower.contains(QLatin1String("passage of power")) && (bookish || simplified.startsWith(QLatin1String("the passage of power")) || simplified.startsWith(QLatin1String("the years of lyndon johnson 04")))) {
         return QStringLiteral("The Passage of Power");
     }
-    if (lower.contains(QLatin1String("power broker"))) {
+    if (lower.contains(QLatin1String("power broker")) && (bookish || simplified.startsWith(QLatin1String("the power broker")))) {
         return QStringLiteral("The Power Broker");
     }
-    if (lower.contains(QLatin1String("working researching interviewing writing"))) {
+    if (lower.contains(QLatin1String("working researching interviewing writing")) && (bookish || simplified.startsWith(QLatin1String("working")))) {
         return QStringLiteral("Working: Researching, Interviewing, Writing");
     }
-    if (lower.contains(QLatin1String("why work")) && lower.contains(QLatin1String("leisure society"))) {
+    if (lower.contains(QLatin1String("why work")) && lower.contains(QLatin1String("leisure society")) && (bookish || simplified.startsWith(QLatin1String("why work")))) {
         return QStringLiteral("Why Work?");
     }
-    if (lower.contains(QLatin1String("on kings")) && lower.contains(QLatin1String("graeber"))) {
+    if (lower.contains(QLatin1String("on kings")) && lower.contains(QLatin1String("graeber")) && (bookish || simplified.startsWith(QLatin1String("on kings")))) {
         return QStringLiteral("On Kings");
     }
     return QString();
@@ -413,6 +439,20 @@ static bool recordMatchesGameOfThrones(const QString &text)
 static bool recordMatchesFiction(const QString &text)
 {
     if (recordMatchesGameOfThrones(text)) {
+        return true;
+    }
+    if (containsAnyNeedle(text,
+                          {QStringLiteral("octavia butler"),
+                           QStringLiteral("parable of the sower"),
+                           QStringLiteral("kim stanley robinson"),
+                           QStringLiteral("red mars"),
+                           QStringLiteral("new york 2140"),
+                           QStringLiteral("mars trilogy"),
+                           QStringLiteral("ursula k. le guin"),
+                           QStringLiteral("song of ice and fire")})) {
+        return true;
+    }
+    if (containsAnyWholeWord(text, {QStringLiteral("dune")})) {
         return true;
     }
     if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
