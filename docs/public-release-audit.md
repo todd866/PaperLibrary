@@ -40,12 +40,20 @@ should move behind manifests, config, examples, or private local rules.
 - Recent model tests cover several important failures that came up in use:
   reading manifests, Work section order, Non-fiction vs Fiction, Caro not being
   Psychiatry, generated covers, and downranking.
+- Library view tests now cover visible tile-first setup states for missing
+  Starter Pack installs, installed Starter Pack source/rights tooltip metadata,
+  manifest-driven empty corpus shelves, corpus shelf prebuild before first tab
+  switch, and rapid shelf switching without reloading the corpus.
 - AI auto-tagging is opt-in by default, uses the local `claude` CLI, has tests
   for disabled/no-CLI states, and avoids sending corpus documents through the
   auto-tagging path.
 - The public-domain starter pack is represented as metadata plus a downloader
   instead of committed book binaries, and an installed starter catalog renders
-  into a Starter Pack shelf.
+  into a Starter Pack shelf with public-domain source and rights details.
+- Missing starter-pack catalogs and empty focus manifests now render as
+  tile-style setup/empty states rather than blank space or bare title lists.
+- Corpus shelves are prebuilt after catalog load, before the first user tab
+  switch, and curated metadata is preserved when a corpus item is opened.
 
 ## Partial Alignment
 
@@ -71,25 +79,30 @@ exist as fallbacks; those need to become generic, sample-only, or configurable.
 ### Tile-First UX
 
 The app no longer fundamentally depends on bare title lists. That is a major
-improvement. The remaining work is quality: hover/detail metadata, generated
-cards, empty states, and per-tile reasoning need to feel intentionally designed,
-not merely present.
+improvement. Hover/detail metadata now carries bibliographic context, shelf
+reasoning, source, and rights where available, and empty/setup states are tiles.
+The remaining work is quality: generated cards and per-tile reasoning need to
+keep improving as agents produce richer local metadata.
 
 ### Performance
 
 The code now coalesces rapid shelf switching, prewarms corpus shelves, uses
 generated cards before real covers, and avoids reloading the corpus on every
-tab switch. That matches the rules in spirit.
+tab switch. Library view tests now prove that visible corpus shelf models are
+prebuilt before first switch and that rapid shelf switching does not reload the
+corpus.
 
-The missing piece is proof. There is no release gate that measures first shelf
-paint, rapid shelf switching, cover warmup cost, or fresh-start behavior. The
-user experience has already shown that "eventually fast" is not good enough.
+The missing piece is a timed release budget. There is no release gate that
+measures first shelf paint, rapid shelf switching latency, cover warmup cost, or
+fresh-start behavior. The user experience has already shown that "eventually
+fast" is not good enough.
 
 ### Starter Pack
 
-The starter pack has a manifest, rights notes, a downloader, and a visible app
-shelf once installed. It still needs an obvious "Install Starter Pack" or
-first-run seed action so users do not need manual filesystem work.
+The starter pack has a manifest, rights notes, a downloader, an installed shelf,
+and a visible setup tile when no local catalog is installed. It still needs a
+one-click in-app "Install Starter Pack" action so users do not need manual
+filesystem work.
 
 ## Main Release Gaps
 
@@ -107,8 +120,9 @@ first-run seed action so users do not need manual filesystem work.
    rendering, and privacy.
 
 4. Wire the starter pack into the app.
-   Starter records now render as tiles after installation. The missing piece is
-   a visible setup/import flow.
+   Starter records now render as tiles after installation, and the missing
+   catalog state points to the downloader. The missing piece is a one-click
+   setup/import action.
 
 5. Add performance budgets.
    Release tests should fail when shelf switching, first corpus render, or
@@ -117,8 +131,9 @@ first-run seed action so users do not need manual filesystem work.
 
 6. Expand UI behavior tests.
    Keep the model tests, but add tests for arrow-key movement, context-menu
-   downranking, empty corpus shelves, no-corpus startup, starter-pack catalog
-   rendering, and disabled-AI startup.
+   downranking, no-corpus startup, disabled-AI startup, and timed first-paint
+   behavior. Empty corpus shelves and starter-pack catalog/setup rendering are
+   now covered.
 
 7. Audit subprocess and file handling.
    Current subprocess calls use explicit arguments and timeouts in the key AI

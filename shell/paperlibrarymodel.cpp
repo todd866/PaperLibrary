@@ -1810,6 +1810,7 @@ struct FocusManifestEntry {
 };
 
 struct FocusManifest {
+    bool found = false;
     QList<FocusManifestEntry> entries;
 };
 
@@ -1962,6 +1963,7 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
     if (!file.open(QIODevice::ReadOnly)) {
         return manifest;
     }
+    manifest.found = true;
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
     if (!document.isArray()) {
         return manifest;
@@ -2424,7 +2426,7 @@ void PaperLibrarySectionedModel::rebuild()
     }
 
     const FocusManifest focusManifest = loadFocusManifest(m_smartFilter, m_source->corpusDir());
-    if (!focusManifest.entries.isEmpty()) {
+    if (focusManifest.found) {
         QSet<int> emittedSourceRows;
         QSet<QString> emittedManifestPaths;
         for (const FocusManifestEntry &entry : focusManifest.entries) {
@@ -2481,6 +2483,18 @@ void PaperLibrarySectionedModel::rebuild()
             row.focusPath = entry.path;
             row.focusOrder = entry.order;
             row.focusScore = entry.score;
+            m_rows.append(row);
+        }
+
+        if (m_rows.isEmpty()) {
+            Row row;
+            row.sourceRow = -1;
+            row.title = m_query.isEmpty() ? QStringLiteral("No local documents yet") : QStringLiteral("No matching documents");
+            row.focusKind = QStringLiteral("setup");
+            row.focusSection = focusManifestShelfName(m_smartFilter);
+            row.focusReason = m_query.isEmpty() ? QStringLiteral("This focus shelf has no matching local files yet; add records or restore files into the PaperLibrary corpus.")
+                                                : QStringLiteral("No manifest records match the current search.");
+            row.focusOrder = 0;
             m_rows.append(row);
         }
 

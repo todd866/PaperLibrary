@@ -120,6 +120,58 @@ void writeMndFocusManifest(const QString &corpusDir)
     manifest.close();
 }
 
+void writeEmptyFocusManifest(const QString &corpusDir, const QString &shelf)
+{
+    QDir(corpusDir).mkpath(QStringLiteral("focus/") + shelf);
+    QFile manifest(QDir(corpusDir).filePath(QStringLiteral("focus/") + shelf + QStringLiteral("/manifest.json")));
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(QJsonDocument(QJsonArray()).toJson(QJsonDocument::Compact));
+    manifest.close();
+}
+
+void writeStarterPackCatalog(const QString &starterDir)
+{
+    QDir root(starterDir);
+    QVERIFY(root.mkpath(QStringLiteral("books")));
+    QFile epub(root.filePath(QStringLiteral("books/sample.epub")));
+    QVERIFY(epub.open(QIODevice::WriteOnly));
+    epub.write("not a real epub; enough for a local fixture path\n");
+    epub.close();
+
+    QJsonObject record;
+    record.insert(QStringLiteral("slug"), QStringLiteral("starter-sample"));
+    record.insert(QStringLiteral("title"), QStringLiteral("Starter Sample Book"));
+    record.insert(QStringLiteral("authors"), QStringLiteral("Public Domain Author"));
+    record.insert(QStringLiteral("year"), QStringLiteral("1901"));
+    record.insert(QStringLiteral("source"), QStringLiteral("Project Gutenberg"));
+    record.insert(QStringLiteral("source_id"), QStringLiteral("PG-123"));
+    record.insert(QStringLiteral("source_url"), QStringLiteral("https://www.gutenberg.org/ebooks/123"));
+    record.insert(QStringLiteral("rights"), QStringLiteral("Public domain in the United States"));
+    record.insert(QStringLiteral("format"), QStringLiteral("epub"));
+    record.insert(QStringLiteral("epub_path"), QStringLiteral("books/sample.epub"));
+    record.insert(QStringLiteral("added_ts"), QStringLiteral("2026-07-05T00:00:00+00:00"));
+    record.insert(QStringLiteral("tags"), QJsonArray({QStringLiteral("Classic"), QStringLiteral("Public Domain")}));
+
+    QFile catalog(root.filePath(QStringLiteral("catalog.jsonl")));
+    QVERIFY(catalog.open(QIODevice::WriteOnly));
+    catalog.write(QJsonDocument(record).toJson(QJsonDocument::Compact));
+    catalog.write("\n");
+    catalog.close();
+}
+
+bool sectionedModelsContainTitle(LibraryView *view, const QString &title)
+{
+    const QList<PaperLibrarySectionedModel *> models = view->findChildren<PaperLibrarySectionedModel *>();
+    for (PaperLibrarySectionedModel *model : models) {
+        for (int row = 0; row < model->rowCount(); ++row) {
+            if (model->data(model->index(row), Qt::DisplayRole).toString() == title) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 int tabIndexForText(QTabBar *tabs, const QString &text)
 {
     for (int index = 0; index < tabs->count(); ++index) {
@@ -145,6 +197,11 @@ private Q_SLOTS:
     void testBooksShelfStaysWithLocalEbooks();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
     void testCorpusActivationStoresCuratedMetadata();
+    void testStarterPackEmptySetupTile();
+    void testStarterPackInstalledMetadataTooltip();
+    void testCorpusShelfPrebuildsBeforeFirstSwitch();
+    void testEmptyCorpusShelfUsesTile();
+    void testRapidCorpusShelfSwitchingDoesNotReload();
 
 private:
     std::unique_ptr<QTemporaryDir> m_dir;
@@ -375,17 +432,21 @@ void LibraryViewTest::testCorpusActivationStoresCuratedMetadata()
 {
     writeMndFocusManifest(m_dir->path());
     LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
-    LibraryView view(&store, nullptr, true);
+    LibraryView view(&store, nullptr, false);
 
     QListView *grid = view.findChild<QListView *>();
     QVERIFY(grid);
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
 
     const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
     QVERIFY(mndTab >= 0);
     shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
 
     QSignalSpy activatedSpy(&view, &LibraryView::itemActivated);
     const QModelIndex index = grid->model()->index(0, 0);
@@ -400,6 +461,152 @@ void LibraryViewTest::testCorpusActivationStoresCuratedMetadata()
     QVERIFY(metadata.tags.contains(QStringLiteral("Current")));
     QVERIFY(metadata.description.contains(QStringLiteral("Casey Clinician")));
     QVERIFY(metadata.description.contains(QStringLiteral("Core project paper")));
+}
+
+void LibraryViewTest::testStarterPackEmptySetupTile()
+{
+    const QString starterDir = m_dir->filePath(QStringLiteral("starter-empty"));
+    KConfigGroup general = KSharedConfig::openConfig(m_dir->filePath(QStringLiteral("paperlibraryrc")), KConfig::SimpleConfig)->group(QStringLiteral("General"));
+    general.writeEntry("StarterPackPath", starterDir);
+    general.sync();
+
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    const int starterTab = tabIndexForText(shelves, QStringLiteral("Starter Pack"));
+    QVERIFY(starterTab >= 0);
+    shelves->setCurrentIndex(starterTab);
+    QTRY_VERIFY(grid->model());
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    const QModelIndex index = grid->model()->index(0, 0);
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Install Starter Pack"));
+    QVERIFY(!index.data(LibraryView::UrlRole).toUrl().isValid());
+    QVERIFY(index.data(Qt::ToolTipRole).toString().contains(QStringLiteral("fetch-public-domain-starter.sh")));
+    QCOMPARE(grid->viewMode(), QListView::IconMode);
+    QVERIFY(grid->isWrapping());
+    QVERIFY(grid->uniformItemSizes());
+}
+
+void LibraryViewTest::testStarterPackInstalledMetadataTooltip()
+{
+    const QString starterDir = m_dir->filePath(QStringLiteral("starter-installed"));
+    writeStarterPackCatalog(starterDir);
+    KConfigGroup general = KSharedConfig::openConfig(m_dir->filePath(QStringLiteral("paperlibraryrc")), KConfig::SimpleConfig)->group(QStringLiteral("General"));
+    general.writeEntry("StarterPackPath", starterDir);
+    general.sync();
+
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    const int starterTab = tabIndexForText(shelves, QStringLiteral("Starter Pack"));
+    QVERIFY(starterTab >= 0);
+    shelves->setCurrentIndex(starterTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    const QModelIndex index = grid->model()->index(0, 0);
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Starter Sample Book"));
+    QVERIFY(index.data(LibraryView::DescriptionRole).toString().contains(QStringLiteral("Public Domain Author")));
+    QVERIFY(index.data(LibraryView::DescriptionRole).toString().contains(QStringLiteral("1901")));
+    QVERIFY(index.data(LibraryView::TagsRole).toStringList().contains(QStringLiteral("Classic")));
+    QVERIFY(index.data(LibraryView::UrlRole).toUrl().isValid());
+
+    const QString tooltip = index.data(Qt::ToolTipRole).toString();
+    QVERIFY(tooltip.contains(QStringLiteral("Project Gutenberg")));
+    QVERIFY(tooltip.contains(QStringLiteral("PG-123")));
+    QVERIFY(tooltip.contains(QStringLiteral("Public domain in the United States")));
+    QVERIFY(tooltip.contains(QStringLiteral("https://www.gutenberg.org/ebooks/123")));
+}
+
+void LibraryViewTest::testCorpusShelfPrebuildsBeforeFirstSwitch()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    QVERIFY(shelves->currentIndex() != mndTab);
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QTRY_VERIFY(sectionedModelsContainTitle(&view, QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis")));
+}
+
+void LibraryViewTest::testEmptyCorpusShelfUsesTile()
+{
+    writeEmptyFocusManifest(m_dir->path(), QStringLiteral("Medicine"));
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    const int medicineTab = tabIndexForText(shelves, QStringLiteral("Medicine"));
+    QVERIFY(medicineTab >= 0);
+    shelves->setCurrentIndex(medicineTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    const QModelIndex index = grid->model()->index(0, 0);
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("No local documents yet"));
+    QVERIFY(index.data(PaperLibrarySectionedModel::SourceRowRole).isValid());
+    QVERIFY(!index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool());
+    QVERIFY(index.data(PaperLibraryModel::MissingRole).toBool());
+    QVERIFY(index.data(Qt::ToolTipRole).toString().contains(QStringLiteral("No local documents yet")));
+    QCOMPARE(grid->viewMode(), QListView::IconMode);
+}
+
+void LibraryViewTest::testRapidCorpusShelfSwitchingDoesNotReload()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QSignalSpy loadedSpy(paperModel, &PaperLibraryModel::loaded);
+
+    const int recentTab = tabIndexForText(shelves, QStringLiteral("Recent"));
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    const int workTab = tabIndexForText(shelves, QStringLiteral("Work"));
+    const int papersTab = tabIndexForText(shelves, QStringLiteral("Papers"));
+    QVERIFY(recentTab >= 0);
+    QVERIFY(mndTab >= 0);
+    QVERIFY(workTab >= 0);
+    QVERIFY(papersTab >= 0);
+
+    for (int i = 0; i < 10; ++i) {
+        shelves->setCurrentIndex(mndTab);
+        shelves->setCurrentIndex(workTab);
+        shelves->setCurrentIndex(papersTab);
+        shelves->setCurrentIndex(recentTab);
+    }
+    QTest::qWait(50);
+
+    QCOMPARE(loadedSpy.count(), 0);
+    QVERIFY(grid->model());
+    QCOMPARE(grid->viewMode(), QListView::IconMode);
 }
 
 QTEST_MAIN(LibraryViewTest)

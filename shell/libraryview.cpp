@@ -1570,7 +1570,7 @@ void LibraryView::refresh()
     for (const LibraryStore::Entry &entry : pdfEntries) {
         // Title precedence: curated store title, else filename sans extension
         const QString title = entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title;
-        ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF")};
+        ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
         enrichShelfEntry(shelfEntry);
         pdfs.append(shelfEntry);
     }
@@ -1617,7 +1617,8 @@ void LibraryView::refresh()
         if (entry.url.isLocalFile()) {
             metadata = &epubMetadataFor(entry.url.toLocalFile());
         }
-        ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB")};
+        ShelfEntry shelfEntry{
+            entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB"), {}};
         enrichShelfEntry(shelfEntry, metadata);
         books.append(shelfEntry);
     }
@@ -1635,7 +1636,7 @@ void LibraryView::refresh()
             title = cleanedFilenameTitle(url);
         }
         const EpubCover::Metadata metadata = EpubCover::metadata(book.path);
-        ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB")};
+        ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
         enrichShelfEntry(shelfEntry, &metadata);
         booksOnly.append(shelfEntry);
     }
@@ -2282,6 +2283,14 @@ QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
     const QDir root(starterPackDir());
     QFile catalog(root.filePath(QStringLiteral("catalog.jsonl")));
     if (!catalog.open(QIODevice::ReadOnly)) {
+        ShelfEntry setup;
+        setup.title = i18nc("@title starter pack setup tile", "Install Starter Pack");
+        setup.description = i18nc("@info starter pack setup tile", "Public-domain EPUBs can be installed locally.");
+        setup.format = i18nc("@label generated tile cover", "SETUP");
+        setup.tags = {i18nc("@label starter pack tile tag", "Starter Pack"), i18nc("@label starter pack tile tag", "Setup")};
+        setup.detailLines = {i18nc("@info starter pack setup detail", "Run scripts/dev/fetch-public-domain-starter.sh from the PaperLibrary checkout."),
+                             i18nc("@info starter pack setup detail", "Set StarterPackPath if you install the catalog somewhere else.")};
+        entries.append(setup);
         return entries;
     }
 
@@ -2322,7 +2331,19 @@ QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
         }
         entry.keywords = entry.tags;
         const QString sourceUrl = object.value(QLatin1String("source_url")).toString().trimmed();
+        const QString source = object.value(QLatin1String("source")).toString().trimmed();
+        const QString sourceId = object.value(QLatin1String("source_id")).toString().trimmed();
         const QString rights = object.value(QLatin1String("rights")).toString().trimmed();
+        if (!source.isEmpty()) {
+            entry.detailLines.append(sourceId.isEmpty() ? i18nc("@info starter pack source", "Source: %1", source)
+                                                        : i18nc("@info starter pack source", "Source: %1 (%2)", source, sourceId));
+        }
+        if (!rights.isEmpty()) {
+            entry.detailLines.append(i18nc("@info starter pack rights", "Rights: %1", rights));
+        }
+        if (!sourceUrl.isEmpty()) {
+            entry.detailLines.append(i18nc("@info starter pack source url", "Source URL: %1", sourceUrl));
+        }
         if (!sourceUrl.isEmpty()) {
             entry.keywords.append(sourceUrl);
         }
@@ -2331,6 +2352,17 @@ QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
         }
         enrichShelfEntry(entry);
         entries.append(entry);
+    }
+
+    if (entries.isEmpty()) {
+        ShelfEntry setup;
+        setup.title = i18nc("@title starter pack setup tile", "Starter Pack Needs Files");
+        setup.description = i18nc("@info starter pack setup tile", "The starter-pack catalog exists, but no EPUB files were found.");
+        setup.format = i18nc("@label generated tile cover", "SETUP");
+        setup.tags = {i18nc("@label starter pack tile tag", "Starter Pack"), i18nc("@label starter pack tile tag", "Setup")};
+        setup.detailLines = {i18nc("@info starter pack setup detail", "Re-run scripts/dev/fetch-public-domain-starter.sh."),
+                             i18nc("@info starter pack setup detail", "Expected catalog: %1", root.filePath(QStringLiteral("catalog.jsonl")))};
+        entries.append(setup);
     }
 
     std::stable_sort(entries.begin(), entries.end(), [](const ShelfEntry &left, const ShelfEntry &right) {
@@ -2617,10 +2649,9 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
             m_coverLoader->requestCover(filePath, spec);
         }
     }
-    item->setToolTip(libraryTileTooltip(entry.title,
-                                        {joinCompact({entry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}),
-                                         progressTooltipLine(entry.progress),
-                                         tooltipDescription}));
+    QStringList tooltipLines = {joinCompact({entry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}), progressTooltipLine(entry.progress), tooltipDescription};
+    tooltipLines.append(entry.detailLines);
+    item->setToolTip(libraryTileTooltip(entry.title, tooltipLines));
     return item;
 }
 
@@ -3098,8 +3129,9 @@ QList<QUrl> LibraryView::shelfUrls(Shelf shelf) const
     QList<QUrl> urls;
     for (int row = 0; row < model->rowCount(); ++row) {
         const QStandardItem *item = model->item(row);
-        if (!item->data(HeaderRole).toBool()) {
-            urls.append(item->data(UrlRole).toUrl());
+        const QUrl url = item->data(UrlRole).toUrl();
+        if (!item->data(HeaderRole).toBool() && url.isValid()) {
+            urls.append(url);
         }
     }
     return urls;
@@ -3233,6 +3265,9 @@ void LibraryView::showContextMenu(const QPoint &pos)
         return;
     }
     const QUrl url = index.data(UrlRole).toUrl();
+    if (!url.isValid()) {
+        return;
+    }
     const bool pinned = index.data(PinnedRole).toBool();
     const bool downranked = index.data(DownrankedRole).toBool();
 

@@ -149,6 +149,7 @@ private:
         QDateTime lastOpened;
         double progress = -1.0;
         QString format;
+        QStringList detailLines;
     };
 
     /** An ordered group of tiles; title is sort/context metadata, not a row. */
