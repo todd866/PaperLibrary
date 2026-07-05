@@ -1897,65 +1897,6 @@ static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row,
     return score;
 }
 
-static bool sourceRowLikelyBefore(const PaperLibraryModel *source, int leftRow, int rightRow);
-
-static bool sourceRowLikelyBeforeForShelf(const PaperLibraryModel *source, int leftRow, int rightRow, PaperLibrarySectionedModel::SmartFilter filter)
-{
-    const int leftScore = sourceRowShelfPriorityScore(source, leftRow, filter);
-    const int rightScore = sourceRowShelfPriorityScore(source, rightRow, filter);
-    if (leftScore != rightScore) {
-        return leftScore < rightScore;
-    }
-    return sourceRowLikelyBefore(source, leftRow, rightRow);
-}
-
-static bool sourceRowLikelyBefore(const PaperLibraryModel *source, int leftRow, int rightRow)
-{
-    const QModelIndex left = source->index(leftRow);
-    const QModelIndex right = source->index(rightRow);
-
-    const bool leftPinned = left.data(PaperLibraryModel::PinnedRole).toBool();
-    const bool rightPinned = right.data(PaperLibraryModel::PinnedRole).toBool();
-    if (leftPinned != rightPinned) {
-        return leftPinned;
-    }
-
-    const int leftAccessCount = left.data(PaperLibraryModel::AccessCountRole).toInt();
-    const int rightAccessCount = right.data(PaperLibraryModel::AccessCountRole).toInt();
-    if (leftAccessCount != rightAccessCount) {
-        return leftAccessCount > rightAccessCount;
-    }
-
-    const QString leftLastAccessed = left.data(PaperLibraryModel::LastAccessedRole).toString();
-    const QString rightLastAccessed = right.data(PaperLibraryModel::LastAccessedRole).toString();
-    if (leftLastAccessed != rightLastAccessed) {
-        if (leftLastAccessed.isEmpty() != rightLastAccessed.isEmpty()) {
-            return !leftLastAccessed.isEmpty();
-        }
-        return leftLastAccessed > rightLastAccessed;
-    }
-
-    const bool leftMissing = left.data(PaperLibraryModel::MissingRole).toBool();
-    const bool rightMissing = right.data(PaperLibraryModel::MissingRole).toBool();
-    if (leftMissing != rightMissing) {
-        return !leftMissing;
-    }
-
-    const int leftCitedBy = left.data(PaperLibraryModel::CitedByCountRole).toInt();
-    const int rightCitedBy = right.data(PaperLibraryModel::CitedByCountRole).toInt();
-    if (leftCitedBy != rightCitedBy) {
-        return leftCitedBy > rightCitedBy;
-    }
-
-    const QString leftAdded = left.data(PaperLibraryModel::AddedRole).toString();
-    const QString rightAdded = right.data(PaperLibraryModel::AddedRole).toString();
-    if (leftAdded != rightAdded) {
-        return leftAdded > rightAdded;
-    }
-
-    return left.data(Qt::DisplayRole).toString().localeAwareCompare(right.data(Qt::DisplayRole).toString()) < 0;
-}
-
 struct FocusManifestEntry {
     QString id;
     QString title;
@@ -2696,9 +2637,23 @@ void PaperLibrarySectionedModel::rebuild()
         return;
     }
 
+    struct SortKey {
+        bool downranked = false;
+        int shelfScore = 0;
+        bool pinned = false;
+        int accessCount = 0;
+        QString lastAccessed;
+        bool missing = false;
+        int citedBy = 0;
+        QString added;
+        QString title;
+    };
+
     QHash<QString, QList<int>> rowsBySection;
+    QHash<int, SortKey> sortKeysBySourceRow;
     QStringList sectionOrder;
     const int sourceRows = m_source->rowCount();
+    sortKeysBySourceRow.reserve(sourceRows);
     for (int row = 0; row < sourceRows; ++row) {
         const QModelIndex index = m_source->index(row);
         const QString haystack = index.data(PaperLibraryModel::HaystackRole).toString();
@@ -2856,6 +2811,17 @@ void PaperLibrarySectionedModel::rebuild()
             sectionOrder.append(section);
         }
         rowsBySection[section].append(row);
+        SortKey sortKey;
+        sortKey.downranked = isDownranked;
+        sortKey.shelfScore = sourceRowShelfPriorityScore(m_source, row, m_smartFilter);
+        sortKey.pinned = index.data(PaperLibraryModel::PinnedRole).toBool();
+        sortKey.accessCount = index.data(PaperLibraryModel::AccessCountRole).toInt();
+        sortKey.lastAccessed = index.data(PaperLibraryModel::LastAccessedRole).toString();
+        sortKey.missing = index.data(PaperLibraryModel::MissingRole).toBool();
+        sortKey.citedBy = index.data(PaperLibraryModel::CitedByCountRole).toInt();
+        sortKey.added = index.data(PaperLibraryModel::AddedRole).toString();
+        sortKey.title = index.data(Qt::DisplayRole).toString();
+        sortKeysBySourceRow.insert(row, sortKey);
     }
 
     std::sort(sectionOrder.begin(), sectionOrder.end(), [this](const QString &a, const QString &b) {
@@ -2883,13 +2849,46 @@ void PaperLibrarySectionedModel::rebuild()
             break;
         }
         QList<int> sourceRowsForSection = rowsBySection.value(section);
-        std::stable_sort(sourceRowsForSection.begin(), sourceRowsForSection.end(), [this](int leftRow, int rightRow) {
-            const bool leftDownranked = sourceRowDownranked(leftRow);
-            const bool rightDownranked = sourceRowDownranked(rightRow);
-            if (leftDownranked != rightDownranked) {
-                return !leftDownranked;
+        std::stable_sort(sourceRowsForSection.begin(), sourceRowsForSection.end(), [&sortKeysBySourceRow](int leftRow, int rightRow) {
+            const auto leftIt = sortKeysBySourceRow.constFind(leftRow);
+            const auto rightIt = sortKeysBySourceRow.constFind(rightRow);
+            if (leftIt == sortKeysBySourceRow.cend() || rightIt == sortKeysBySourceRow.cend()) {
+                return leftRow < rightRow;
             }
-            return sourceRowLikelyBeforeForShelf(m_source, leftRow, rightRow, m_smartFilter);
+            const SortKey &left = leftIt.value();
+            const SortKey &right = rightIt.value();
+            if (left.downranked != right.downranked) {
+                return !left.downranked;
+            }
+            if (left.shelfScore != right.shelfScore) {
+                return left.shelfScore < right.shelfScore;
+            }
+            if (left.pinned != right.pinned) {
+                return left.pinned;
+            }
+            if (left.accessCount != right.accessCount) {
+                return left.accessCount > right.accessCount;
+            }
+            if (left.lastAccessed != right.lastAccessed) {
+                if (left.lastAccessed.isEmpty() != right.lastAccessed.isEmpty()) {
+                    return !left.lastAccessed.isEmpty();
+                }
+                return left.lastAccessed > right.lastAccessed;
+            }
+            if (left.missing != right.missing) {
+                return !left.missing;
+            }
+            if (left.citedBy != right.citedBy) {
+                return left.citedBy > right.citedBy;
+            }
+            if (left.added != right.added) {
+                return left.added > right.added;
+            }
+            const int titleCompare = left.title.localeAwareCompare(right.title);
+            if (titleCompare != 0) {
+                return titleCompare < 0;
+            }
+            return leftRow < rightRow;
         });
         const int maxRowsPerSection = (m_query.isEmpty() && m_smartFilter == Papers && m_sectionMode == ReadNext) ? papersReadNextSectionLimit(section) : defaultMaxRowsPerSection;
         int rowsFromSection = 0;
