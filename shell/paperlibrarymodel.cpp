@@ -2250,7 +2250,8 @@ void PaperLibrarySectionedModel::setCoverForPath(const QString &path, const QVar
     const QList<int> roles = {CoverPixmapRole, GeneratedCoverRole};
     for (int row = 0; row < m_rows.count(); ++row) {
         const Row &sectionRow = m_rows.at(row);
-        if (!sectionRow.header && m_source && storedPathForSourceRow(sectionRow.sourceRow) == path) {
+        const QString rowPath = !sectionRow.focusPath.isEmpty() ? sectionRow.focusPath : storedPathForSourceRow(sectionRow.sourceRow);
+        if (!sectionRow.header && m_source && rowPath == path) {
             const QModelIndex changed = index(row);
             Q_EMIT dataChanged(changed, changed, roles);
         }

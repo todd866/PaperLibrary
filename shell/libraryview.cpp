@@ -1346,8 +1346,15 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     connect(m_coverLoader, &CoverLoader::coverReady, this, &LibraryView::coverArrived);
     m_corpusCoverWarmupTimer = new QTimer(this);
     m_corpusCoverWarmupTimer->setSingleShot(true);
-    m_corpusCoverWarmupTimer->setInterval(1200);
+    m_corpusCoverWarmupTimer->setInterval(750);
     connect(m_corpusCoverWarmupTimer, &QTimer::timeout, this, &LibraryView::requestNextCorpusCoverBatch);
+    if (m_paperModel) {
+        QTimer::singleShot(450, this, [this]() {
+            if (m_paperModel && !m_paperModel->isLoaded()) {
+                m_paperModel->load(m_paperCorpusDir);
+            }
+        });
+    }
 
     connect(m_shelfSwitch, &QTabBar::currentChanged, this, &LibraryView::shelfChanged);
     connect(m_grid, &QListView::doubleClicked, this, &LibraryView::tileClicked);
@@ -2513,6 +2520,7 @@ void LibraryView::setupPapersShelf()
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
         showShelfGuide();
         requestCorpusCovers();
+        scheduleCorpusPrewarm();
     });
 
     // The non-modal notice slot under the header ("Loading catalog…",
@@ -2591,7 +2599,7 @@ PaperLibrarySectionedModel *LibraryView::activePaperSections() const
     return paperSectionsForShelf(activeShelf());
 }
 
-void LibraryView::configureCorpusShelf(Shelf shelf)
+void LibraryView::attachCorpusShelf(Shelf shelf)
 {
     PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
     if (!sections) {
@@ -2602,6 +2610,11 @@ void LibraryView::configureCorpusShelf(Shelf shelf)
         m_paperSectionAttached[shelf] = true;
     }
     sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+}
+
+void LibraryView::configureCorpusShelf(Shelf shelf)
+{
+    attachCorpusShelf(shelf);
     syncPaperSectionButton();
 }
 
@@ -2667,7 +2680,7 @@ void LibraryView::requestCorpusCovers()
 {
     m_nextCorpusCoverRow = 0;
     if (m_corpusCoverWarmupTimer) {
-        m_corpusCoverWarmupTimer->start(650);
+        m_corpusCoverWarmupTimer->start(320);
     } else {
         requestNextCorpusCoverBatch();
     }
@@ -2687,11 +2700,24 @@ void LibraryView::requestNextCorpusCoverBatch()
     // Keep each pass bounded. Generated corpus cards are immediately useful,
     // while real local PDF covers are warmed opportunistically after the
     // highest-ranked first screens.
-    static constexpr int MaxCorpusCoverRequests = 8;
+    static constexpr int MaxCorpusCoverRequests = 16;
+    const int rows = sections->rowCount();
+    m_nextCorpusCoverRow = requestCorpusCoversForSections(sections, m_nextCorpusCoverRow, MaxCorpusCoverRequests);
+    if (m_nextCorpusCoverRow < rows) {
+        m_corpusCoverWarmupTimer->start();
+    }
+}
+
+int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sections, int startRow, int maxRequests)
+{
+    if (!sections || !m_coverLoader || maxRequests <= 0) {
+        return startRow;
+    }
+
     int requested = 0;
     const int rows = sections->rowCount();
-    for (; m_nextCorpusCoverRow < rows && requested < MaxCorpusCoverRequests; ++m_nextCorpusCoverRow) {
-        const int row = m_nextCorpusCoverRow;
+    int row = qMax(0, startRow);
+    for (; row < rows && requested < maxRequests; ++row) {
         const QModelIndex index = sections->index(row);
         if (!index.isValid() || index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
             continue;
@@ -2712,9 +2738,54 @@ void LibraryView::requestNextCorpusCoverBatch()
         }
         ++requested;
     }
-    if (m_nextCorpusCoverRow < rows) {
-        m_corpusCoverWarmupTimer->start();
+    return row;
+}
+
+void LibraryView::scheduleCorpusPrewarm()
+{
+    if (!m_paperModel || !m_paperModel->isLoaded()) {
+        return;
     }
+    m_corpusPrewarmQueue.clear();
+    const Shelf current = activeShelf();
+    const QList<Shelf> order = {MedicineShelf, MndShelf, WorkShelf, TextbooksShelf, PapersShelf, NonfictionShelf, FictionShelf};
+    if (usesCorpusList(current)) {
+        m_corpusPrewarmQueue.append(current);
+    }
+    for (const Shelf shelf : order) {
+        if (shelf != current && paperSectionsForShelf(shelf)) {
+            m_corpusPrewarmQueue.append(shelf);
+        }
+    }
+    m_corpusPrewarmIndex = 0;
+    m_corpusPrewarmActive = true;
+    QTimer::singleShot(220, this, &LibraryView::prewarmNextCorpusShelf);
+}
+
+void LibraryView::prewarmNextCorpusShelf()
+{
+    if (!m_corpusPrewarmActive) {
+        return;
+    }
+    if (!m_paperModel || !m_paperModel->isLoaded()) {
+        m_corpusPrewarmActive = false;
+        return;
+    }
+    if (m_coverLoader && m_coverLoader->pendingWorkCount() > 130) {
+        QTimer::singleShot(650, this, &LibraryView::prewarmNextCorpusShelf);
+        return;
+    }
+    if (m_corpusPrewarmIndex >= m_corpusPrewarmQueue.size()) {
+        m_corpusPrewarmActive = false;
+        return;
+    }
+
+    const Shelf shelf = m_corpusPrewarmQueue.at(m_corpusPrewarmIndex++);
+    attachCorpusShelf(shelf);
+    if (PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf)) {
+        requestCorpusCoversForSections(sections, 0, 28);
+    }
+    QTimer::singleShot(260, this, &LibraryView::prewarmNextCorpusShelf);
 }
 
 void LibraryView::ensurePapersFresh()

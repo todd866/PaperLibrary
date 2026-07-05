@@ -9,6 +9,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QList>
 #include <QUrl>
 #include <QWidget>
 
@@ -186,6 +187,7 @@ private:
     bool usesCorpusList(Shelf shelf) const;
     PaperLibrarySectionedModel *paperSectionsForShelf(Shelf shelf) const;
     PaperLibrarySectionedModel *activePaperSections() const;
+    void attachCorpusShelf(Shelf shelf);
     void configureCorpusShelf(Shelf shelf);
     void setPaperSectionMode(Shelf shelf, int mode);
     int paperSectionMode(Shelf shelf) const;
@@ -193,6 +195,9 @@ private:
     void showShelfGuide();
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
+    int requestCorpusCoversForSections(PaperLibrarySectionedModel *sections, int startRow, int maxRequests);
+    void scheduleCorpusPrewarm();
+    void prewarmNextCorpusShelf();
     /** Load the corpus catalog on first entry; pick up mtime changes later. */
     void ensurePapersFresh();
     void applyChromePalette();
@@ -254,6 +259,9 @@ private:
     CoverLoader *m_coverLoader;
     QTimer *m_corpusCoverWarmupTimer = nullptr;
     int m_nextCorpusCoverRow = 0;
+    QList<Shelf> m_corpusPrewarmQueue;
+    int m_corpusPrewarmIndex = 0;
+    bool m_corpusPrewarmActive = false;
     int m_configuredGridCorpus = -1;
     QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
     QPropertyAnimation *m_gridFadeAnimation = nullptr;
