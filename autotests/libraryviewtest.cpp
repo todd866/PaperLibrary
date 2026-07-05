@@ -65,6 +65,42 @@ QByteArray workCorpusRecordLine()
     object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-01T00:00:00+00:00"));
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
 }
+
+QByteArray bayesianFalsePositiveRecordLine()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("slug"), QStringLiteral("10-9999-synthetic-bayesian-clinical-false-positive"));
+    object.insert(QStringLiteral("doi"), QStringLiteral("10.9999/synthetic.bayesian.clinical"));
+    object.insert(QStringLiteral("md5"), QString());
+    object.insert(QStringLiteral("pmid"), QString());
+    object.insert(QStringLiteral("cite_key"), QStringLiteral("sample2026bayesianclinical"));
+    object.insert(QStringLiteral("title"), QStringLiteral("Bayesian prediction model for hospital readmission"));
+    object.insert(QStringLiteral("authors"), QStringLiteral("Pat Statistician"));
+    object.insert(QStringLiteral("year"), QStringLiteral("2026"));
+    object.insert(QStringLiteral("journal"), QStringLiteral("Clinical Epidemiology"));
+    object.insert(QStringLiteral("bytes"), 76543);
+    object.insert(QStringLiteral("source"), QStringLiteral("unpaywall"));
+    object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-02T00:00:00+00:00"));
+    return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
+
+QByteArray biosystemsFalsePositiveRecordLine()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("slug"), QStringLiteral("10-9999-synthetic-biosystems-false-positive"));
+    object.insert(QStringLiteral("doi"), QStringLiteral("10.9999/synthetic.biosystems"));
+    object.insert(QStringLiteral("md5"), QString());
+    object.insert(QStringLiteral("pmid"), QString());
+    object.insert(QStringLiteral("cite_key"), QStringLiteral("sample2026biosystems"));
+    object.insert(QStringLiteral("title"), QStringLiteral("Generic BioSystems article about cell division"));
+    object.insert(QStringLiteral("authors"), QStringLiteral("Sam Systems"));
+    object.insert(QStringLiteral("year"), QStringLiteral("2026"));
+    object.insert(QStringLiteral("journal"), QStringLiteral("BioSystems"));
+    object.insert(QStringLiteral("bytes"), 65432);
+    object.insert(QStringLiteral("source"), QStringLiteral("aa_fast_download"));
+    object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-03T00:00:00+00:00"));
+    return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
 }
 
 class LibraryViewTest : public QObject
@@ -101,6 +137,8 @@ void LibraryViewTest::init()
     QVERIFY(catalog.open(QIODevice::WriteOnly));
     catalog.write(corpusRecordLine());
     catalog.write(workCorpusRecordLine());
+    catalog.write(bayesianFalsePositiveRecordLine());
+    catalog.write(biosystemsFalsePositiveRecordLine());
     catalog.close();
 
     QDir(m_dir->path()).mkpath(QStringLiteral("pdfs"));

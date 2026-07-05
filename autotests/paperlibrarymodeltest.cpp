@@ -8,6 +8,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
@@ -337,6 +338,7 @@ private Q_SLOTS:
     void testDatabaseEnrichment();
     void testDatabaseInPathWithSpecialCharacters();
     void testSectionedModelSmartShelves();
+    void testFocusManifestDrivesWorkShelf();
     void testCaroBiographyDoesNotMatchPsychiatry();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
@@ -766,6 +768,85 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QVERIFY(mndRow >= 0);
     QCOMPARE(sections.data(sections.index(mndRow), PaperLibrarySectionedModel::DownrankedRole).toBool(), true);
     QCOMPARE(sections.data(sections.index(sections.rowCount() - 1), Qt::DisplayRole).toString(), mndTitle);
+}
+
+void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
+{
+    SyntheticRecord work = widgetRecord();
+    work.slug = QStringLiteral("10-9999-synthetic-beyond-bayes-work");
+    work.doi = QStringLiteral("10.9999/synthetic.beyond.bayes.work");
+    work.title = QStringLiteral("Beyond Bayes Revision Notes for High-Dimensional Inference");
+    work.authors = QStringLiteral("Robin Reviewer");
+    work.journal = QStringLiteral("Synthetic Methods");
+    work.source = QStringLiteral("unpaywall");
+
+    SyntheticRecord falsePositive = gadgetRecord();
+    falsePositive.slug = QStringLiteral("10-9999-synthetic-biosystems-false-positive");
+    falsePositive.doi = QStringLiteral("10.9999/synthetic.biosystems.false.positive");
+    falsePositive.title = QStringLiteral("Bayesian prediction model for hospital readmission");
+    falsePositive.journal = QStringLiteral("BioSystems");
+    falsePositive.source = QStringLiteral("aa_fast_download");
+
+    const QString corpusDir = writeCatalog({work, falsePositive});
+    const QString curatedPdf = touchFile(QStringLiteral("pdfs/10-9999-synthetic-beyond-bayes-work.pdf"));
+    const QString looseResponse = touchFile(QStringLiteral("loose/Response_to_reviewers.pdf"));
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Work"));
+    QJsonArray manifest;
+    QJsonObject curated;
+    curated.insert(QStringLiteral("id"), work.slug);
+    curated.insert(QStringLiteral("title"), QStringLiteral("Curated Beyond Bayes Draft"));
+    curated.insert(QStringLiteral("path"), curatedPdf);
+    curated.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    curated.insert(QStringLiteral("authors"), work.authors);
+    curated.insert(QStringLiteral("year"), work.year);
+    curated.insert(QStringLiteral("journal"), work.journal);
+    curated.insert(QStringLiteral("source"), work.source);
+    curated.insert(QStringLiteral("doi"), work.doi);
+    curated.insert(QStringLiteral("score"), 120.0);
+    curated.insert(QStringLiteral("reason"), QStringLiteral("Beyond Bayes manuscript; Bayesian/FEP literature"));
+    curated.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
+    curated.insert(QStringLiteral("section"), QStringLiteral("00-beyond-bayes-revision"));
+    manifest.append(curated);
+
+    QJsonObject loose;
+    loose.insert(QStringLiteral("id"), QStringLiteral("file-synthetic-review-response"));
+    loose.insert(QStringLiteral("title"), QStringLiteral("Reviewer Response"));
+    loose.insert(QStringLiteral("path"), looseResponse);
+    loose.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    loose.insert(QStringLiteral("score"), 80.0);
+    loose.insert(QStringLiteral("reason"), QStringLiteral("review/revision work"));
+    loose.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
+    loose.insert(QStringLiteral("section"), QStringLiteral("00-beyond-bayes-revision"));
+    manifest.append(loose);
+
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Work/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Work);
+
+    QCOMPARE(sections.rowCount(), 2);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Curated Beyond Bayes Draft"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Beyond Bayes Revision"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Beyond Bayes manuscript"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Bayesian/FEP literature"));
+    QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Reviewer Response"));
+    QCOMPARE(sections.resolvePath(sections.index(1)), looseResponse);
+
+    QStringList visibleTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        visibleTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(!visibleTitles.contains(falsePositive.title));
 }
 
 void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()

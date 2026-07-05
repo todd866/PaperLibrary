@@ -39,6 +39,7 @@ public:
     enum Role {
         DetailRole = Qt::UserRole + 1, /**< "authors · year · journal" */
         SlugRole,
+        DoiRole,
         SourceRole,
         AuthorsRole,
         YearRole,
@@ -90,6 +91,7 @@ public:
     static QString configuredCorpusDir();
     /** True when @p corpusDir holds a catalog.jsonl. */
     static bool corpusExists(const QString &corpusDir);
+    QString corpusDir() const;
 
     /** Parse @p corpusDir's catalog off the UI thread; emits loaded(). */
     void load(const QString &corpusDir);
@@ -238,6 +240,18 @@ private:
         bool header = false;
         int sourceRow = -1;
         QString title;
+        QString focusId;
+        QString focusDoi;
+        QString focusAuthors;
+        QString focusYear;
+        QString focusJournal;
+        QString focusSource;
+        QString focusKind;
+        QString focusSection;
+        QString focusReason;
+        QString focusPath;
+        int focusOrder = -1;
+        double focusScore = 0.0;
     };
 
     void rebuild();

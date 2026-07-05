@@ -11,8 +11,10 @@
 
 #include <QAtomicInt>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
@@ -84,6 +86,11 @@ QString PaperLibraryModel::configuredCorpusDir()
 bool PaperLibraryModel::corpusExists(const QString &corpusDir)
 {
     return !corpusDir.isEmpty() && QFileInfo::exists(catalogPath(corpusDir));
+}
+
+QString PaperLibraryModel::corpusDir() const
+{
+    return m_corpusDir;
 }
 
 void PaperLibraryModel::load(const QString &corpusDir)
@@ -267,19 +274,18 @@ static bool recordMatchesObgyn(const QString &text)
 
 static bool recordMatchesBeyondBayes(const QString &text, const QString &source, const QString &journal)
 {
-    return source.contains(QStringLiteral("highdimensional")) || source.contains(QStringLiteral("biosystems")) || journal == QLatin1String("biosystems")
+    Q_UNUSED(journal);
+    return source.contains(QStringLiteral("highdimensional")) || source.contains(QStringLiteral("beyond-bayes")) || source.contains(QStringLiteral("beyond_bayes"))
         || containsAnyNeedle(text,
                              {QStringLiteral("beyond bayes"),
-                              QStringLiteral("bayesian"),
-                              QStringLiteral("information geometry"),
-                              QStringLiteral("monte carlo"),
-                              QStringLiteral("prediction model"),
-                              QStringLiteral("high dimensional"),
-                              QStringLiteral("high-dimensional"),
-                              QStringLiteral("bioelectric"),
-                              QStringLiteral("morphogenesis"),
-                              QStringLiteral("anticipatory systems"),
-                              QStringLiteral("complex systems")});
+                              QStringLiteral("beyond bayesian"),
+                              QStringLiteral("ian todd"),
+                              QStringLiteral("dimensionality bound"),
+                              QStringLiteral("sub-landauer"),
+                              QStringLiteral("projection bound"),
+                              QStringLiteral("timing inaccessibility"),
+                              QStringLiteral("high-dimensional coherence"),
+                              QStringLiteral("coherence time in biological oscillator")});
 }
 
 static bool recordMatchesPeerReview(const QString &text, const QString &source)
@@ -743,6 +749,8 @@ QVariant PaperLibraryModel::data(const QModelIndex &index, int role) const
         return joinNonEmpty({record.authors, record.year, record.journal});
     case SlugRole:
         return record.slug;
+    case DoiRole:
+        return record.doi;
     case SourceRole:
         return record.source;
     case AuthorsRole:
@@ -1700,6 +1708,182 @@ static bool sourceRowLikelyBefore(const PaperLibraryModel *source, int leftRow, 
     return left.data(Qt::DisplayRole).toString().localeAwareCompare(right.data(Qt::DisplayRole).toString()) < 0;
 }
 
+struct FocusManifestEntry {
+    QString id;
+    QString title;
+    QString path;
+    QString kind;
+    QString authors;
+    QString year;
+    QString journal;
+    QString source;
+    QString doi;
+    QString reason;
+    QString shelf;
+    QString section;
+    QString sectionLabel;
+    QString focusLink;
+    int order = -1;
+    double score = 0.0;
+};
+
+struct FocusManifest {
+    QList<FocusManifestEntry> entries;
+};
+
+static QString focusManifestShelfName(PaperLibrarySectionedModel::SmartFilter filter)
+{
+    switch (filter) {
+    case PaperLibrarySectionedModel::Work:
+        return QStringLiteral("Work");
+    case PaperLibrarySectionedModel::Mnd:
+        return QStringLiteral("MND");
+    case PaperLibrarySectionedModel::Medicine:
+        return QStringLiteral("Medicine");
+    default:
+        return QString();
+    }
+}
+
+static QString focusLookupKey(const QString &value)
+{
+    return value.trimmed().toCaseFolded();
+}
+
+static QString focusPathLookupKey(const QString &path)
+{
+    const QString trimmed = path.trimmed();
+    return trimmed.isEmpty() ? QString() : QDir::cleanPath(trimmed).toCaseFolded();
+}
+
+static bool allDigits(const QString &text)
+{
+    return !text.isEmpty()
+        && std::all_of(text.cbegin(), text.cend(), [](const QChar &character) {
+               return character.isDigit();
+           });
+}
+
+static QString titleCasedFocusWord(QString word)
+{
+    const QString lower = word.toCaseFolded();
+    if (lower == QLatin1String("mnd") || lower == QLatin1String("als") || lower == QLatin1String("md") || lower == QLatin1String("fep")
+        || lower == QLatin1String("obgyn")) {
+        return lower.toUpper();
+    }
+    if (lower == QLatin1String("and") || lower == QLatin1String("or") || lower == QLatin1String("of") || lower == QLatin1String("for")
+        || lower == QLatin1String("to") || lower == QLatin1String("in")) {
+        return lower;
+    }
+    if (!word.isEmpty()) {
+        word = lower;
+        word[0] = word.at(0).toUpper();
+    }
+    return word;
+}
+
+static QString focusSectionLabel(QString section)
+{
+    section = section.trimmed();
+    const int dash = section.indexOf(QLatin1Char('-'));
+    if (dash > 0 && allDigits(section.left(dash))) {
+        section = section.mid(dash + 1);
+    }
+    section.replace(QLatin1Char('-'), QLatin1Char(' '));
+    section.replace(QLatin1Char('_'), QLatin1Char(' '));
+
+    QStringList words = section.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (QString &word : words) {
+        word = titleCasedFocusWord(word);
+    }
+    return words.join(QLatin1Char(' '));
+}
+
+static QString focusFallbackTitle(const QString &path, const QString &id)
+{
+    const QString base = QFileInfo(path).completeBaseName().trimmed();
+    return base.isEmpty() ? id : base;
+}
+
+static QString focusDetail(const QString &authors, const QString &year, const QString &journal)
+{
+    return joinNonEmpty({authors, year, journal});
+}
+
+static QString focusReasonPrimary(const QString &reason)
+{
+    const QStringList parts = reason.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    return parts.isEmpty() ? reason.trimmed() : parts.constFirst().trimmed();
+}
+
+static QString focusReasonSecondary(const QString &reason)
+{
+    QStringList parts = reason.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    if (parts.size() <= 1) {
+        return QString();
+    }
+    parts.removeFirst();
+    for (QString &part : parts) {
+        part = part.trimmed();
+    }
+    return parts.join(QStringLiteral(" · "));
+}
+
+static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter filter, const QString &corpusDir)
+{
+    FocusManifest manifest;
+    const QString shelfName = focusManifestShelfName(filter);
+    if (shelfName.isEmpty() || corpusDir.isEmpty()) {
+        return manifest;
+    }
+
+    QFile file(corpusDir + QStringLiteral("/focus/") + shelfName + QStringLiteral("/manifest.json"));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return manifest;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isArray()) {
+        return manifest;
+    }
+
+    const QJsonArray array = document.array();
+    manifest.entries.reserve(array.size());
+    int order = 0;
+    for (const QJsonValue &value : array) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject object = value.toObject();
+        FocusManifestEntry entry;
+        entry.id = object.value(QLatin1String("id")).toString().trimmed();
+        entry.title = object.value(QLatin1String("title")).toString().trimmed();
+        entry.path = object.value(QLatin1String("path")).toString().trimmed();
+        entry.kind = object.value(QLatin1String("kind")).toString().trimmed();
+        entry.authors = object.value(QLatin1String("authors")).toString().trimmed();
+        entry.year = object.value(QLatin1String("year")).toString().trimmed();
+        entry.journal = object.value(QLatin1String("journal")).toString().trimmed();
+        entry.source = object.value(QLatin1String("source")).toString().trimmed();
+        entry.doi = object.value(QLatin1String("doi")).toString().trimmed();
+        entry.reason = object.value(QLatin1String("reason")).toString().trimmed();
+        entry.shelf = object.value(QLatin1String("shelf")).toString().trimmed();
+        entry.section = object.value(QLatin1String("section")).toString().trimmed();
+        entry.sectionLabel = focusSectionLabel(entry.section);
+        entry.focusLink = object.value(QLatin1String("focus_link")).toString().trimmed();
+        entry.score = object.value(QLatin1String("score")).toDouble();
+        entry.order = order++;
+        if (entry.title.isEmpty()) {
+            entry.title = focusFallbackTitle(entry.path, entry.id);
+        }
+        if (entry.sectionLabel.isEmpty()) {
+            entry.sectionLabel = shelfName;
+        }
+        if (!entry.title.isEmpty() || !entry.path.isEmpty() || !entry.id.isEmpty()) {
+            manifest.entries.append(entry);
+        }
+    }
+    return manifest;
+}
+
 PaperLibrarySectionedModel::PaperLibrarySectionedModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -1800,34 +1984,103 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == SourceRowRole) {
         return row.sourceRow;
     }
-    const QModelIndex sourceIndex = m_source ? m_source->index(row.sourceRow) : QModelIndex();
+    const bool focusRow = row.focusOrder >= 0;
+    const QString focusDetailText = focusDetail(row.focusAuthors, row.focusYear, row.focusJournal);
+    const QString focusPath = !row.focusPath.isEmpty() ? row.focusPath : (row.sourceRow >= 0 ? storedPathForSourceRow(row.sourceRow) : QString());
     if (role == PdfPathRole) {
-        return storedPathForSourceRow(row.sourceRow);
+        return focusPath;
     }
     if (role == CoverPixmapRole) {
-        const QString pdfPath = storedPathForSourceRow(row.sourceRow);
-        return QVariant::fromValue(m_coverPixmaps.value(pdfPath));
+        return QVariant::fromValue(m_coverPixmaps.value(focusPath));
     }
     if (role == GeneratedCoverRole) {
-        const QString pdfPath = storedPathForSourceRow(row.sourceRow);
-        return m_generatedCoverPaths.contains(pdfPath);
+        return m_generatedCoverPaths.contains(focusPath);
     }
+    if (row.sourceRow < 0) {
+        switch (role) {
+        case Qt::DisplayRole:
+            return row.title;
+        case Qt::ToolTipRole:
+            return joinNonEmpty({row.title, focusDetailText, row.focusSection, row.focusReason, row.focusPath});
+        case PaperLibraryModel::DetailRole:
+            return focusDetailText;
+        case PaperLibraryModel::SlugRole:
+            return row.focusId;
+        case PaperLibraryModel::DoiRole:
+            return row.focusDoi;
+        case PaperLibraryModel::SourceRole:
+            return row.focusSource;
+        case PaperLibraryModel::AuthorsRole:
+            return row.focusAuthors;
+        case PaperLibraryModel::YearRole:
+            return row.focusYear;
+        case PaperLibraryModel::JournalRole:
+            return row.focusJournal;
+        case PaperLibraryModel::MissingRole:
+            return row.focusPath.isEmpty() || !QFileInfo::exists(row.focusPath);
+        case PaperLibraryModel::ResolvedPathRole:
+            return row.focusPath;
+        case KindRole:
+            return row.focusKind.isEmpty() ? QStringLiteral("PDF") : row.focusKind.toUpper();
+        case TopicTagsRole:
+            return QStringList({row.focusSection, focusManifestShelfName(m_smartFilter)});
+        case RelatedQueryRole:
+            return row.focusSection;
+        case FocusRole:
+            return row.focusSection;
+        case ThumbnailSeedRole:
+            return row.focusSection.isEmpty() ? focusManifestShelfName(m_smartFilter) : row.focusSection;
+        case ShelfIntentRole:
+            return focusReasonPrimary(row.focusReason);
+        case RelationHintRole:
+            return focusReasonSecondary(row.focusReason);
+        case PriorityHintRole:
+            return row.focusSection;
+        }
+        return QVariant();
+    }
+
+    const QModelIndex sourceIndex = m_source ? m_source->index(row.sourceRow) : QModelIndex();
     if (role == DownrankedRole) {
         return sourceRowDownranked(row.sourceRow);
     }
     const QString source = sourceIndex.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
     const QString journal = sourceIndex.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
     const QString text = sourceIndex.data(PaperLibraryModel::HaystackRole).toString() + QLatin1Char('\n') + source;
+    if (role == Qt::DisplayRole && focusRow && !row.title.isEmpty()) {
+        return row.title;
+    }
+    if (role == PaperLibraryModel::DetailRole && focusRow && !focusDetailText.isEmpty()) {
+        return focusDetailText;
+    }
     if (role == ShelfIntentRole) {
+        if (focusRow && !row.focusReason.isEmpty()) {
+            return focusReasonPrimary(row.focusReason);
+        }
         return corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
     }
     if (role == RelationHintRole) {
+        if (focusRow && !row.focusReason.isEmpty()) {
+            const QString secondary = focusReasonSecondary(row.focusReason);
+            return secondary.isEmpty() ? row.focusSection : secondary;
+        }
         return corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
     }
     if (role == PriorityHintRole) {
+        if (focusRow && !row.focusSection.isEmpty()) {
+            return row.focusSection;
+        }
         return corpusPriorityHintFor(sourceIndex, text, source, journal);
     }
     if (role == Qt::ToolTipRole) {
+        if (focusRow) {
+            return joinNonEmpty({row.title,
+                                 focusDetailText.isEmpty() ? sourceIndex.data(PaperLibraryModel::DetailRole).toString() : focusDetailText,
+                                 row.focusSection,
+                                 row.focusReason,
+                                 row.focusPath,
+                                 sourceIndex.data(Qt::ToolTipRole).toString()});
+        }
         return joinNonEmpty({sourceIndex.data(Qt::DisplayRole).toString(),
                              sourceIndex.data(PaperLibraryModel::DetailRole).toString(),
                              corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal),
@@ -1835,6 +2088,9 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
                              sourceIndex.data(Qt::ToolTipRole).toString()});
     }
     if (role == KindRole) {
+        if (focusRow && !row.focusKind.isEmpty()) {
+            return row.focusKind.toUpper();
+        }
         if (recordMatchesTextbook(text, source)) {
             return QStringLiteral("TEXTBOOK");
         }
@@ -1847,6 +2103,17 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         return QStringLiteral("PAPER");
     }
     if (role == TopicTagsRole) {
+        if (focusRow) {
+            QStringList tags;
+            if (!row.focusSection.isEmpty()) {
+                tags.append(row.focusSection);
+            }
+            const QString primary = focusReasonPrimary(row.focusReason);
+            if (!primary.isEmpty()) {
+                tags.append(primary);
+            }
+            return tags;
+        }
         const QString year = sourceIndex.data(PaperLibraryModel::YearRole).toString();
         const QString focus = focusBucketFor(sourceIndex, text, source, journal);
         const QString topic = topicBucketFor(text, source, journal);
@@ -1863,12 +2130,21 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         return tags.isEmpty() ? QStringList({topic}) : tags;
     }
     if (role == RelatedQueryRole) {
+        if (focusRow && !row.focusSection.isEmpty()) {
+            return row.focusSection;
+        }
         return relatedQueryFor(text, source, journal);
     }
     if (role == FocusRole) {
+        if (focusRow && !row.focusSection.isEmpty()) {
+            return row.focusSection;
+        }
         return focusBucketFor(sourceIndex, text, source, journal);
     }
     if (role == ThumbnailSeedRole) {
+        if (focusRow && !row.focusSection.isEmpty()) {
+            return row.focusSection;
+        }
         return thumbnailSeedFor(sourceIndex, text, source, journal);
     }
     return m_source ? m_source->data(m_source->index(row.sourceRow), role) : QVariant();
@@ -1880,7 +2156,16 @@ QString PaperLibrarySectionedModel::resolvePath(const QModelIndex &index) const
         return QString();
     }
     const Row &row = m_rows.at(index.row());
-    return row.header ? QString() : m_source->resolvePdfPath(row.sourceRow);
+    if (row.header) {
+        return QString();
+    }
+    if (row.sourceRow < 0) {
+        return QFileInfo::exists(row.focusPath) ? row.focusPath : QString();
+    }
+    if (!row.focusPath.isEmpty() && QFileInfo::exists(row.focusPath)) {
+        return row.focusPath;
+    }
+    return m_source->resolvePdfPath(row.sourceRow);
 }
 
 void PaperLibrarySectionedModel::setCoverForPath(const QString &path, const QVariant &cover, bool generated)
@@ -1985,6 +2270,90 @@ void PaperLibrarySectionedModel::rebuild()
 
     m_rows.clear();
     if (!m_source) {
+        endResetModel();
+        return;
+    }
+
+    const FocusManifest focusManifest = loadFocusManifest(m_smartFilter, m_source->corpusDir());
+    if (!focusManifest.entries.isEmpty()) {
+        QHash<QString, int> rowsBySlug;
+        QHash<QString, int> rowsByDoi;
+        QHash<QString, int> rowsByPath;
+        const int sourceRows = m_source->rowCount();
+        for (int row = 0; row < sourceRows; ++row) {
+            const QModelIndex index = m_source->index(row);
+            const QString slugKey = focusLookupKey(index.data(PaperLibraryModel::SlugRole).toString());
+            if (!slugKey.isEmpty() && !rowsBySlug.contains(slugKey)) {
+                rowsBySlug.insert(slugKey, row);
+            }
+            const QString doiKey = focusLookupKey(index.data(PaperLibraryModel::DoiRole).toString());
+            if (!doiKey.isEmpty() && !rowsByDoi.contains(doiKey)) {
+                rowsByDoi.insert(doiKey, row);
+            }
+            const QString pathKey = focusPathLookupKey(index.data(PaperLibraryModel::ResolvedPathRole).toString());
+            if (!pathKey.isEmpty() && !rowsByPath.contains(pathKey)) {
+                rowsByPath.insert(pathKey, row);
+            }
+        }
+
+        QSet<int> emittedSourceRows;
+        QSet<QString> emittedManifestPaths;
+        for (const FocusManifestEntry &entry : focusManifest.entries) {
+            int sourceRow = -1;
+            const QString idKey = focusLookupKey(entry.id);
+            const QString doiKey = focusLookupKey(entry.doi);
+            const QString pathKey = focusPathLookupKey(entry.path);
+            if (!idKey.isEmpty() && rowsBySlug.contains(idKey)) {
+                sourceRow = rowsBySlug.value(idKey);
+            } else if (!doiKey.isEmpty() && rowsByDoi.contains(doiKey)) {
+                sourceRow = rowsByDoi.value(doiKey);
+            } else if (!pathKey.isEmpty() && rowsByPath.contains(pathKey)) {
+                sourceRow = rowsByPath.value(pathKey);
+            }
+
+            QString queryText = QStringList({entry.title, entry.authors, entry.year, entry.journal, entry.source, entry.doi, entry.id, entry.reason, entry.section})
+                                    .join(QLatin1Char('\n'))
+                                    .toCaseFolded();
+            if (sourceRow >= 0) {
+                queryText += QLatin1Char('\n') + m_source->index(sourceRow).data(PaperLibraryModel::HaystackRole).toString();
+            }
+            if (!m_query.isEmpty() && !queryText.contains(m_query)) {
+                continue;
+            }
+
+            if (sourceRow >= 0) {
+                if (emittedSourceRows.contains(sourceRow)) {
+                    continue;
+                }
+                emittedSourceRows.insert(sourceRow);
+            } else if (!pathKey.isEmpty()) {
+                if (emittedManifestPaths.contains(pathKey)) {
+                    continue;
+                }
+                emittedManifestPaths.insert(pathKey);
+            } else {
+                continue;
+            }
+
+            Row row;
+            row.sourceRow = sourceRow;
+            row.title = entry.title;
+            row.focusId = entry.id;
+            row.focusDoi = entry.doi;
+            row.focusAuthors = entry.authors;
+            row.focusYear = entry.year;
+            row.focusJournal = entry.journal;
+            row.focusSource = entry.source;
+            row.focusKind = entry.kind;
+            row.focusSection = entry.sectionLabel;
+            row.focusReason = entry.reason;
+            row.focusPath = entry.path;
+            row.focusOrder = entry.order;
+            row.focusScore = entry.score;
+            m_rows.append(row);
+        }
+
+        m_rowCache.insert(key, m_rows);
         endResetModel();
         return;
     }
@@ -2178,7 +2547,9 @@ void PaperLibrarySectionedModel::rebuild()
             return sourceRowLikelyBeforeForShelf(m_source, leftRow, rightRow, m_smartFilter);
         });
         for (const int sourceRow : sourceRowsForSection) {
-            m_rows.append({false, sourceRow, QString()});
+            Row row;
+            row.sourceRow = sourceRow;
+            m_rows.append(row);
         }
     }
     m_rowCache.insert(key, m_rows);
