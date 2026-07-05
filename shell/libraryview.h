@@ -198,6 +198,8 @@ private:
     void editMetadata(const QUrl &url);
     void coverArrived(const QString &filePath, const QString &coverPath);
     void syncViewModeButton();
+    /** Reassert the tiled QListView geometry after model/theme/shelf changes. */
+    void configureTileGrid();
     Shelf activeShelf() const;
     QString searchQuery() const;
     /** Filter (or plainly arrange) both shelf models and (re)start the content search. */

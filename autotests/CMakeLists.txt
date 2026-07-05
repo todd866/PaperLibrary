@@ -22,6 +22,19 @@ ecm_add_test(paperlibrarymodeltest.cpp ../shell/paperlibrarymodel.cpp
     LINK_LIBRARIES Qt6::Test Qt6::Sql KF6::ConfigCore
 )
 
+ecm_add_test(libraryviewtest.cpp
+    ../shell/libraryview.cpp
+    ../shell/librarystore.cpp
+    ../shell/paperlibrarymodel.cpp
+    ../shell/coverheuristic.cpp
+    ../shell/covergenerator.cpp
+    ../shell/epubcover.cpp
+    ../shell/epubimporter.cpp
+    ../shell/applebooksprogress.cpp
+    TEST_NAME "libraryviewtest"
+    LINK_LIBRARIES Qt6::Test Qt6::Widgets Qt6::Sql KF6::Archive KF6::ConfigCore KF6::I18n
+)
+
 ecm_add_test(coverheuristictest.cpp ../shell/coverheuristic.cpp
     TEST_NAME "coverheuristictest"
     LINK_LIBRARIES Qt6::Test Qt6::Gui

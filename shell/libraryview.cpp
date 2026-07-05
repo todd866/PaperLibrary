@@ -1183,10 +1183,6 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_booksModel->setProperty("booksShelf", true);
 
     m_grid = new QListView(this);
-    m_grid->setViewMode(QListView::IconMode);
-    m_grid->setResizeMode(QListView::Adjust);
-    m_grid->setMovement(QListView::Static);
-    m_grid->setSpacing(GridSpacing);
     m_grid->setSelectionMode(QAbstractItemView::SingleSelection);
     m_grid->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_grid->setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -1197,6 +1193,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_grid->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_grid->viewport()->setAutoFillBackground(false);
     m_grid->setItemDelegate(new LibraryTileDelegate(m_grid));
+    configureTileGrid();
     m_grid->setModel(modelForShelf(PdfShelf));
     m_grid->setContextMenuPolicy(Qt::CustomContextMenu);
     mainLayout->addWidget(m_grid, 1);
@@ -1256,6 +1253,26 @@ void LibraryView::syncViewModeButton()
     const ViewMode mode = m_viewModes[shelf];
     m_viewModeActions[mode]->setChecked(true);
     m_viewModeButton->setText(m_viewModeActions[mode]->text());
+}
+
+void LibraryView::configureTileGrid()
+{
+    if (!m_grid) {
+        return;
+    }
+
+    const QFontMetrics titleMetrics(m_grid->font());
+    const QFontMetrics smallMetrics(smallerFont(m_grid->font()));
+    const int tileHeight = TilePadding + CoverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + smallMetrics.height() + TilePadding;
+
+    m_grid->setViewMode(QListView::IconMode);
+    m_grid->setResizeMode(QListView::Adjust);
+    m_grid->setMovement(QListView::Static);
+    m_grid->setFlow(QListView::LeftToRight);
+    m_grid->setWrapping(true);
+    m_grid->setSpacing(GridSpacing);
+    m_grid->setGridSize(QSize(TileWidth + GridSpacing, tileHeight + GridSpacing));
+    m_grid->setUniformItemSizes(true);
 }
 
 void LibraryView::refresh()
@@ -2300,12 +2317,14 @@ void LibraryView::shelfChanged(int index)
         configureCorpusShelf(shelf);
         QItemSelectionModel *oldSelection = m_grid->selectionModel();
         m_grid->setModel(m_paperSections);
+        configureTileGrid();
         delete oldSelection;
         ensurePapersFresh();
         requestCorpusCovers();
     } else {
         QItemSelectionModel *oldSelection = m_grid->selectionModel();
         m_grid->setModel(modelForShelf(shelf));
+        configureTileGrid();
         delete oldSelection;
         syncViewModeButton(); // the arrangement is a per-shelf choice
     }
@@ -2485,6 +2504,7 @@ void LibraryView::applyChromePalette()
     if (m_grid) {
         m_grid->setPalette(chrome);
         m_grid->viewport()->setPalette(chrome);
+        configureTileGrid();
     }
     m_applyingChromePalette = false;
 }
