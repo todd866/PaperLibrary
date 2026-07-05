@@ -29,6 +29,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
@@ -847,6 +848,14 @@ public:
         if (!corpusTile && cover.isNull()) {
             cover = index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>();
         }
+        const bool generatedCorpusFallback = corpusTile && !cover.isNull() && index.data(PaperLibrarySectionedModel::GeneratedCoverRole).toBool();
+        if (generatedCorpusFallback) {
+            // Generated corpus covers are only cache/warmup artifacts. The
+            // delegate paints a richer, shelf-aware paper card immediately,
+            // and only a real rendered cover should replace that semantic
+            // visual thumbnail.
+            cover = QPixmap();
+        }
         QRect coverRect;
         if (!cover.isNull()) {
             const QSize scaled = cover.size().scaled(coverBox.size(), Qt::KeepAspectRatio);
@@ -1000,47 +1009,133 @@ private:
         return index.model() && index.model()->property("booksShelf").toBool();
     }
 
-    static void drawCorpusMotif(QPainter *painter, const QRectF &area, const QString &focus, const QString &kind, QColor accent, const QPalette &palette)
+    static bool keyContainsAny(const QString &key, const QStringList &needles)
     {
-        const QString key = QString(focus + QLatin1Char(' ') + kind).toCaseFolded();
-        accent.setAlphaF(0.42);
-        QPen pen(accent, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        for (const QString &needle : needles) {
+            if (key.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static QString visualKeyForCorpusCard(const QModelIndex &index)
+    {
+        return QStringList({index.data(Qt::DisplayRole).toString(),
+                            index.data(PaperLibraryModel::DetailRole).toString(),
+                            index.data(PaperLibrarySectionedModel::KindRole).toString(),
+                            index.data(PaperLibrarySectionedModel::FocusRole).toString(),
+                            index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString(),
+                            index.data(PaperLibrarySectionedModel::RelationHintRole).toString(),
+                            index.data(PaperLibrarySectionedModel::PriorityHintRole).toString(),
+                            index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList().join(QLatin1Char(' '))})
+            .join(QLatin1Char(' '))
+            .toCaseFolded();
+    }
+
+    static void drawCorpusMotif(QPainter *painter, const QRectF &area, const QString &key, QColor accent, const QPalette &palette)
+    {
+        QColor faint = palette.color(QPalette::Text);
+        faint.setAlphaF(0.18);
+        accent.setAlphaF(0.58);
+        QPen pen(accent, 2.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
 
-        if (key.contains(QStringLiteral("mnd")) || key.contains(QStringLiteral("neuro")) || key.contains(QStringLiteral("psychiat"))) {
-            const QPointF a(area.left() + area.width() * 0.22, area.top() + area.height() * 0.32);
-            const QPointF b(area.left() + area.width() * 0.70, area.top() + area.height() * 0.22);
-            const QPointF c(area.left() + area.width() * 0.52, area.top() + area.height() * 0.70);
-            painter->drawLine(a, b);
-            painter->drawLine(a, c);
-            painter->drawLine(b, c);
+        if (keyContainsAny(key, {QStringLiteral("mnd"), QStringLiteral("als"), QStringLiteral("motor neuron"), QStringLiteral("neuro"), QStringLiteral("cortical"), QStringLiteral("axon"), QStringLiteral("psychiat")})) {
+            const QPointF soma(area.left() + area.width() * 0.22, area.top() + area.height() * 0.55);
             painter->setBrush(accent);
-            painter->drawEllipse(a, 3.2, 3.2);
-            painter->drawEllipse(b, 3.2, 3.2);
-            painter->drawEllipse(c, 3.2, 3.2);
+            painter->drawEllipse(soma, area.width() * 0.08, area.width() * 0.08);
+            painter->setBrush(Qt::NoBrush);
+
+            QPainterPath axon;
+            axon.moveTo(soma);
+            axon.cubicTo(area.left() + area.width() * 0.45, area.top() + area.height() * 0.22, area.left() + area.width() * 0.62, area.top() + area.height() * 0.74, area.right() - 6, area.top() + area.height() * 0.38);
+            painter->drawPath(axon);
+            const QList<QLineF> branches = {
+                QLineF(area.left() + area.width() * 0.42, area.top() + area.height() * 0.36, area.left() + area.width() * 0.28, area.top() + area.height() * 0.16),
+                QLineF(area.left() + area.width() * 0.54, area.top() + area.height() * 0.49, area.left() + area.width() * 0.50, area.bottom() - 5),
+                QLineF(area.left() + area.width() * 0.70, area.top() + area.height() * 0.53, area.right() - 12, area.bottom() - 7),
+            };
+            for (const QLineF &branch : branches) {
+                painter->drawLine(branch);
+            }
+            painter->setPen(QPen(faint, 1.1, Qt::SolidLine, Qt::RoundCap));
+            for (int i = 0; i < 3; ++i) {
+                painter->drawEllipse(QPointF(area.right() - 14 - i * 13, area.top() + 11 + i * 7), 2.1, 2.1);
+            }
             return;
         }
 
-        if (key.contains(QStringLiteral("medicine")) || key.contains(QStringLiteral("paeds")) || key.contains(QStringLiteral("obgyn"))) {
-            const QPointF center = area.center();
-            painter->drawLine(QPointF(center.x(), area.top() + 8), QPointF(center.x(), area.bottom() - 8));
-            painter->drawLine(QPointF(area.left() + 8, center.y()), QPointF(area.right() - 8, center.y()));
+        if (keyContainsAny(key, {QStringLiteral("biomarker"), QStringLiteral("diagnostic"), QStringLiteral("accuracy"), QStringLiteral("neurofilament"), QStringLiteral("threshold"), QStringLiteral("sensitivity"), QStringLiteral("specificity")})) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            for (int i = 0; i < 4; ++i) {
+                const qreal y = area.top() + 8 + i * area.height() * 0.18;
+                painter->drawLine(QPointF(area.left() + 7, y), QPointF(area.right() - 7, y));
+            }
+            painter->setPen(pen);
+            QPainterPath curve;
+            curve.moveTo(area.left() + 8, area.bottom() - 8);
+            curve.cubicTo(area.left() + area.width() * 0.36, area.bottom() - 9, area.left() + area.width() * 0.52, area.top() + 8, area.right() - 7, area.top() + 11);
+            painter->drawPath(curve);
+            painter->setBrush(accent);
+            for (int i = 0; i < 4; ++i) {
+                const qreal x = area.left() + 14 + i * area.width() * 0.22;
+                painter->drawRoundedRect(QRectF(x, area.bottom() - 9 - i * 5, 5, 9 + i * 5), 2.0, 2.0);
+            }
             return;
         }
 
-        if (key.contains(QStringLiteral("bayes")) || key.contains(QStringLiteral("work")) || key.contains(QStringLiteral("review")) || key.contains(QStringLiteral("method"))) {
+        if (keyContainsAny(key, {QStringLiteral("trial"), QStringLiteral("treatment"), QStringLiteral("therapy"), QStringLiteral("riluzole"), QStringLiteral("survival"), QStringLiteral("prognosis")})) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(area.left() + 8, area.top() + 9), QPointF(area.left() + 8, area.bottom() - 8));
+            painter->drawLine(QPointF(area.left() + 8, area.bottom() - 8), QPointF(area.right() - 7, area.bottom() - 8));
+            painter->setPen(pen);
+            QPainterPath survival;
+            survival.moveTo(area.left() + 10, area.top() + 13);
+            survival.lineTo(area.left() + 26, area.top() + 13);
+            survival.lineTo(area.left() + 26, area.top() + 23);
+            survival.lineTo(area.left() + 44, area.top() + 23);
+            survival.lineTo(area.left() + 44, area.top() + 34);
+            survival.lineTo(area.right() - 8, area.top() + 34);
+            painter->drawPath(survival);
+            painter->setBrush(accent);
+            painter->drawRoundedRect(QRectF(area.right() - 34, area.bottom() - 25, 8, 17), 2, 2);
+            painter->drawRoundedRect(QRectF(area.right() - 21, area.bottom() - 33, 8, 25), 2, 2);
+            return;
+        }
+
+        if (keyContainsAny(key, {QStringLiteral("bayes"), QStringLiteral("model"), QStringLiteral("statistics"), QStringLiteral("method"), QStringLiteral("inference"), QStringLiteral("prediction")})) {
             const QPointF origin(area.left() + 8, area.bottom() - 8);
             painter->drawLine(origin, QPointF(area.right() - 6, area.bottom() - 8));
             painter->drawLine(origin, QPointF(area.left() + 8, area.top() + 6));
             painter->setBrush(accent);
-            painter->drawEllipse(QPointF(area.left() + 18, area.bottom() - 18), 2.6, 2.6);
-            painter->drawEllipse(QPointF(area.left() + 30, area.top() + 24), 2.6, 2.6);
-            painter->drawEllipse(QPointF(area.right() - 12, area.top() + 12), 2.6, 2.6);
+            const QList<QPointF> points = {
+                QPointF(area.left() + 18, area.bottom() - 16),
+                QPointF(area.left() + 30, area.top() + 24),
+                QPointF(area.left() + 45, area.top() + 31),
+                QPointF(area.right() - 13, area.top() + 12),
+            };
+            for (const QPointF &point : points) {
+                painter->drawEllipse(point, 2.6, 2.6);
+            }
+            painter->setPen(QPen(faint, 1.1, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(points.at(0), points.at(1));
+            painter->drawLine(points.at(1), points.at(2));
+            painter->drawLine(points.at(2), points.at(3));
             return;
         }
 
-        if (key.contains(QStringLiteral("fiction")) || key.contains(QStringLiteral("book"))) {
+        if (keyContainsAny(key, {QStringLiteral("medicine"), QStringLiteral("paeds"), QStringLiteral("obgyn"), QStringLiteral("clinical"), QStringLiteral("guideline")})) {
+            const QPointF center = area.center();
+            painter->drawLine(QPointF(center.x(), area.top() + 8), QPointF(center.x(), area.bottom() - 8));
+            painter->drawLine(QPointF(area.left() + 8, center.y()), QPointF(area.right() - 8, center.y()));
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawRoundedRect(QRectF(area.left() + 8, area.top() + 9, area.width() - 16, area.height() - 18), 5, 5);
+            return;
+        }
+
+        if (keyContainsAny(key, {QStringLiteral("fiction"), QStringLiteral("book")})) {
             QPainterPath book;
             book.moveTo(area.left() + 7, area.top() + 10);
             book.quadTo(area.center().x() - 2, area.top() + 4, area.center().x(), area.top() + 12);
@@ -1054,7 +1149,7 @@ private:
             return;
         }
 
-        if (key.contains(QStringLiteral("non-fiction")) || key.contains(QStringLiteral("anthropology")) || key.contains(QStringLiteral("politics")) || key.contains(QStringLiteral("history"))) {
+        if (keyContainsAny(key, {QStringLiteral("non-fiction"), QStringLiteral("anthropology"), QStringLiteral("politics"), QStringLiteral("history")})) {
             painter->drawLine(QPointF(area.left() + 8, area.bottom() - 8), QPointF(area.right() - 8, area.bottom() - 8));
             for (int i = 0; i < 3; ++i) {
                 const qreal x = area.left() + 13 + i * 11;
@@ -1063,12 +1158,23 @@ private:
             return;
         }
 
-        QColor lineColor = palette.color(QPalette::Text);
-        lineColor.setAlphaF(0.22);
-        painter->setPen(QPen(lineColor, 2.0, Qt::SolidLine, Qt::RoundCap));
-        for (int i = 0; i < 4; ++i) {
-            const qreal y = area.top() + 10 + i * 9;
-            painter->drawLine(QPointF(area.left() + 8, y), QPointF(area.right() - 8, y));
+        painter->setPen(QPen(faint, 1.2, Qt::SolidLine, Qt::RoundCap));
+        painter->drawRoundedRect(area.adjusted(7, 5, -7, -5), 4, 4);
+        for (int i = 0; i < 3; ++i) {
+            const qreal y = area.top() + 13 + i * 8;
+            painter->drawLine(QPointF(area.left() + 15, y), QPointF(area.right() - 15, y));
+        }
+        painter->setPen(QPen(accent, 1.5, Qt::SolidLine, Qt::RoundCap));
+        const QList<QPointF> nodes = {
+            QPointF(area.left() + 16, area.bottom() - 10),
+            QPointF(area.center().x(), area.top() + 11),
+            QPointF(area.right() - 15, area.bottom() - 15),
+        };
+        painter->drawLine(nodes.at(0), nodes.at(1));
+        painter->drawLine(nodes.at(1), nodes.at(2));
+        painter->setBrush(accent);
+        for (const QPointF &node : nodes) {
+            painter->drawEllipse(node, 2.4, 2.4);
         }
     }
 
@@ -1084,13 +1190,18 @@ private:
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
         const bool missing = index.data(PaperLibraryModel::MissingRole).toBool();
+        const QString visualKey = visualKeyForCorpusCard(index);
 
         QPainterPath clip;
         clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
         QColor accent = CoverGenerator::accentColor(seed.isEmpty() ? kind : seed, darkMode);
         const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
-        painter->fillPath(clip, blendColors(cardBase, accent, darkMode ? 0.36 : 0.30));
+        QLinearGradient field(coverRect.topLeft(), coverRect.bottomRight());
+        field.setColorAt(0.0, blendColors(cardBase, accent, darkMode ? 0.42 : 0.34));
+        field.setColorAt(0.55, blendColors(cardBase, accent, darkMode ? 0.30 : 0.24));
+        field.setColorAt(1.0, cardBase);
+        painter->fillPath(clip, field);
 
         QColor rim = accent;
         rim.setAlphaF(darkMode ? 0.78 : 0.58);
@@ -1105,16 +1216,23 @@ private:
         painter->drawRect(QRect(coverRect.left(), coverRect.top(), 7, coverRect.height()));
 
         QColor panel = palette.color(QPalette::Base);
-        panel.setAlphaF(darkMode ? 0.72 : 0.84);
+        panel.setAlphaF(darkMode ? 0.70 : 0.82);
         painter->setBrush(panel);
-        painter->drawRoundedRect(QRectF(coverRect).adjusted(8, 26, -8, -8), 4, 4);
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(8, 28, -8, -8), 4, 4);
 
         QColor wash = accent;
-        wash.setAlphaF(darkMode ? 0.28 : 0.22);
+        wash.setAlphaF(darkMode ? 0.26 : 0.20);
         painter->setBrush(wash);
-        painter->drawEllipse(QRectF(coverRect.right() - 46, coverRect.top() + 18, 70, 70));
-        painter->drawRoundedRect(QRectF(coverRect.left() + 10, coverRect.bottom() - 38, coverRect.width() - 20, 20), 4, 4);
-        drawCorpusMotif(painter, QRectF(coverRect.right() - 54, coverRect.top() + 28, 42, 42), focus, kind, accent, palette);
+        painter->drawEllipse(QRectF(coverRect.right() - 54, coverRect.top() + 20, 76, 76));
+        painter->drawRoundedRect(QRectF(coverRect.left() + 11, coverRect.bottom() - 39, coverRect.width() - 22, 21), 4, 4);
+
+        const QRectF visualRect(coverRect.left() + 14, coverRect.top() + 31, coverRect.width() - 28, 43);
+        QColor visualPanel = palette.color(QPalette::Base);
+        visualPanel.setAlphaF(darkMode ? 0.36 : 0.48);
+        painter->setBrush(visualPanel);
+        painter->setPen(Qt::NoPen);
+        painter->drawRoundedRect(visualRect, 5, 5);
+        drawCorpusMotif(painter, visualRect.adjusted(4, 3, -4, -3), visualKey, accent, palette);
 
         QFont kindFont = smallerFont(option.font);
         kindFont.setBold(true);
@@ -1127,10 +1245,11 @@ private:
 
         QFont titleFont = option.font;
         titleFont.setBold(true);
+        titleFont.setPointSizeF(qMax(8.0, titleFont.pointSizeF() * 0.92));
         painter->setFont(titleFont);
         painter->setPen(palette.color(QPalette::Text));
         const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 3);
-        int y = coverRect.top() + 38;
+        int y = coverRect.top() + 80;
         const QFontMetrics titleMetrics(titleFont);
         for (const QString &line : titleLines) {
             painter->drawText(QRect(coverRect.left() + 10, y, coverRect.width() - 20, titleMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
@@ -1143,7 +1262,7 @@ private:
         metaColor.setAlphaF(missing ? 0.36 : 0.56);
         painter->setFont(metaFont);
         painter->setPen(metaColor);
-        const int metaTop = qMax(y + 4, coverRect.bottom() - 54);
+        const int metaTop = qMax(y + 3, coverRect.bottom() - 36);
         QString meta = intent;
         if (!priority.isEmpty() && priority != intent && priority != detail) {
             meta = joinCompact({priority, meta});
@@ -1423,7 +1542,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_gridFadeEffect->setOpacity(1.0);
     m_grid->setGraphicsEffect(m_gridFadeEffect);
     m_gridFadeAnimation = new QPropertyAnimation(m_gridFadeEffect, "opacity", this);
-    m_gridFadeAnimation->setDuration(190);
+    m_gridFadeAnimation->setDuration(230);
     m_gridFadeAnimation->setEasingCurve(QEasingCurve::OutCubic);
     mainLayout->addWidget(m_grid, 1);
 
@@ -1527,8 +1646,11 @@ void LibraryView::animateGridIn()
         return;
     }
     m_gridFadeAnimation->stop();
-    m_gridFadeEffect->setOpacity(0.56);
-    m_gridFadeAnimation->setStartValue(0.56);
+    m_gridFadeEffect->setOpacity(0.48);
+    m_gridFadeAnimation->setDuration(230);
+    m_gridFadeAnimation->setStartValue(0.48);
+    m_gridFadeAnimation->setKeyValueAt(0.28, 0.72);
+    m_gridFadeAnimation->setKeyValueAt(0.62, 0.91);
     m_gridFadeAnimation->setEndValue(1.0);
     m_gridFadeAnimation->start();
 }

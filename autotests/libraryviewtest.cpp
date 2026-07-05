@@ -194,6 +194,7 @@ private Q_SLOTS:
     void testCorpusShelfModelsPersistAcrossSwitches();
     void testDomainShelvesRequireFocusManifest();
     void testWorkShelfGeneratedCardsAreVisible();
+    void testGeneratedCorpusCoverKeepsSemanticThumbnail();
     void testBooksShelfStaysWithLocalEbooks();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
     void testCorpusActivationStoresCuratedMetadata();
@@ -371,6 +372,74 @@ void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
         }
     }
     QVERIFY2(changedCoverPixels > 4000, qPrintable(QString::number(changedCoverPixels)));
+}
+
+void LibraryViewTest::testGeneratedCorpusCoverKeepsSemanticThumbnail()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+
+    PaperLibrarySectionedModel *sections = qobject_cast<PaperLibrarySectionedModel *>(grid->model());
+    QVERIFY(sections);
+    const QModelIndex index = sections->index(0, 0);
+    const QString path = sections->resolvePath(index);
+    QVERIFY(!path.isEmpty());
+
+    QPixmap generated(QSize(96, 96));
+    generated.fill(QColor(255, 0, 255));
+    sections->setCoverForPath(path, QVariant::fromValue(generated), true);
+    QVERIFY(index.data(PaperLibrarySectionedModel::GeneratedCoverRole).toBool());
+
+    QStyleOptionViewItem option;
+    option.initFrom(grid);
+    option.state |= QStyle::State_Enabled | QStyle::State_Active;
+    option.widget = grid;
+    QSize tileSize = grid->gridSize();
+    if (!tileSize.isValid() || tileSize.isEmpty()) {
+        tileSize = grid->itemDelegate()->sizeHint(option, index);
+    }
+    option.rect = QRect(QPoint(0, 0), tileSize);
+    option.font = grid->font();
+    option.fontMetrics = QFontMetrics(grid->font());
+
+    QPixmap tile(tileSize);
+    tile.fill(view.palette().color(QPalette::Base));
+    QPainter painter(&tile);
+    grid->itemDelegate()->paint(&painter, option, index);
+    painter.end();
+
+    const QImage image = tile.toImage();
+    int magentaPixels = 0;
+    int nonBasePixels = 0;
+    const QColor base = view.palette().color(QPalette::Base);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (pixel != base) {
+                ++nonBasePixels;
+            }
+            if (pixel.red() > 240 && pixel.green() < 25 && pixel.blue() > 240) {
+                ++magentaPixels;
+            }
+        }
+    }
+    QVERIFY2(nonBasePixels > 4000, qPrintable(QString::number(nonBasePixels)));
+    QVERIFY2(magentaPixels < 200, qPrintable(QString::number(magentaPixels)));
 }
 
 void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
