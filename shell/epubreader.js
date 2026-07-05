@@ -14,6 +14,7 @@
     const spineTurnMs = 150;
     const wheelPageThreshold = 12;
     const wheelGestureQuietMs = 180;
+    const continuousBoundaryPx = 6;
     const spineSlideWindowNamePrefix = "__paperlibrary_epub_slide__:";
 
     let fontScaleStep = clampFontScaleStep(initialFontScaleStep);
@@ -158,6 +159,9 @@
             return 0;
         }
         const target = clamp(finiteNumber(offset), 0, max);
+        if (!isPaginated()) {
+            return target;
+        }
         if (target >= max - boundaryTolerance(step)) {
             return max;
         }
@@ -371,6 +375,17 @@
             return;
         }
         if (!isPaginated()) {
+            const dominant = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+            const direction = dominant > 0 ? 1 : dominant < 0 ? -1 : 0;
+            if (!direction) {
+                return;
+            }
+            const current = scrollOffset();
+            const max = maxScrollLeft();
+            if ((direction > 0 && current >= max - continuousBoundaryPx) || (direction < 0 && current <= continuousBoundaryPx)) {
+                event.preventDefault();
+                requestSpineTurn(direction);
+            }
             return;
         }
 

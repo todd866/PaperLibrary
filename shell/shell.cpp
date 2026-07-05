@@ -553,6 +553,12 @@ void Shell::connectEpubWebReader(EpubWebReader *reader)
             syncEpubScrollModeActions();
         }
     });
+    connect(reader, &EpubWebReader::historyAvailabilityChanged, this, [this, reader](bool, bool) {
+        const int tab = m_tabWidget ? m_tabWidget->currentIndex() : -1;
+        if (tab >= 0 && tab < m_tabs.size() && m_tabs[tab].epubReader == reader) {
+            syncEpubHistoryActions();
+        }
+    });
     connect(reader, &EpubWebReader::outlineAvailableChanged, this, [this, reader](bool available) {
         const int tab = findTabIndex(reader);
         if (tab < 0 || tab != m_tabWidget->currentIndex()) {
@@ -760,6 +766,18 @@ void Shell::syncEpubScrollModeActions()
     }
     if (m_epubBookContinuousAction) {
         m_epubBookContinuousAction->setChecked(mode == EpubWebReader::ScrollMode::Continuous);
+    }
+}
+
+void Shell::syncEpubHistoryActions()
+{
+    const int tab = m_tabWidget ? m_tabWidget->currentIndex() : -1;
+    EpubWebReader *const reader = (tab >= 0 && tab < m_tabs.size()) ? m_tabs[tab].epubReader : nullptr;
+    if (m_epubBackAction) {
+        m_epubBackAction->setEnabled(reader && reader->canNavigateBackInBook());
+    }
+    if (m_epubForwardAction) {
+        m_epubForwardAction->setEnabled(reader && reader->canNavigateForwardInBook());
     }
 }
 
@@ -1293,7 +1311,7 @@ void Shell::setupActions()
     });
 
     m_epubGlobalContinuousAction = actionCollection()->addAction(QStringLiteral("epub-scroll-global-continuous"));
-    m_epubGlobalContinuousAction->setText(i18n("Global EPUB Scroll Mode: Continuous Scroll"));
+    m_epubGlobalContinuousAction->setText(i18n("Global EPUB Scroll Mode: Infinite Scroll"));
     m_epubGlobalContinuousAction->setCheckable(true);
     globalEpubScrollGroup->addAction(m_epubGlobalContinuousAction);
     connect(m_epubGlobalContinuousAction, &QAction::triggered, this, [this]() {
@@ -1341,7 +1359,7 @@ void Shell::setupActions()
     });
 
     m_epubBookContinuousAction = actionCollection()->addAction(QStringLiteral("epub-scroll-book-continuous"));
-    m_epubBookContinuousAction->setText(i18n("This EPUB: Continuous Scroll"));
+    m_epubBookContinuousAction->setText(i18n("This EPUB: Infinite Scroll"));
     m_epubBookContinuousAction->setCheckable(true);
     m_epubBookContinuousAction->setEnabled(false);
     bookEpubScrollGroup->addAction(m_epubBookContinuousAction);
@@ -1351,7 +1369,34 @@ void Shell::setupActions()
         }
         syncEpubScrollModeActions();
     });
+
+    m_epubBackAction = actionCollection()->addAction(QStringLiteral("epub-history-back"));
+    m_epubBackAction->setText(i18n("Back in EPUB"));
+    QList<QKeySequence> epubBackShortcuts;
+    epubBackShortcuts << QKeySequence(Qt::ALT | Qt::Key_Left) << QKeySequence(Qt::META | Qt::Key_BracketLeft);
+    actionCollection()->setDefaultShortcuts(m_epubBackAction, epubBackShortcuts);
+    m_epubBackAction->setEnabled(false);
+    connect(m_epubBackAction, &QAction::triggered, this, [this, currentEpubReader]() {
+        if (EpubWebReader *const reader = currentEpubReader()) {
+            reader->navigateBackInBook();
+        }
+        syncEpubHistoryActions();
+    });
+
+    m_epubForwardAction = actionCollection()->addAction(QStringLiteral("epub-history-forward"));
+    m_epubForwardAction->setText(i18n("Forward in EPUB"));
+    QList<QKeySequence> epubForwardShortcuts;
+    epubForwardShortcuts << QKeySequence(Qt::ALT | Qt::Key_Right) << QKeySequence(Qt::META | Qt::Key_BracketRight);
+    actionCollection()->setDefaultShortcuts(m_epubForwardAction, epubForwardShortcuts);
+    m_epubForwardAction->setEnabled(false);
+    connect(m_epubForwardAction, &QAction::triggered, this, [this, currentEpubReader]() {
+        if (EpubWebReader *const reader = currentEpubReader()) {
+            reader->navigateForwardInBook();
+        }
+        syncEpubHistoryActions();
+    });
     syncEpubScrollModeActions();
+    syncEpubHistoryActions();
 
     m_scanAppleBooksAction = actionCollection()->addAction(QStringLiteral("scan-apple-books-on-startup"));
     m_scanAppleBooksAction->setText(i18n("Scan Apple Books on Startup"));
@@ -1969,6 +2014,7 @@ void Shell::setActiveTab(int tab)
     m_tabWidget->setCurrentIndex(tab);
     setEpubFontActionsEnabled(m_tabs[tab].epubReader != nullptr);
     syncEpubScrollModeActions();
+    syncEpubHistoryActions();
     setPdfReaderActionsEnabled(m_tabs[tab].pdfReader != nullptr);
     if (m_pdfShowSidebarAction) {
         m_pdfShowSidebarAction->setEnabled(false);

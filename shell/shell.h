@@ -159,6 +159,7 @@ private:
     void setEpubFontActionsEnabled(bool enabled);
     void setEpubScrollModeActionsEnabled(bool enabled);
     void syncEpubScrollModeActions();
+    void syncEpubHistoryActions();
     void setPdfReaderActionsEnabled(bool enabled);
 
     /**
@@ -260,6 +261,8 @@ private:
     QAction *m_epubBookUseGlobalAction = nullptr;
     QAction *m_epubBookPaginatedAction = nullptr;
     QAction *m_epubBookContinuousAction = nullptr;
+    QAction *m_epubBackAction = nullptr;
+    QAction *m_epubForwardAction = nullptr;
     QAction *m_scanAppleBooksAction = nullptr;
     QAction *m_autoTagLibraryAction = nullptr;
     QAction *m_readerMotionAction = nullptr;

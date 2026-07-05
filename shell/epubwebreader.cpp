@@ -933,6 +933,9 @@ constexpr auto PaginatedScrollMode = "paginated";
 constexpr auto ContinuousScrollMode = "continuous";
 constexpr auto ReaderCommandPrefix = ".paperlibrary/";
 constexpr int NavigationEntryIndexRole = Qt::UserRole + 1;
+constexpr int MaxReaderHistoryLocations = 80;
+constexpr double ReaderHistoryDuplicateTolerance = 48.0;
+constexpr double ContinuousScrollHistoryStep = 1600.0;
 
 void epubReaderLog(const QString &message)
 {
@@ -1427,6 +1430,11 @@ bool EpubWebReader::open(const QUrl &url)
     m_pendingScrollOffset = 0.0;
     m_havePendingScrollOffset = false;
     m_pendingScrollToEnd = false;
+    m_backStack.clear();
+    m_forwardStack.clear();
+    m_haveHistoryAnchor = false;
+    m_suppressHistoryCapture = false;
+    updateHistoryAvailability();
     m_fontScaleStep = readFontScaleStep();
     m_hasBookScrollModeOverride = readBookScrollMode(m_epubPath, &m_scrollMode);
     if (!m_hasBookScrollModeOverride) {
@@ -1534,6 +1542,9 @@ bool EpubWebReader::open(const QUrl &url)
                                (m_spineIndex >= 0 && m_spineIndex < m_spine.size()) ? m_spine.at(m_spineIndex) : QString()));
         if (ok) {
             applyPendingScrollOffset();
+            if (!m_havePendingScrollOffset) {
+                m_suppressHistoryCapture = false;
+            }
         }
         Q_EMIT loadFinished(ok);
     });
@@ -1553,7 +1564,9 @@ bool EpubWebReader::open(const QUrl &url)
         if (m_havePendingScrollOffset) {
             return;
         }
-        saveScrollOffset(m_scrollMode == ScrollMode::Continuous ? position.y() : position.x());
+        const double offset = m_scrollMode == ScrollMode::Continuous ? position.y() : position.x();
+        captureScrollHistoryIfNeeded(offset);
+        saveScrollOffset(offset);
         saveReadingPosition();
     });
     connect(m_page, &QWebEnginePage::renderProcessTerminated, this, [this](QWebEnginePage::RenderProcessTerminationStatus status, int exitCode) {
@@ -1613,7 +1626,7 @@ bool EpubWebReader::open(const QUrl &url)
     m_view->setPage(m_page);
     layout()->addWidget(m_view);
 
-    return loadSpineItem(m_spineIndex, m_havePendingScrollOffset ? m_pendingScrollOffset : 0.0);
+    return loadSpineItem(m_spineIndex, m_havePendingScrollOffset ? m_pendingScrollOffset : 0.0, false, QString(), false);
 }
 
 QUrl EpubWebReader::url() const
@@ -1639,6 +1652,16 @@ EpubWebReader::ScrollMode EpubWebReader::scrollMode() const
 bool EpubWebReader::hasBookScrollModeOverride() const
 {
     return m_hasBookScrollModeOverride;
+}
+
+bool EpubWebReader::canNavigateBackInBook() const
+{
+    return !m_backStack.isEmpty();
+}
+
+bool EpubWebReader::canNavigateForwardInBook() const
+{
+    return !m_forwardStack.isEmpty();
 }
 
 void EpubWebReader::applyReaderMotionSetting()
@@ -1744,6 +1767,104 @@ void EpubWebReader::setScrollMode(ScrollMode mode)
     Q_EMIT scrollModeChanged(m_scrollMode, m_hasBookScrollModeOverride);
 }
 
+void EpubWebReader::navigateBackInBook()
+{
+    if (m_backStack.isEmpty()) {
+        updateHistoryAvailability();
+        return;
+    }
+    m_forwardStack.append(currentLocation());
+    const Location location = m_backStack.takeLast();
+    loadHistoryLocation(location);
+    updateHistoryAvailability();
+}
+
+void EpubWebReader::navigateForwardInBook()
+{
+    if (m_forwardStack.isEmpty()) {
+        updateHistoryAvailability();
+        return;
+    }
+    m_backStack.append(currentLocation());
+    const Location location = m_forwardStack.takeLast();
+    loadHistoryLocation(location);
+    updateHistoryAvailability();
+}
+
+EpubWebReader::Location EpubWebReader::currentLocation() const
+{
+    Location location;
+    location.spineIndex = qBound(0, m_spineIndex, qMax(0, m_spine.size() - 1));
+    location.scrollOffset = cleanReportedScrollOffset(m_pendingScrollOffset);
+    return location;
+}
+
+void EpubWebReader::pushHistoryLocation(const Location &location, bool clearForward)
+{
+    if (location.spineIndex < 0 || location.spineIndex >= m_spine.size()) {
+        return;
+    }
+    if (!m_backStack.isEmpty()) {
+        const Location last = m_backStack.constLast();
+        if (last.spineIndex == location.spineIndex && std::abs(last.scrollOffset - location.scrollOffset) <= ReaderHistoryDuplicateTolerance) {
+            return;
+        }
+    }
+    m_backStack.append(location);
+    while (m_backStack.size() > MaxReaderHistoryLocations) {
+        m_backStack.removeFirst();
+    }
+    if (clearForward) {
+        m_forwardStack.clear();
+    }
+    updateHistoryAvailability();
+}
+
+void EpubWebReader::captureLocationForHistory()
+{
+    if (m_suppressHistoryCapture || m_spine.isEmpty() || m_spineIndex < 0 || m_spineIndex >= m_spine.size()) {
+        return;
+    }
+    pushHistoryLocation(currentLocation());
+}
+
+void EpubWebReader::captureScrollHistoryIfNeeded(double scrollOffset)
+{
+    if (m_suppressHistoryCapture || m_scrollMode != ScrollMode::Continuous || m_spine.isEmpty() || m_spineIndex < 0 || m_spineIndex >= m_spine.size()) {
+        return;
+    }
+
+    const double offset = cleanReportedScrollOffset(scrollOffset);
+    if (!m_haveHistoryAnchor || m_historyAnchor.spineIndex != m_spineIndex) {
+        m_historyAnchor = {m_spineIndex, offset};
+        m_haveHistoryAnchor = true;
+        return;
+    }
+
+    if (std::abs(offset - m_historyAnchor.scrollOffset) < ContinuousScrollHistoryStep) {
+        return;
+    }
+    pushHistoryLocation(m_historyAnchor);
+    m_historyAnchor = {m_spineIndex, offset};
+}
+
+bool EpubWebReader::loadHistoryLocation(const Location &location)
+{
+    if (location.spineIndex < 0 || location.spineIndex >= m_spine.size()) {
+        return false;
+    }
+    m_suppressHistoryCapture = true;
+    const bool ok = loadSpineItem(location.spineIndex, location.scrollOffset, false, QString(), false);
+    m_historyAnchor = location;
+    m_haveHistoryAnchor = true;
+    return ok;
+}
+
+void EpubWebReader::updateHistoryAvailability()
+{
+    Q_EMIT historyAvailabilityChanged(canNavigateBackInBook(), canNavigateForwardInBook());
+}
+
 void EpubWebReader::rebuildOutlineModel()
 {
     if (!m_outlineModel) {
@@ -1824,15 +1945,20 @@ void EpubWebReader::jumpToNavigationEntry(const QModelIndex &index)
     loadSpineItem(entry.spineIndex, 0.0, false, entry.fragment);
 }
 
-bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd, const QString &fragment)
+bool EpubWebReader::loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd, const QString &fragment, bool recordHistory)
 {
     if (!m_page || spineIndex < 0 || spineIndex >= m_spine.size()) {
         return false;
+    }
+    if (recordHistory) {
+        captureLocationForHistory();
     }
     m_spineIndex = spineIndex;
     m_pendingScrollToEnd = scrollToEnd;
     m_pendingScrollOffset = scrollToEnd ? 0.0 : cleanRestoredScrollOffset(scrollOffset);
     m_havePendingScrollOffset = m_pendingScrollToEnd || m_pendingScrollOffset > 0.0;
+    m_historyAnchor = {m_spineIndex, m_pendingScrollOffset};
+    m_haveHistoryAnchor = true;
     QUrl spineUrl = urlForSpineItem(m_spineIndex);
     if (!fragment.isEmpty()) {
         spineUrl.setFragment(fragment, QUrl::DecodedMode);
@@ -1909,8 +2035,11 @@ void EpubWebReader::applyPendingScrollOffset()
             }
             guard->saveScrollOffset(value.toDouble());
             guard->saveReadingPosition();
+            guard->m_historyAnchor = guard->currentLocation();
+            guard->m_haveHistoryAnchor = true;
             guard->m_havePendingScrollOffset = false;
             guard->m_pendingScrollToEnd = false;
+            guard->m_suppressHistoryCapture = false;
         });
     });
 }

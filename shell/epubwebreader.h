@@ -121,6 +121,8 @@ public:
     bool hasOutline() const;
     ScrollMode scrollMode() const;
     bool hasBookScrollModeOverride() const;
+    bool canNavigateBackInBook() const;
+    bool canNavigateForwardInBook() const;
     void applyReaderMotionSetting();
     void reload();
     void jumpToApproximateProgress(double progress);
@@ -131,6 +133,8 @@ public Q_SLOTS:
     void setBookScrollModeOverride(ScrollMode mode);
     void clearBookScrollModeOverride();
     void setScrollMode(ScrollMode mode);
+    void navigateBackInBook();
+    void navigateForwardInBook();
 
 Q_SIGNALS:
     void titleChanged(const QString &title);
@@ -138,17 +142,29 @@ Q_SIGNALS:
     void renderProcessTerminated(const QString &message);
     void outlineAvailableChanged(bool available);
     void scrollModeChanged(EpubWebReader::ScrollMode mode, bool hasBookOverride);
+    void historyAvailabilityChanged(bool canGoBack, bool canGoForward);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
     void hideEvent(QHideEvent *event) override;
 
 private:
-    bool loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd = false, const QString &fragment = QString());
+    struct Location {
+        int spineIndex = -1;
+        double scrollOffset = 0.0;
+    };
+
+    bool loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd = false, const QString &fragment = QString(), bool recordHistory = true);
     void installReaderScripts();
     void applyPendingScrollOffset();
     void applyScrollMode();
     void saveScrollOffset(double scrollOffset);
+    void captureLocationForHistory();
+    void captureScrollHistoryIfNeeded(double scrollOffset);
+    void pushHistoryLocation(const Location &location, bool clearForward = true);
+    void updateHistoryAvailability();
+    Location currentLocation() const;
+    bool loadHistoryLocation(const Location &location);
     void rebuildOutlineModel();
     void selectCurrentNavigationEntry();
     void jumpToNavigationEntry(const QModelIndex &index);
@@ -167,6 +183,11 @@ private:
     int m_fontScaleStep = 0;
     ScrollMode m_scrollMode = ScrollMode::Paginated;
     bool m_hasBookScrollModeOverride = false;
+    QList<Location> m_backStack;
+    QList<Location> m_forwardStack;
+    bool m_haveHistoryAnchor = false;
+    Location m_historyAnchor;
+    bool m_suppressHistoryCapture = false;
 
     QWebEngineProfile *m_profile = nullptr;
     QWebEnginePage *m_page = nullptr;
