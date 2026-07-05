@@ -339,6 +339,7 @@ private Q_SLOTS:
     void testDatabaseInPathWithSpecialCharacters();
     void testSectionedModelSmartShelves();
     void testFocusManifestDrivesWorkShelf();
+    void testReadingManifestDrivesReadingShelves();
     void testCaroBiographyDoesNotMatchPsychiatry();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
@@ -790,9 +791,21 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     const QString corpusDir = writeCatalog({work, falsePositive});
     const QString curatedPdf = touchFile(QStringLiteral("pdfs/10-9999-synthetic-beyond-bayes-work.pdf"));
     const QString looseResponse = touchFile(QStringLiteral("loose/Response_to_reviewers.pdf"));
+    const QString backgroundPdf = touchFile(QStringLiteral("pdfs/background-method.pdf"));
 
     QDir(corpusDir).mkpath(QStringLiteral("focus/Work"));
     QJsonArray manifest;
+    QJsonObject background;
+    background.insert(QStringLiteral("id"), QStringLiteral("file-background-method"));
+    background.insert(QStringLiteral("title"), QStringLiteral("Background Method Paper"));
+    background.insert(QStringLiteral("path"), backgroundPdf);
+    background.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    background.insert(QStringLiteral("score"), 999.0);
+    background.insert(QStringLiteral("reason"), QStringLiteral("background method"));
+    background.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
+    background.insert(QStringLiteral("section"), QStringLiteral("03-background-methods"));
+    manifest.append(background);
+
     QJsonObject curated;
     curated.insert(QStringLiteral("id"), work.slug);
     curated.insert(QStringLiteral("title"), QStringLiteral("Curated Beyond Bayes Draft"));
@@ -834,13 +847,15 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     sections.setSourceModel(&model);
     sections.setSmartFilter(PaperLibrarySectionedModel::Work);
 
-    QCOMPARE(sections.rowCount(), 2);
+    QCOMPARE(sections.rowCount(), 3);
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Curated Beyond Bayes Draft"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Beyond Bayes Revision"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Beyond Bayes manuscript"));
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Bayesian/FEP literature"));
     QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Reviewer Response"));
     QCOMPARE(sections.resolvePath(sections.index(1)), looseResponse);
+    QCOMPARE(sections.data(sections.index(2), Qt::DisplayRole).toString(), QStringLiteral("Background Method Paper"));
+    QCOMPARE(sections.resolvePath(sections.index(2)), backgroundPdf);
 
     QStringList visibleTitles;
     for (int row = 0; row < sections.rowCount(); ++row) {
@@ -849,9 +864,87 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     QVERIFY(!visibleTitles.contains(falsePositive.title));
 }
 
+void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
+{
+    const QString corpusDir = writeCatalog({});
+    const QString fictionEpub = touchFile(QStringLiteral("reading/A_Game_Of_Thrones.epub"));
+    const QString currentNonfictionEpub = touchFile(QStringLiteral("reading/Everything_Was_Forever.epub"));
+    const QString caroEpub = touchFile(QStringLiteral("reading/The_Path_To_Power.epub"));
+    const QString graeberPdf = touchFile(QStringLiteral("reading/Bullshit_Jobs.pdf"));
+    const QString unrelatedPdf = touchFile(QStringLiteral("reading/Unrelated_Methods_Paper.pdf"));
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Reading"));
+    QJsonArray manifest;
+    auto appendReadingEntry = [&manifest](const QString &id, const QString &title, const QString &path, const QString &kind, const QString &source, const QString &reason, const QString &section) {
+        QJsonObject object;
+        object.insert(QStringLiteral("id"), id);
+        object.insert(QStringLiteral("title"), title);
+        object.insert(QStringLiteral("path"), path);
+        object.insert(QStringLiteral("kind"), kind);
+        object.insert(QStringLiteral("source"), source);
+        object.insert(QStringLiteral("reason"), reason);
+        object.insert(QStringLiteral("shelf"), QStringLiteral("Reading"));
+        object.insert(QStringLiteral("section"), section);
+        manifest.append(object);
+    };
+    appendReadingEntry(QStringLiteral("file-fiction-current"), QStringLiteral("A Game Of Thrones"), fictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current fiction; recently opened"), QStringLiteral("00-fiction-current"));
+    appendReadingEntry(QStringLiteral("file-nonfiction-current"), QStringLiteral("Everything Was Forever Until It Was No More"), currentNonfictionEpub, QStringLiteral("epub"), QStringLiteral("app-recent"), QStringLiteral("current nonfiction; recently opened"), QStringLiteral("03-nonfiction-current"));
+    appendReadingEntry(QStringLiteral("file-caro"), QStringLiteral("The Path to Power"), caroEpub, QStringLiteral("epub"), QStringLiteral("book:epub"), QStringLiteral("Caro/LBJ nonfiction"), QStringLiteral("01-nonfiction-politics"));
+    appendReadingEntry(QStringLiteral("file-graeber"), QStringLiteral("Bullshit Jobs"), graeberPdf, QStringLiteral("pdf"), QStringLiteral("book:pdf"), QStringLiteral("anthropology/nonfiction"), QStringLiteral("02-nonfiction-anthropology"));
+    appendReadingEntry(QStringLiteral("file-unrelated"), QStringLiteral("Unrelated Methods Paper"), unrelatedPdf, QStringLiteral("pdf"), QStringLiteral("synthetic"), QStringLiteral("methods paper"), QStringLiteral("04-other"));
+
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Reading/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Books);
+    QCOMPARE(sections.rowCount(), 3);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game Of Thrones"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::KindRole).toString(), QStringLiteral("EPUB"));
+    QCOMPARE(sections.resolvePath(sections.index(0)), fictionEpub);
+    QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Everything Was Forever Until It Was No More"));
+    QCOMPARE(sections.data(sections.index(2), Qt::DisplayRole).toString(), QStringLiteral("The Path to Power"));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("A Game Of Thrones"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Fiction Current"));
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("current fiction"));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+    QCOMPARE(sections.rowCount(), 3);
+    QStringList nonfictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("A Game Of Thrones")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Everything Was Forever Until It Was No More")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("The Path to Power")));
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Bullshit Jobs")));
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("Unrelated Methods Paper")));
+    QCOMPARE(sections.resolvePath(sections.index(nonfictionTitles.indexOf(QStringLiteral("Bullshit Jobs")))), graeberPdf);
+}
+
 void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
 {
-    const QString corpusDir = writeCatalog({caroRecord(), psychiatryRecord()});
+    SyntheticRecord genericNonfiction = gadgetRecord();
+    genericNonfiction.slug = QStringLiteral("md5-synthetic-nonfiction-history-19");
+    genericNonfiction.title = QStringLiteral("Nonfiction History Essays");
+    genericNonfiction.authors = QStringLiteral("Casey Essayist");
+    genericNonfiction.year = QStringLiteral("2020");
+    genericNonfiction.journal = QStringLiteral("(book)");
+    genericNonfiction.source = QStringLiteral("book:epub");
+
+    const QString corpusDir = writeCatalog({caroRecord(), psychiatryRecord(), genericNonfiction});
 
     PaperLibraryModel model;
     QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
@@ -865,13 +958,22 @@ void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
     QCOMPARE(sections.rowCount(), 1);
     QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
 
+    sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
+    QCOMPARE(sections.rowCount(), 0);
+
     sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
-    QCOMPARE(sections.rowCount(), 1);
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("The Path to Power"));
-    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Politics"));
-    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Political biography"));
-    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to LBJ / US power"));
-    QVERIFY(sections.data(sections.index(0), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
+    QCOMPARE(sections.rowCount(), 2);
+    QStringList nonfictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        nonfictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    const int caroRow = nonfictionTitles.indexOf(QStringLiteral("The Path to Power"));
+    QVERIFY(caroRow >= 0);
+    QVERIFY(nonfictionTitles.contains(QStringLiteral("Nonfiction History Essays")));
+    QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Politics"));
+    QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Political biography"));
+    QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to LBJ / US power"));
+    QVERIFY(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()

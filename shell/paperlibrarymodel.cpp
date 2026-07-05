@@ -322,7 +322,13 @@ static bool recordMatchesGameOfThrones(const QString &text)
 
 static bool recordMatchesFiction(const QString &text)
 {
-    return recordMatchesGameOfThrones(text) || containsAnyNeedle(text, {QStringLiteral("novel"), QStringLiteral("fiction"), QStringLiteral("fantasy")});
+    if (recordMatchesGameOfThrones(text)) {
+        return true;
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
+        return false;
+    }
+    return containsAnyWholeWord(text, {QStringLiteral("novel"), QStringLiteral("fiction"), QStringLiteral("fantasy")});
 }
 
 static bool recordMatchesCaroLbj(const QString &text)
@@ -1810,6 +1816,10 @@ struct FocusManifest {
 static QString focusManifestShelfName(PaperLibrarySectionedModel::SmartFilter filter)
 {
     switch (filter) {
+    case PaperLibrarySectionedModel::Books:
+    case PaperLibrarySectionedModel::Fiction:
+    case PaperLibrarySectionedModel::Nonfiction:
+        return QStringLiteral("Reading");
     case PaperLibrarySectionedModel::Work:
         return QStringLiteral("Work");
     case PaperLibrarySectionedModel::Mnd:
@@ -1904,6 +1914,42 @@ static QString focusReasonSecondary(const QString &reason)
     return parts.join(QStringLiteral(" · "));
 }
 
+static bool focusManifestEntryMatchesFilter(PaperLibrarySectionedModel::SmartFilter filter, const FocusManifestEntry &entry)
+{
+    const QString kind = entry.kind.toCaseFolded();
+    const QString path = entry.path.toCaseFolded();
+    const QString source = entry.source.toCaseFolded();
+    const QString text = QStringList({entry.title, entry.reason, entry.section, entry.source, entry.kind}).join(QLatin1Char('\n')).toCaseFolded();
+
+    switch (filter) {
+    case PaperLibrarySectionedModel::Books:
+        return kind == QLatin1String("epub") || path.endsWith(QLatin1String(".epub")) || source.contains(QLatin1String("book:epub"));
+    case PaperLibrarySectionedModel::Fiction:
+        if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
+            return false;
+        }
+        return containsAnyNeedle(text, {QStringLiteral("fiction-current"), QStringLiteral("current fiction"), QStringLiteral("game of thrones"), QStringLiteral("song of ice and fire")});
+    case PaperLibrarySectionedModel::Nonfiction:
+        return containsAnyNeedle(text,
+                                 {QStringLiteral("nonfiction"),
+                                  QStringLiteral("non-fiction"),
+                                  QStringLiteral("non fiction"),
+                                  QStringLiteral("anthropology"),
+                                  QStringLiteral("graeber"),
+                                  QStringLiteral("caro"),
+                                  QStringLiteral("lbj"),
+                                  QStringLiteral("politics"),
+                                  QStringLiteral("history")});
+    default:
+        return true;
+    }
+}
+
+static bool focusManifestUsesSectionOrder(PaperLibrarySectionedModel::SmartFilter filter)
+{
+    return filter == PaperLibrarySectionedModel::Mnd || filter == PaperLibrarySectionedModel::Work || filter == PaperLibrarySectionedModel::Medicine;
+}
+
 static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter filter, const QString &corpusDir)
 {
     FocusManifest manifest;
@@ -1952,9 +1998,21 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
         if (entry.sectionLabel.isEmpty()) {
             entry.sectionLabel = shelfName;
         }
+        if (!focusManifestEntryMatchesFilter(filter, entry)) {
+            continue;
+        }
         if (!entry.title.isEmpty() || !entry.path.isEmpty() || !entry.id.isEmpty()) {
             manifest.entries.append(entry);
         }
+    }
+    if (focusManifestUsesSectionOrder(filter)) {
+        std::stable_sort(manifest.entries.begin(), manifest.entries.end(), [](const FocusManifestEntry &left, const FocusManifestEntry &right) {
+            const int sectionOrder = left.section.localeAwareCompare(right.section);
+            if (sectionOrder != 0) {
+                return sectionOrder < 0;
+            }
+            return left.order < right.order;
+        });
     }
     return manifest;
 }
