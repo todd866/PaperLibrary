@@ -1290,6 +1290,30 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     multiAuthorNoCommaBook.journal = QStringLiteral("(book)");
     multiAuthorNoCommaBook.source = QStringLiteral("book:epub");
 
+    SyntheticRecord debtAuthorTitleBook = gadgetRecord();
+    debtAuthorTitleBook.slug = QStringLiteral("md5-synthetic-debt-author-title-book");
+    debtAuthorTitleBook.title = QStringLiteral("David Graeber Debt The First 5,000 Years Melville House (2011)");
+    debtAuthorTitleBook.authors.clear();
+    debtAuthorTitleBook.year.clear();
+    debtAuthorTitleBook.journal = QStringLiteral("(book)");
+    debtAuthorTitleBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord moneyAuthorTitleBook = gadgetRecord();
+    moneyAuthorTitleBook.slug = QStringLiteral("md5-synthetic-money-author-title-book");
+    moneyAuthorTitleBook.title = QStringLiteral("Richard Seaford Money and the Early Greek Mind Homer, Philosophy, Tragedy Cambridge University Press (2004)");
+    moneyAuthorTitleBook.authors.clear();
+    moneyAuthorTitleBook.year.clear();
+    moneyAuthorTitleBook.journal = QStringLiteral("(book)");
+    moneyAuthorTitleBook.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord cyberneticsAuthorTitleBook = gadgetRecord();
+    cyberneticsAuthorTitleBook.slug = QStringLiteral("md5-synthetic-cybernetics-author-title-book");
+    cyberneticsAuthorTitleBook.title = QStringLiteral("Norbert Wiener Cybernetics, or Control and Communication in the Animal and the Machine MIT Press (2019)");
+    cyberneticsAuthorTitleBook.authors.clear();
+    cyberneticsAuthorTitleBook.year.clear();
+    cyberneticsAuthorTitleBook.journal = QStringLiteral("(book)");
+    cyberneticsAuthorTitleBook.source = QStringLiteral("book:pdf");
+
     SyntheticRecord dawnCommentary = gadgetRecord();
     dawnCommentary.slug = QStringLiteral("10-9999-synthetic-dawn-commentary");
     dawnCommentary.title = QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything");
@@ -1311,6 +1335,9 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
                       singleSpacedAuthorTitleBook,
                       pathomaStyleBook,
                       multiAuthorNoCommaBook,
+                      debtAuthorTitleBook,
+                      moneyAuthorTitleBook,
+                      cyberneticsAuthorTitleBook,
                       dawnCommentary,
                       psychiatryRecord()});
 
@@ -1361,6 +1388,14 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
         }
         return -1;
     };
+    auto rowForTitleAndAuthor = [&model](const QString &title, const QString &author) {
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.data(model.index(row), Qt::DisplayRole).toString() == title && model.data(model.index(row), PaperLibraryModel::AuthorsRole).toString() == author) {
+                return row;
+            }
+        }
+        return -1;
+    };
     const int psychBookRow = rowForTitle(QStringLiteral("The psychiatric interview"));
     QVERIFY(psychBookRow >= 0);
     QCOMPARE(model.data(model.index(psychBookRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Carlat, Daniel J"));
@@ -1399,6 +1434,21 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     QVERIFY2(informationTheoryRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
     QCOMPARE(model.data(model.index(informationTheoryRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Thomas M. Cover Joy A. Thomas"));
     QCOMPARE(model.data(model.index(informationTheoryRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2012"));
+
+    const int debtRow = rowForTitleAndAuthor(QStringLiteral("Debt: The First 5,000 Years"), QStringLiteral("David Graeber"));
+    QVERIFY2(debtRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(debtRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("David Graeber"));
+    QCOMPARE(model.data(model.index(debtRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2011"));
+
+    const int moneyRow = rowForTitle(QStringLiteral("Money and the Early Greek Mind Homer, Philosophy, Tragedy"));
+    QVERIFY2(moneyRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(moneyRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Richard Seaford"));
+    QCOMPARE(model.data(model.index(moneyRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2004"));
+
+    const int cyberneticsRow = rowForTitle(QStringLiteral("Cybernetics, or Control and Communication in the Animal and the Machine"));
+    QVERIFY2(cyberneticsRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(cyberneticsRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Norbert Wiener"));
+    QCOMPARE(model.data(model.index(cyberneticsRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2019"));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()

@@ -211,12 +211,57 @@ static bool looksLikePersonList(const QString &segment)
         return false;
     }
     const QString lower = text.toCaseFolded();
-    if (lower.startsWith(QLatin1String("the ")) || lower.startsWith(QLatin1String("a ")) || lower.startsWith(QLatin1String("an ")) || lower.startsWith(QLatin1String("first "))
-        || lower.startsWith(QLatin1String("textbook ")) || lower.startsWith(QLatin1String("medicine ")) || lower.startsWith(QLatin1String("context "))) {
+    if (lower.startsWith(QLatin1Char('('))) {
         return false;
     }
-    if (lower.contains(QLatin1String(" the ")) || lower.contains(QLatin1String(" of ")) || lower.contains(QLatin1String(" and "))) {
+    if (lower.startsWith(QLatin1String("the ")) || lower.startsWith(QLatin1String("a ")) || lower.startsWith(QLatin1String("an ")) || lower.startsWith(QLatin1String("first "))
+        || lower.startsWith(QLatin1String("textbook ")) || lower.startsWith(QLatin1String("medicine ")) || lower.startsWith(QLatin1String("context "))
+        || lower.startsWith(QLatin1String("pirate ")) || lower.startsWith(QLatin1String("battle ")) || lower.startsWith(QLatin1String("patterns "))
+        || lower.startsWith(QLatin1String("color ")) || lower.startsWith(QLatin1String("consciousness ")) || lower.startsWith(QLatin1String("pocus "))
+        || lower.startsWith(QLatin1String("usyd "))) {
         return false;
+    }
+    if (text.contains(QRegularExpression(QStringLiteral("\\d")))) {
+        return false;
+    }
+    if (lower.contains(QRegularExpression(QStringLiteral("\\b(the|of|and|in|from|with|without|to|for|or)\\b")))) {
+        return false;
+    }
+    const QStringList titleWords = {QStringLiteral("biomechanical"),
+                                    QStringLiteral("blackshirts"),
+                                    QStringLiteral("capital"),
+                                    QStringLiteral("cooperate"),
+                                    QStringLiteral("cybernetics"),
+                                    QStringLiteral("debt"),
+                                    QStringLiteral("democracy"),
+                                    QStringLiteral("explaining"),
+                                    QStringLiteral("falling"),
+                                    QStringLiteral("fifth"),
+                                    QStringLiteral("foundations"),
+                                    QStringLiteral("genesis"),
+                                    QStringLiteral("goodness"),
+                                    QStringLiteral("jaws"),
+                                    QStringLiteral("learning"),
+                                    QStringLiteral("logic"),
+                                    QStringLiteral("managing"),
+                                    QStringLiteral("money"),
+                                    QStringLiteral("moral"),
+                                    QStringLiteral("origins"),
+                                    QStringLiteral("point"),
+                                    QStringLiteral("scientific"),
+                                    QStringLiteral("skeletal"),
+                                    QStringLiteral("social"),
+                                    QStringLiteral("survival"),
+                                    QStringLiteral("systems"),
+                                    QStringLiteral("ultrasociety"),
+                                    QStringLiteral("variation"),
+                                    QStringLiteral("war"),
+                                    QStringLiteral("what"),
+                                    QStringLiteral("why")};
+    for (const QString &word : titleWords) {
+        if (lower.contains(QRegularExpression(QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(word))))) {
+            return false;
+        }
     }
     const QStringList titleNeedles = {QStringLiteral(" edition"),
                                       QStringLiteral(" press"),
@@ -235,6 +280,11 @@ static bool looksLikePersonList(const QString &segment)
                                       QStringLiteral(" fundamentals"),
                                       QStringLiteral(" principles"),
                                       QStringLiteral(" handbook"),
+                                      QStringLiteral(" atlas"),
+                                      QStringLiteral(" textbook"),
+                                      QStringLiteral(" systems"),
+                                      QStringLiteral(" strategy"),
+                                      QStringLiteral(" options"),
                                       QStringLiteral(" guide"),
                                       QStringLiteral(" novel")};
     for (const QString &needle : titleNeedles) {
@@ -271,6 +321,51 @@ static QString firstYearIn(const QString &text)
     return match.hasMatch() ? match.captured(0) : QString();
 }
 
+static bool isBookTitleStarter(const QString &word)
+{
+    static const QSet<QString> titleStarters = {QStringLiteral("a"),
+                                                QStringLiteral("an"),
+                                                QStringLiteral("the"),
+                                                QStringLiteral("biological"),
+                                                QStringLiteral("blackshirts"),
+                                                QStringLiteral("capital"),
+                                                QStringLiteral("competitive"),
+                                                QStringLiteral("cybernetics"),
+                                                QStringLiteral("debt"),
+                                                QStringLiteral("democracy"),
+                                                QStringLiteral("elements"),
+                                                QStringLiteral("end"),
+                                                QStringLiteral("everything"),
+                                                QStringLiteral("falling"),
+                                                QStringLiteral("free"),
+                                                QStringLiteral("fundamentals"),
+                                                QStringLiteral("handbook"),
+                                                QStringLiteral("historical"),
+                                                QStringLiteral("i"),
+                                                QStringLiteral("introduction"),
+                                                QStringLiteral("invention"),
+                                                QStringLiteral("jaws"),
+                                                QStringLiteral("lawlessness"),
+                                                QStringLiteral("learning"),
+                                                QStringLiteral("logic"),
+                                                QStringLiteral("money"),
+                                                QStringLiteral("moral"),
+                                                QStringLiteral("neurocircuitry"),
+                                                QStringLiteral("paleolithic"),
+                                                QStringLiteral("pirate"),
+                                                QStringLiteral("principles"),
+                                                QStringLiteral("rediscovery"),
+                                                QStringLiteral("scientific"),
+                                                QStringLiteral("social"),
+                                                QStringLiteral("systems"),
+                                                QStringLiteral("theory"),
+                                                QStringLiteral("ultrasociety"),
+                                                QStringLiteral("war"),
+                                                QStringLiteral("working"),
+                                                QStringLiteral("you")};
+    return titleStarters.contains(word.toCaseFolded());
+}
+
 static bool looksLikeBookTitleRemainder(const QString &segment)
 {
     const QString text = segment.simplified();
@@ -279,37 +374,7 @@ static bool looksLikeBookTitleRemainder(const QString &segment)
     }
     const QString lower = text.toCaseFolded();
     const QString first = text.section(QLatin1Char(' '), 0, 0).toCaseFolded();
-    const QSet<QString> titleStarters = {QStringLiteral("a"),
-                                         QStringLiteral("an"),
-                                         QStringLiteral("the"),
-                                         QStringLiteral("biological"),
-                                         QStringLiteral("competitive"),
-                                         QStringLiteral("cybernetics"),
-                                         QStringLiteral("debt"),
-                                         QStringLiteral("democracy"),
-                                         QStringLiteral("elements"),
-                                         QStringLiteral("end"),
-                                         QStringLiteral("everything"),
-                                         QStringLiteral("free"),
-                                         QStringLiteral("fundamentals"),
-                                         QStringLiteral("handbook"),
-                                         QStringLiteral("historical"),
-                                         QStringLiteral("introduction"),
-                                         QStringLiteral("jaws"),
-                                         QStringLiteral("lawlessness"),
-                                         QStringLiteral("money"),
-                                         QStringLiteral("moral"),
-                                         QStringLiteral("neurocircuitry"),
-                                         QStringLiteral("paleolithic"),
-                                         QStringLiteral("pirate"),
-                                         QStringLiteral("principles"),
-                                         QStringLiteral("scientific"),
-                                         QStringLiteral("systems"),
-                                         QStringLiteral("theory"),
-                                         QStringLiteral("ultrasociety"),
-                                         QStringLiteral("war"),
-                                         QStringLiteral("working")};
-    if (titleStarters.contains(first)) {
+    if (isBookTitleStarter(first)) {
         return true;
     }
     if (looksLikePersonList(text.left(80))) {
@@ -322,6 +387,9 @@ static bool looksLikeBookTitleRemainder(const QString &segment)
 static bool splitLeadingAuthorTitle(const QString &text, QString *title, QString *authors)
 {
     const QString cleaned = strippedPublisherTail(text);
+    if (cleaned.startsWith(QLatin1Char('('))) {
+        return false;
+    }
     const QStringList words = cleaned.split(QLatin1Char(' '), Qt::SkipEmptyParts);
     if (words.size() < 5 || words.size() > 34) {
         return false;
@@ -339,6 +407,10 @@ static bool splitLeadingAuthorTitle(const QString &text, QString *title, QString
 
         int score = 0;
         const QString firstRemainderWord = remainder.section(QLatin1Char(' '), 0, 0).toCaseFolded();
+        const bool firstIsTitleStarter = isBookTitleStarter(firstRemainderWord);
+        if (firstIsTitleStarter) {
+            score += 3;
+        }
         if (firstRemainderWord == QLatin1String("the") || firstRemainderWord == QLatin1String("a") || firstRemainderWord == QLatin1String("an")) {
             score += 4;
         }
@@ -352,7 +424,19 @@ static bool splitLeadingAuthorTitle(const QString &text, QString *title, QString
         if (cut >= 3 && words.value(cut - 2).endsWith(QLatin1Char('.'))) {
             score += 1;
         }
-        if (score > bestScore || (score == bestScore && cut > bestCut && !remainder.section(QLatin1Char(' '), 0, 0).contains(QLatin1Char('.')))) {
+        bool shouldReplace = score > bestScore;
+        if (!shouldReplace && score == bestScore && bestCut >= 0) {
+            const QString bestFirstRemainderWord = words.mid(bestCut).join(QLatin1Char(' ')).section(QLatin1Char(' '), 0, 0).toCaseFolded();
+            const bool bestFirstIsTitleStarter = isBookTitleStarter(bestFirstRemainderWord);
+            if (firstIsTitleStarter != bestFirstIsTitleStarter) {
+                shouldReplace = firstIsTitleStarter;
+            } else if (firstIsTitleStarter) {
+                shouldReplace = cut < bestCut;
+            } else {
+                shouldReplace = cut > bestCut && !remainder.section(QLatin1Char(' '), 0, 0).contains(QLatin1Char('.'));
+            }
+        }
+        if (shouldReplace) {
             bestScore = score;
             bestCut = cut;
         }
@@ -413,7 +497,9 @@ static ImportedBookMetadata importedBookMetadataFromTitle(const QString &rawTitl
         inferredTitle = sourceScrubbed;
     }
 
-    if (inferredAuthors.isEmpty() && authors.isEmpty()) {
+    const bool hasStructuredImportTail = !firstYearIn(rawTitle).isEmpty() || sourceScrubbed != strippedPublisherTail(sourceScrubbed)
+        || rawTitle.contains(QRegularExpression(QStringLiteral("\\b(Anna[’']s Archive|isbn|libgen\\.|PDF\\s*Drive)\\b"), QRegularExpression::CaseInsensitiveOption));
+    if (hasStructuredImportTail && inferredAuthors.isEmpty() && authors.isEmpty()) {
         QString leadingTitle;
         QString leadingAuthors;
         if (splitLeadingAuthorTitle(sourceScrubbed, &leadingTitle, &leadingAuthors)) {
