@@ -190,6 +190,7 @@ class LibraryViewTest : public QObject
 private Q_SLOTS:
     void initTestCase();
     void init();
+    void testInitialStartupUsesTileBeforeRefresh();
     void testCorpusShelvesUseTileGrid();
     void testCorpusShelfModelsPersistAcrossSwitches();
     void testDomainShelvesRequireFocusManifest();
@@ -239,6 +240,22 @@ void LibraryViewTest::init()
     general.writeEntry("PaperLibraryPath", m_dir->path());
     general.writeEntry("ScanAppleBooksOnStartup", false);
     general.sync();
+}
+
+void LibraryViewTest::testInitialStartupUsesTileBeforeRefresh()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QVERIFY(grid->model());
+    QCOMPARE(grid->model()->rowCount(), 1);
+    const QModelIndex index = grid->model()->index(0, 0);
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Opening PaperLibrary"));
+    QVERIFY(!index.data(LibraryView::UrlRole).toUrl().isValid());
+    QCOMPARE(grid->viewMode(), QListView::IconMode);
+    QVERIFY(grid->isWrapping());
 }
 
 void LibraryViewTest::testCorpusShelvesUseTileGrid()
@@ -483,6 +500,7 @@ void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()
     QVERIFY(grid);
     QTRY_VERIFY(grid->model());
     QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("recent"));
 
     QSignalSpy activatedSpy(&view, &LibraryView::itemActivated);
     const QModelIndex index = grid->model()->index(0, 0);
@@ -553,8 +571,8 @@ void LibraryViewTest::testStarterPackEmptySetupTile()
     QTRY_VERIFY(grid->model());
     QTRY_COMPARE(grid->model()->rowCount(), 1);
 
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("Install Starter Pack"));
     const QModelIndex index = grid->model()->index(0, 0);
-    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Install Starter Pack"));
     QVERIFY(!index.data(LibraryView::UrlRole).toUrl().isValid());
     QVERIFY(index.data(Qt::ToolTipRole).toString().contains(QStringLiteral("fetch-public-domain-starter.sh")));
     QCOMPARE(grid->viewMode(), QListView::IconMode);
@@ -583,8 +601,8 @@ void LibraryViewTest::testStarterPackInstalledMetadataTooltip()
     shelves->setCurrentIndex(starterTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
 
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("Starter Sample Book"));
     const QModelIndex index = grid->model()->index(0, 0);
-    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Starter Sample Book"));
     QVERIFY(index.data(LibraryView::DescriptionRole).toString().contains(QStringLiteral("Public Domain Author")));
     QVERIFY(index.data(LibraryView::DescriptionRole).toString().contains(QStringLiteral("1901")));
     QVERIFY(index.data(LibraryView::TagsRole).toStringList().contains(QStringLiteral("Classic")));
@@ -631,8 +649,8 @@ void LibraryViewTest::testEmptyCorpusShelfUsesTile()
     shelves->setCurrentIndex(medicineTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
 
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("No local documents yet"));
     const QModelIndex index = grid->model()->index(0, 0);
-    QCOMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("No local documents yet"));
     QVERIFY(index.data(PaperLibrarySectionedModel::SourceRowRole).isValid());
     QVERIFY(!index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool());
     QVERIFY(index.data(PaperLibraryModel::MissingRole).toBool());

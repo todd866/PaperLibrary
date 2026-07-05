@@ -1042,7 +1042,39 @@ private:
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
 
-        if (keyContainsAny(key, {QStringLiteral("mnd"), QStringLiteral("als"), QStringLiteral("motor neuron"), QStringLiteral("neuro"), QStringLiteral("cortical"), QStringLiteral("axon"), QStringLiteral("psychiat")})) {
+        const bool biomarkerLike = keyContainsAny(key,
+                                                  {QStringLiteral("biomarker"),
+                                                   QStringLiteral("diagnostic"),
+                                                   QStringLiteral("accuracy"),
+                                                   QStringLiteral("neurofilament"),
+                                                   QStringLiteral("threshold"),
+                                                   QStringLiteral("sensitivity"),
+                                                   QStringLiteral("specificity")});
+        const bool trialLike = keyContainsAny(key,
+                                              {QStringLiteral("trial"),
+                                               QStringLiteral("treatment"),
+                                               QStringLiteral("therapy"),
+                                               QStringLiteral("riluzole"),
+                                               QStringLiteral("survival"),
+                                               QStringLiteral("prognosis")});
+        const bool methodLike = keyContainsAny(key,
+                                               {QStringLiteral("bayes"),
+                                                QStringLiteral("model"),
+                                                QStringLiteral("statistics"),
+                                                QStringLiteral("method"),
+                                                QStringLiteral("inference"),
+                                                QStringLiteral("prediction")});
+        const bool clinicalLike = keyContainsAny(key, {QStringLiteral("medicine"), QStringLiteral("paeds"), QStringLiteral("obgyn"), QStringLiteral("clinical"), QStringLiteral("guideline")});
+        const bool neuroLike = keyContainsAny(key,
+                                              {QStringLiteral("mnd"),
+                                               QStringLiteral("als"),
+                                               QStringLiteral("motor neuron"),
+                                               QStringLiteral("neuro"),
+                                               QStringLiteral("cortical"),
+                                               QStringLiteral("axon"),
+                                               QStringLiteral("psychiat")});
+
+        if (neuroLike && !biomarkerLike && !trialLike && !methodLike && !clinicalLike) {
             const QPointF soma(area.left() + area.width() * 0.22, area.top() + area.height() * 0.55);
             painter->setBrush(accent);
             painter->drawEllipse(soma, area.width() * 0.08, area.width() * 0.08);
@@ -1067,7 +1099,7 @@ private:
             return;
         }
 
-        if (keyContainsAny(key, {QStringLiteral("biomarker"), QStringLiteral("diagnostic"), QStringLiteral("accuracy"), QStringLiteral("neurofilament"), QStringLiteral("threshold"), QStringLiteral("sensitivity"), QStringLiteral("specificity")})) {
+        if (biomarkerLike) {
             painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
             for (int i = 0; i < 4; ++i) {
                 const qreal y = area.top() + 8 + i * area.height() * 0.18;
@@ -1086,7 +1118,7 @@ private:
             return;
         }
 
-        if (keyContainsAny(key, {QStringLiteral("trial"), QStringLiteral("treatment"), QStringLiteral("therapy"), QStringLiteral("riluzole"), QStringLiteral("survival"), QStringLiteral("prognosis")})) {
+        if (trialLike) {
             painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
             painter->drawLine(QPointF(area.left() + 8, area.top() + 9), QPointF(area.left() + 8, area.bottom() - 8));
             painter->drawLine(QPointF(area.left() + 8, area.bottom() - 8), QPointF(area.right() - 7, area.bottom() - 8));
@@ -1105,7 +1137,7 @@ private:
             return;
         }
 
-        if (keyContainsAny(key, {QStringLiteral("bayes"), QStringLiteral("model"), QStringLiteral("statistics"), QStringLiteral("method"), QStringLiteral("inference"), QStringLiteral("prediction")})) {
+        if (methodLike) {
             const QPointF origin(area.left() + 8, area.bottom() - 8);
             painter->drawLine(origin, QPointF(area.right() - 6, area.bottom() - 8));
             painter->drawLine(origin, QPointF(area.left() + 8, area.top() + 6));
@@ -1126,7 +1158,7 @@ private:
             return;
         }
 
-        if (keyContainsAny(key, {QStringLiteral("medicine"), QStringLiteral("paeds"), QStringLiteral("obgyn"), QStringLiteral("clinical"), QStringLiteral("guideline")})) {
+        if (clinicalLike) {
             const QPointF center = area.center();
             painter->drawLine(QPointF(center.x(), area.top() + 8), QPointF(center.x(), area.bottom() - 8));
             painter->drawLine(QPointF(area.left() + 8, center.y()), QPointF(area.right() - 8, center.y()));
@@ -1195,7 +1227,8 @@ private:
         QPainterPath clip;
         clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
-        QColor accent = CoverGenerator::accentColor(seed.isEmpty() ? kind : seed, darkMode);
+        const QString accentSeed = joinCompact({seed, relation, priority, QStringList(tags.mid(0, 2)).join(QStringLiteral(" · ")), title});
+        QColor accent = CoverGenerator::accentColor(accentSeed.isEmpty() ? kind : accentSeed, darkMode);
         const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
         QLinearGradient field(coverRect.topLeft(), coverRect.bottomRight());
         field.setColorAt(0.0, blendColors(cardBase, accent, darkMode ? 0.42 : 0.34));
@@ -1604,7 +1637,8 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     applyChromePalette();
     syncViewModeButton();
     if (!m_deferInitialRefresh) {
-        refresh();
+        showStartupPlaceholder();
+        scheduleRefresh(180);
     }
 }
 
@@ -1653,6 +1687,27 @@ void LibraryView::animateGridIn()
     m_gridFadeAnimation->setKeyValueAt(0.62, 0.91);
     m_gridFadeAnimation->setEndValue(1.0);
     m_gridFadeAnimation->start();
+}
+
+void LibraryView::showStartupPlaceholder()
+{
+    if (!m_pdfModel) {
+        return;
+    }
+
+    m_pdfModel->clear();
+    ShelfEntry entry;
+    entry.title = i18nc("@title startup tile while library opens", "Opening PaperLibrary");
+    entry.description = i18nc("@info startup tile while library opens", "Preparing shelves, metadata, and thumbnails");
+    entry.tags = {i18nc("@label startup tile", "Startup")};
+    entry.format = i18nc("@label generated tile cover", "OPENING");
+    entry.detailLines = {i18nc("@info startup tile detail", "Local files stay on this device.")};
+    m_pdfModel->appendRow(makeTileItem(entry));
+    if (activeShelf() == PdfShelf && m_grid) {
+        m_grid->setModel(m_pdfModel);
+        configureTileGrid();
+        selectFirstTile();
+    }
 }
 
 void LibraryView::configureTileGrid()
@@ -3493,7 +3548,7 @@ void LibraryView::coverArrived(const QString &filePath, const QString &coverPath
     }
 }
 
-void LibraryView::scheduleRefresh()
+void LibraryView::scheduleRefresh(int delayMs)
 {
     if (m_refreshPending) {
         return;
@@ -3501,7 +3556,7 @@ void LibraryView::scheduleRefresh()
 
     m_refreshPending = true;
     // Let the tab strip and the empty page paint before rebuilding shelves.
-    QTimer::singleShot(1, this, [this]() {
+    QTimer::singleShot(qMax(1, delayMs), this, [this]() {
         m_refreshPending = false;
         refresh();
     });
@@ -3509,11 +3564,14 @@ void LibraryView::scheduleRefresh()
 
 void LibraryView::showEvent(QShowEvent *event)
 {
+    const bool firstShow = !m_hasShown;
+    m_hasShown = true;
     if (m_deferInitialRefresh) {
         m_deferInitialRefresh = false;
-        scheduleRefresh();
-    } else {
-        refresh();
+        showStartupPlaceholder();
+        scheduleRefresh(firstShow ? 180 : 1);
+    } else if (!firstShow) {
+        scheduleRefresh(1);
     }
     // Focus the visible list; keeps the ⌘F shortcut's widget-local context live
     m_grid->setFocus();

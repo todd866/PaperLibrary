@@ -220,6 +220,7 @@ private:
     void coverArrived(const QString &filePath, const QString &coverPath);
     void syncViewModeButton();
     void animateGridIn();
+    void showStartupPlaceholder();
     /** Reassert the tiled QListView geometry after model/theme/shelf changes. */
     void configureTileGrid();
     Shelf activeShelf() const;
@@ -229,7 +230,7 @@ private:
     void rebuildShelves();
     void startContentSearch();
     void cancelContentSearch();
-    void scheduleRefresh();
+    void scheduleRefresh(int delayMs = 1);
     /**
      * Layer 2 of the search: reduce @p hitPaths (file paths whose text
      * content matched @p query, e.g. mdfind's output) to the entries of
@@ -255,6 +256,7 @@ private:
     QProcess *m_contentSearch = nullptr;
     bool m_applyingChromePalette = false;
     bool m_deferInitialRefresh = false;
+    bool m_hasShown = false;
     bool m_refreshPending = false;
     QList<ShelfEntry> m_shelfEntries[DocumentShelfCount];
     QList<Shelf> m_visibleShelves;
