@@ -1349,7 +1349,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_corpusCoverWarmupTimer->setInterval(750);
     connect(m_corpusCoverWarmupTimer, &QTimer::timeout, this, &LibraryView::requestNextCorpusCoverBatch);
     if (m_paperModel) {
-        QTimer::singleShot(450, this, [this]() {
+        QTimer::singleShot(0, this, [this]() {
             if (m_paperModel && !m_paperModel->isLoaded()) {
                 m_paperModel->load(m_paperCorpusDir);
             }
@@ -2783,9 +2783,9 @@ void LibraryView::prewarmNextCorpusShelf()
     const Shelf shelf = m_corpusPrewarmQueue.at(m_corpusPrewarmIndex++);
     attachCorpusShelf(shelf);
     if (PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf)) {
-        requestCorpusCoversForSections(sections, 0, 28);
+        requestCorpusCoversForSections(sections, 0, 12);
     }
-    QTimer::singleShot(260, this, &LibraryView::prewarmNextCorpusShelf);
+    QTimer::singleShot(420, this, &LibraryView::prewarmNextCorpusShelf);
 }
 
 void LibraryView::ensurePapersFresh()

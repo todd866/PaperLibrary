@@ -41,6 +41,9 @@ static KConfigGroup paperLibraryConfigGroup(const QString &name)
 }
 
 static const char DOWNRANKED_SLUGS_KEY[] = "DownrankedSlugs";
+static constexpr int MaxCorpusFeedRows = 360;
+static constexpr int MaxCorpusSearchRows = 720;
+static constexpr int MaxCorpusRowsPerSection = 90;
 
 static QString derivedPdfPath(const QString &corpusDir, const QString &slug)
 {
@@ -2248,14 +2251,16 @@ void PaperLibrarySectionedModel::setCoverForPath(const QString &path, const QVar
     }
 
     const QList<int> roles = {CoverPixmapRole, GeneratedCoverRole};
-    for (int row = 0; row < m_rows.count(); ++row) {
-        const Row &sectionRow = m_rows.at(row);
-        const QString rowPath = !sectionRow.focusPath.isEmpty() ? sectionRow.focusPath : storedPathForSourceRow(sectionRow.sourceRow);
-        if (!sectionRow.header && m_source && rowPath == path) {
-            const QModelIndex changed = index(row);
-            Q_EMIT dataChanged(changed, changed, roles);
-        }
+    const QList<int> changedRows = m_rowsByPath.value(path);
+    for (const int row : changedRows) {
+        const QModelIndex changed = index(row);
+        Q_EMIT dataChanged(changed, changed, roles);
     }
+}
+
+QString PaperLibrarySectionedModel::pathForRow(const Row &row) const
+{
+    return !row.focusPath.isEmpty() ? row.focusPath : storedPathForSourceRow(row.sourceRow);
 }
 
 QString PaperLibrarySectionedModel::storedPathForSourceRow(int sourceRow) const
@@ -2323,6 +2328,22 @@ QString PaperLibrarySectionedModel::cacheKey() const
 void PaperLibrarySectionedModel::clearRowCache()
 {
     m_rowCache.clear();
+    m_rowsByPath.clear();
+}
+
+void PaperLibrarySectionedModel::rebuildPathIndex()
+{
+    m_rowsByPath.clear();
+    for (int row = 0; row < m_rows.count(); ++row) {
+        const Row &sectionRow = m_rows.at(row);
+        if (sectionRow.header) {
+            continue;
+        }
+        const QString path = pathForRow(sectionRow);
+        if (!path.isEmpty()) {
+            m_rowsByPath[path].append(row);
+        }
+    }
 }
 
 void PaperLibrarySectionedModel::rebuild()
@@ -2332,12 +2353,14 @@ void PaperLibrarySectionedModel::rebuild()
     const auto cached = m_rowCache.constFind(key);
     if (cached != m_rowCache.cend()) {
         m_rows = cached.value();
+        rebuildPathIndex();
         endResetModel();
         return;
     }
 
     m_rows.clear();
     if (!m_source) {
+        m_rowsByPath.clear();
         endResetModel();
         return;
     }
@@ -2404,6 +2427,7 @@ void PaperLibrarySectionedModel::rebuild()
         }
 
         m_rowCache.insert(key, m_rows);
+        rebuildPathIndex();
         endResetModel();
         return;
     }
@@ -2586,7 +2610,12 @@ void PaperLibrarySectionedModel::rebuild()
         return a.localeAwareCompare(b) < 0;
     });
 
+    const int maxRows = m_query.isEmpty() ? MaxCorpusFeedRows : MaxCorpusSearchRows;
+    const int maxRowsPerSection = m_query.isEmpty() ? MaxCorpusRowsPerSection : MaxCorpusSearchRows;
     for (const QString &section : std::as_const(sectionOrder)) {
+        if (m_rows.size() >= maxRows) {
+            break;
+        }
         QList<int> sourceRowsForSection = rowsBySection.value(section);
         std::stable_sort(sourceRowsForSection.begin(), sourceRowsForSection.end(), [this](int leftRow, int rightRow) {
             const bool leftDownranked = sourceRowDownranked(leftRow);
@@ -2596,12 +2625,18 @@ void PaperLibrarySectionedModel::rebuild()
             }
             return sourceRowLikelyBeforeForShelf(m_source, leftRow, rightRow, m_smartFilter);
         });
+        int rowsFromSection = 0;
         for (const int sourceRow : sourceRowsForSection) {
+            if (m_rows.size() >= maxRows || rowsFromSection >= maxRowsPerSection) {
+                break;
+            }
             Row row;
             row.sourceRow = sourceRow;
             m_rows.append(row);
+            ++rowsFromSection;
         }
     }
     m_rowCache.insert(key, m_rows);
+    rebuildPathIndex();
     endResetModel();
 }

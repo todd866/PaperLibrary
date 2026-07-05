@@ -262,8 +262,10 @@ private:
     };
 
     void rebuild();
+    void rebuildPathIndex();
     QString cacheKey() const;
     void clearRowCache();
+    QString pathForRow(const Row &row) const;
     QString storedPathForSourceRow(int sourceRow) const;
     bool sourceRowDownranked(int sourceRow) const;
     void saveDownrankedSlugs() const;
@@ -274,6 +276,7 @@ private:
     QString m_query;
     QList<Row> m_rows;
     QHash<QString, QList<Row>> m_rowCache;
+    QHash<QString, QList<int>> m_rowsByPath;
     QHash<QString, QVariant> m_coverPixmaps;
     QSet<QString> m_generatedCoverPaths;
     QSet<QString> m_downrankedSlugs;
