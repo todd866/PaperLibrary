@@ -62,6 +62,9 @@ plain JSON array under `focus/<ShelfName>/manifest.json`. Each item should
 carry enough context for PaperLibrary to render a useful tile without needing
 to inspect private source text at runtime.
 
+The versioned public contract lives in
+`docs/contracts/focus-manifest-v1.md`.
+
 Recommended fields:
 
 - `id`: stable slug, DOI-derived id, file hash, or local-file id.

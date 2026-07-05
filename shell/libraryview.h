@@ -38,11 +38,11 @@ class QToolButton;
 /**
  * The document library: a grid of cover tiles for pinned and frequently
  * opened documents, hosted as a real tab in the shell's tab strip — the
- * new-tab page, in Chrome terms. A mixed Recent shelf and format shelves are joined by
- * metadata-driven smart shelves such as Textbooks, Medicine, Work and Fiction. When a
- * PaperLibrary corpus is configured and present, the corpus-backed shelves
- * keep the same tile grid while grouping records by reading priority, topic,
- * project, source, year, journal, or publication type.
+ * new-tab page, in Chrome terms. Public defaults stay generic; local/domain
+ * shelves are surfaced only when the configured corpus provides a focus
+ * manifest for them. When a PaperLibrary corpus is configured and present,
+ * the corpus-backed shelves keep the same tile grid while grouping records by
+ * reading priority, topic, project, source, year, journal, or publication type.
  */
 class LibraryView : public QWidget
 {
@@ -58,9 +58,10 @@ public:
         WorkShelf = 5,
         FictionShelf = 6,
         NonfictionShelf = 7,
-        PapersShelf = 8,
+        StarterPackShelf = 8,
+        PapersShelf = 9,
     };
-    static constexpr int DocumentShelfCount = 8;
+    static constexpr int DocumentShelfCount = 9;
 
     /** How a shelf arranges its tiles; persisted per shelf. */
     enum ViewMode {
@@ -175,8 +176,11 @@ private:
     static QString focusTagFor(const ShelfEntry &entry);
     static void enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
     static bool shelfHasReadingProgress(const QList<ShelfEntry> &entries);
+    static QList<ShelfEntry> loadStarterPackEntries();
     static bool matchesQuery(const ShelfEntry &entry, const QString &query);
     QStandardItemModel *modelForShelf(Shelf shelf) const;
+    void addShelfTab(Shelf shelf, const QString &label);
+    int tabIndexForShelf(Shelf shelf) const;
     void populate(QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode);
     void populateSections(QStandardItemModel *model, const QList<Section> &sections);
     QStandardItem *makeTileItem(const ShelfEntry &entry);
@@ -251,6 +255,7 @@ private:
     bool m_deferInitialRefresh = false;
     bool m_refreshPending = false;
     QList<ShelfEntry> m_shelfEntries[DocumentShelfCount];
+    QList<Shelf> m_visibleShelves;
     QListView *m_grid = nullptr;
     QStandardItemModel *m_pdfModel;
     QStandardItemModel *m_booksModel;
@@ -260,6 +265,7 @@ private:
     QStandardItemModel *m_workModel;
     QStandardItemModel *m_fictionModel;
     QStandardItemModel *m_nonfictionModel;
+    QStandardItemModel *m_starterPackModel;
     CoverLoader *m_coverLoader;
     QTimer *m_corpusCoverWarmupTimer = nullptr;
     int m_nextCorpusCoverRow = 0;

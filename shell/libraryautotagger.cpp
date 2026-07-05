@@ -190,7 +190,7 @@ void LibraryAutoTagger::askClaude(const QUrl &url, const QString &firstPageText)
                                "{\"title\": string, \"tags\": [2-4 short category tags], \"description\": \"one sentence\", "
                                "\"keywords\": [3-6 search terms that are not already in the title or tags]}. "
                                "Make the first tag the publication type when possible, using one of: Paper, Review, Textbook, Book, Manuscript, Guidelines, Other. "
-                               "Use later tags for high-signal topics or projects, e.g. MND, ALS, Neuroscience, Statistics, Clinical Trial. "
+                               "Use later tags for high-signal topics or projects, e.g. Neuroscience, Statistics, Clinical Trial, Methods. "
                                "Prefer concise stable tags over clever prose.\n\n"
                                "First-page text:\n%1")
                                .arg(firstPageText);

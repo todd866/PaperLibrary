@@ -24,6 +24,9 @@
 #include <QFormLayout>
 #include <QGraphicsOpacityEffect>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -355,6 +358,8 @@ static const char *viewModeConfigKey(LibraryView::Shelf shelf)
         return "LibraryViewModeFiction";
     case LibraryView::NonfictionShelf:
         return "LibraryViewModeNonfiction";
+    case LibraryView::StarterPackShelf:
+        return "LibraryViewModeStarterPack";
     case LibraryView::PdfShelf:
         return "LibraryViewModeRecent";
     case LibraryView::PapersShelf:
@@ -366,6 +371,16 @@ static const char *viewModeConfigKey(LibraryView::Shelf shelf)
 static bool appleBooksScanEnabled()
 {
     return partGeneralConfig().readEntry("ScanAppleBooksOnStartup", true);
+}
+
+static QString starterPackDir()
+{
+    return partGeneralConfig().readEntry("StarterPackPath", QString(QDir::homePath() + QStringLiteral("/Projects/PaperLibrary/starter-public-domain")));
+}
+
+static bool focusManifestExists(const QString &corpusDir, const QString &shelfName)
+{
+    return !corpusDir.isEmpty() && QFileInfo::exists(corpusDir + QStringLiteral("/focus/") + shelfName + QStringLiteral("/manifest.json"));
 }
 
 // Serialized with the original enum choice names so existing config values keep
@@ -413,6 +428,7 @@ static const char *paperSectionModeConfigKey(LibraryView::Shelf shelf)
         return "PaperSectionModeNonfiction";
     case LibraryView::PapersShelf:
         return "PaperSectionModePapers";
+    case LibraryView::StarterPackShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -432,6 +448,7 @@ static int defaultPaperSectionModeForShelf(LibraryView::Shelf shelf)
     case LibraryView::MndShelf:
     case LibraryView::FictionShelf:
     case LibraryView::PapersShelf:
+    case LibraryView::StarterPackShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -454,6 +471,7 @@ static PaperLibrarySectionedModel::SmartFilter paperFilterForShelf(LibraryView::
     case LibraryView::NonfictionShelf:
         return PaperLibrarySectionedModel::Nonfiction;
     case LibraryView::PapersShelf:
+    case LibraryView::StarterPackShelf:
     case LibraryView::BooksShelf:
     case LibraryView::PdfShelf:
         break;
@@ -538,11 +556,11 @@ static QString corpusShelfGuide(LibraryView::Shelf shelf, int mode)
 
     switch (shelf) {
     case LibraryView::MedicineShelf:
-        return i18nc("@info corpus shelf guide", "%1: clinical essentials, neuro/MND, paeds, OBGYN, psychiatry", modeLabel);
+        return i18nc("@info corpus shelf guide", "%1: user-defined medicine focus shelf", modeLabel);
     case LibraryView::MndShelf:
-        return i18nc("@info corpus shelf guide", "%1: MD project set, biomarkers, diagnosis, trials, nearby ALS papers", modeLabel);
+        return i18nc("@info corpus shelf guide", "%1: user-defined motor-neuron-disease focus shelf", modeLabel);
     case LibraryView::WorkShelf:
-        return i18nc("@info corpus shelf guide", "%1: Beyond Bayes, peer reviews, active revision work", modeLabel);
+        return i18nc("@info corpus shelf guide", "%1: current projects, active reading queues, and related work", modeLabel);
     case LibraryView::TextbooksShelf:
         return i18nc("@info corpus shelf guide", "%1: textbooks and reference books grouped for quick retrieval", modeLabel);
     case LibraryView::BooksShelf:
@@ -553,6 +571,7 @@ static QString corpusShelfGuide(LibraryView::Shelf shelf, int mode)
         return i18nc("@info corpus shelf guide", "%1: biography, history, politics, anthropology, social theory", modeLabel);
     case LibraryView::PapersShelf:
         return i18nc("@info corpus shelf guide", "%1: papers ranked by active projects and adjacent reading", modeLabel);
+    case LibraryView::StarterPackShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -1268,14 +1287,12 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_shelfSwitch->setExpanding(false);
     m_shelfSwitch->setDrawBase(false);
     m_shelfSwitch->setFocusPolicy(Qt::NoFocus);
-    m_shelfSwitch->addTab(i18nc("library shelf with recently opened documents", "Recent"));
-    m_shelfSwitch->addTab(i18nc("library shelf with EPUB documents", "Books"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf with textbook documents", "Textbooks"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf for medicine documents", "Medicine"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf for MND project documents", "MND"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf for current work documents", "Work"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf for fiction books", "Fiction"));
-    m_shelfSwitch->addTab(i18nc("library smart shelf for non-fiction books", "Non-fiction"));
+    addShelfTab(PdfShelf, i18nc("library shelf with recently opened documents", "Recent"));
+    addShelfTab(BooksShelf, i18nc("library shelf with current long-form EPUB reading", "Books"));
+    addShelfTab(FictionShelf, i18nc("library smart shelf for fiction books", "Fiction"));
+    addShelfTab(NonfictionShelf, i18nc("library smart shelf for non-fiction books", "Non-fiction"));
+    addShelfTab(WorkShelf, i18nc("library smart shelf for current work documents", "Work"));
+    addShelfTab(StarterPackShelf, i18nc("library shelf for public-domain starter books", "Starter Pack"));
 
     // Restore each shelf's persisted arrangement before the first populate
     for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
@@ -1300,7 +1317,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
         QAction *action = viewModeMenu->addAction(viewModeNames[mode]);
         action->setCheckable(true);
         action->setActionGroup(viewModeGroup);
-        connect(action, &QAction::triggered, this, [this, mode]() { setViewMode(static_cast<Shelf>(m_shelfSwitch->currentIndex()), static_cast<ViewMode>(mode)); });
+        connect(action, &QAction::triggered, this, [this, mode]() { setViewMode(activeShelf(), static_cast<ViewMode>(mode)); });
         m_viewModeActions[mode] = action;
     }
     m_viewModeButton->setMenu(viewModeMenu);
@@ -1383,7 +1400,9 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_workModel = new QStandardItemModel(this);
     m_fictionModel = new QStandardItemModel(this);
     m_nonfictionModel = new QStandardItemModel(this);
+    m_starterPackModel = new QStandardItemModel(this);
     m_booksModel->setProperty("booksShelf", true);
+    m_starterPackModel->setProperty("booksShelf", true);
 
     m_grid = new QListView(this);
     m_grid->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1690,12 +1709,14 @@ void LibraryView::refresh()
     m_shelfEntries[WorkShelf] = work;
     m_shelfEntries[FictionShelf] = fiction;
     m_shelfEntries[NonfictionShelf] = nonfiction;
+    m_shelfEntries[StarterPackShelf] = loadStarterPackEntries();
     m_textbooksModel->setProperty("booksShelf", shelfHasReadingProgress(textbooks));
     m_medicineModel->setProperty("booksShelf", shelfHasReadingProgress(medicine));
     m_mndModel->setProperty("booksShelf", shelfHasReadingProgress(mnd));
     m_workModel->setProperty("booksShelf", shelfHasReadingProgress(work));
     m_fictionModel->setProperty("booksShelf", shelfHasReadingProgress(fiction));
     m_nonfictionModel->setProperty("booksShelf", shelfHasReadingProgress(nonfiction));
+    m_starterPackModel->setProperty("booksShelf", shelfHasReadingProgress(m_shelfEntries[StarterPackShelf]));
 
     for (QList<ShelfEntry> *smartShelf : {&m_shelfEntries[TextbooksShelf], &m_shelfEntries[MedicineShelf], &m_shelfEntries[MndShelf], &m_shelfEntries[WorkShelf], &m_shelfEntries[FictionShelf], &m_shelfEntries[NonfictionShelf]}) {
         std::stable_sort(smartShelf->begin(), smartShelf->end(), entryLikelyBefore);
@@ -1846,7 +1867,7 @@ QString LibraryView::publicationTypeTitle(const ShelfEntry &entry)
 
 bool LibraryView::isDocumentShelf(Shelf shelf)
 {
-    return shelf == PdfShelf || shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf;
+    return shelf == PdfShelf || shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == StarterPackShelf;
 }
 
 QString LibraryView::smartShelfHaystack(const ShelfEntry &entry)
@@ -2255,6 +2276,69 @@ bool LibraryView::shelfHasReadingProgress(const QList<ShelfEntry> &entries)
     });
 }
 
+QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
+{
+    QList<ShelfEntry> entries;
+    const QDir root(starterPackDir());
+    QFile catalog(root.filePath(QStringLiteral("catalog.jsonl")));
+    if (!catalog.open(QIODevice::ReadOnly)) {
+        return entries;
+    }
+
+    while (!catalog.atEnd()) {
+        const QByteArray line = catalog.readLine().trimmed();
+        if (line.isEmpty()) {
+            continue;
+        }
+        const QJsonDocument document = QJsonDocument::fromJson(line);
+        if (!document.isObject()) {
+            continue;
+        }
+        const QJsonObject object = document.object();
+        const QString relativePath = object.value(QLatin1String("epub_path")).toString().trimmed();
+        if (relativePath.isEmpty()) {
+            continue;
+        }
+        const QString filePath = root.filePath(relativePath);
+        if (!QFileInfo::exists(filePath)) {
+            continue;
+        }
+
+        ShelfEntry entry;
+        entry.url = QUrl::fromLocalFile(filePath);
+        entry.title = object.value(QLatin1String("title")).toString().trimmed();
+        const QString authors = object.value(QLatin1String("authors")).toString().trimmed();
+        const QString year = object.value(QLatin1String("year")).toString().trimmed();
+        entry.description = authors.isEmpty() ? year : (year.isEmpty() ? authors : authors + QStringLiteral(" · ") + year);
+        entry.format = QStringLiteral("EPUB");
+        entry.lastOpened = QDateTime::fromString(object.value(QLatin1String("added_ts")).toString(), Qt::ISODate);
+        entry.tags = {QStringLiteral("Starter Pack"), QStringLiteral("Public Domain")};
+        const QJsonArray tags = object.value(QLatin1String("tags")).toArray();
+        for (const QJsonValue &tag : tags) {
+            const QString value = tag.toString().trimmed();
+            if (!value.isEmpty() && !entry.tags.contains(value, Qt::CaseInsensitive)) {
+                entry.tags.append(value);
+            }
+        }
+        entry.keywords = entry.tags;
+        const QString sourceUrl = object.value(QLatin1String("source_url")).toString().trimmed();
+        const QString rights = object.value(QLatin1String("rights")).toString().trimmed();
+        if (!sourceUrl.isEmpty()) {
+            entry.keywords.append(sourceUrl);
+        }
+        if (!rights.isEmpty()) {
+            entry.keywords.append(rights);
+        }
+        enrichShelfEntry(entry);
+        entries.append(entry);
+    }
+
+    std::stable_sort(entries.begin(), entries.end(), [](const ShelfEntry &left, const ShelfEntry &right) {
+        return left.title.localeAwareCompare(right.title) < 0;
+    });
+    return entries;
+}
+
 QStandardItemModel *LibraryView::modelForShelf(Shelf shelf) const
 {
     switch (shelf) {
@@ -2272,11 +2356,27 @@ QStandardItemModel *LibraryView::modelForShelf(Shelf shelf) const
         return m_fictionModel;
     case NonfictionShelf:
         return m_nonfictionModel;
+    case StarterPackShelf:
+        return m_starterPackModel;
     case PdfShelf:
     case PapersShelf:
         break;
     }
     return m_pdfModel;
+}
+
+void LibraryView::addShelfTab(Shelf shelf, const QString &label)
+{
+    if (!m_shelfSwitch || m_visibleShelves.contains(shelf)) {
+        return;
+    }
+    m_visibleShelves.append(shelf);
+    m_shelfSwitch->addTab(label);
+}
+
+int LibraryView::tabIndexForShelf(Shelf shelf) const
+{
+    return m_visibleShelves.indexOf(shelf);
 }
 
 void LibraryView::populate(QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode)
@@ -2298,11 +2398,8 @@ void LibraryView::populateSections(QStandardItemModel *model, const QList<Sectio
 LibraryView::Shelf LibraryView::activeShelf() const
 {
     const int index = m_shelfSwitch->currentIndex();
-    if (index == PapersShelf && m_paperModel) {
-        return PapersShelf;
-    }
-    if (index >= PdfShelf && index < DocumentShelfCount) {
-        return static_cast<Shelf>(index);
+    if (index >= 0 && index < m_visibleShelves.size()) {
+        return m_visibleShelves.at(index);
     }
     return PdfShelf;
 }
@@ -2573,7 +2670,16 @@ const EpubCover::Metadata &LibraryView::epubMetadataFor(const QString &filePath)
 
 void LibraryView::setupPapersShelf()
 {
-    m_shelfSwitch->addTab(i18nc("library shelf listing the PaperLibrary corpus", "Papers"));
+    if (focusManifestExists(m_paperCorpusDir, QStringLiteral("Textbooks"))) {
+        addShelfTab(TextbooksShelf, i18nc("library smart shelf with textbook documents", "Textbooks"));
+    }
+    if (focusManifestExists(m_paperCorpusDir, QStringLiteral("Medicine"))) {
+        addShelfTab(MedicineShelf, i18nc("library smart shelf for medicine documents", "Medicine"));
+    }
+    if (focusManifestExists(m_paperCorpusDir, QStringLiteral("MND"))) {
+        addShelfTab(MndShelf, i18nc("library smart shelf for MND project documents", "MND"));
+    }
+    addShelfTab(PapersShelf, i18nc("library shelf listing the PaperLibrary corpus", "Papers"));
 
     m_paperModel = new PaperLibraryModel(this);
     for (Shelf shelf : {TextbooksShelf, MedicineShelf, MndShelf, WorkShelf, FictionShelf, NonfictionShelf, PapersShelf}) {
@@ -2612,7 +2718,7 @@ void LibraryView::setupPapersShelf()
 void LibraryView::shelfChanged(int index)
 {
     m_pendingShelfIndex = index;
-    const Shelf shelf = static_cast<Shelf>(index);
+    const Shelf shelf = activeShelf();
     const bool corpus = usesCorpusList(shelf);
     m_viewModeButton->setVisible(!corpus);
     m_paperSectionButton->setVisible(corpus);
@@ -2637,7 +2743,7 @@ void LibraryView::shelfChanged(int index)
 
 void LibraryView::renderPendingShelf()
 {
-    if (m_pendingShelfIndex < PdfShelf || m_pendingShelfIndex > PapersShelf || m_pendingShelfIndex != m_shelfSwitch->currentIndex()) {
+    if (m_pendingShelfIndex < 0 || m_pendingShelfIndex >= m_visibleShelves.size() || m_pendingShelfIndex != m_shelfSwitch->currentIndex()) {
         m_pendingShelfIndex = m_shelfSwitch->currentIndex();
     }
     const Shelf shelf = activeShelf();
@@ -2862,12 +2968,12 @@ void LibraryView::scheduleCorpusPrewarm()
     }
     m_corpusPrewarmQueue.clear();
     const Shelf current = activeShelf();
-    const QList<Shelf> order = {MedicineShelf, MndShelf, WorkShelf, TextbooksShelf, PapersShelf, NonfictionShelf, FictionShelf};
+    const QList<Shelf> order = {WorkShelf, PapersShelf, NonfictionShelf, FictionShelf, MedicineShelf, MndShelf, TextbooksShelf};
     if (usesCorpusList(current)) {
         m_corpusPrewarmQueue.append(current);
     }
     for (const Shelf shelf : order) {
-        if (shelf != current && paperSectionsForShelf(shelf)) {
+        if (shelf != current && tabIndexForShelf(shelf) >= 0 && paperSectionsForShelf(shelf)) {
             m_corpusPrewarmQueue.append(shelf);
         }
     }

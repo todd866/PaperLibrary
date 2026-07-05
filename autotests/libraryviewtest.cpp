@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QListView>
 #include <QPainter>
@@ -101,6 +102,33 @@ QByteArray biosystemsFalsePositiveRecordLine()
     object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-03T00:00:00+00:00"));
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
 }
+
+void writeMndFocusManifest(const QString &corpusDir)
+{
+    QDir(corpusDir).mkpath(QStringLiteral("focus/MND"));
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), QStringLiteral("10-9999-synthetic-mnd-tiles"));
+    object.insert(QStringLiteral("title"), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    object.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    object.insert(QStringLiteral("section"), QStringLiteral("00-current"));
+    object.insert(QStringLiteral("reason"), QStringLiteral("Core project paper; biomarker framing"));
+    QJsonArray array;
+    array.append(object);
+    QFile manifest(QDir(corpusDir).filePath(QStringLiteral("focus/MND/manifest.json")));
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    manifest.close();
+}
+
+int tabIndexForText(QTabBar *tabs, const QString &text)
+{
+    for (int index = 0; index < tabs->count(); ++index) {
+        if (tabs->tabText(index) == text) {
+            return index;
+        }
+    }
+    return -1;
+}
 }
 
 class LibraryViewTest : public QObject
@@ -112,6 +140,7 @@ private Q_SLOTS:
     void init();
     void testCorpusShelvesUseTileGrid();
     void testCorpusShelfModelsPersistAcrossSwitches();
+    void testDomainShelvesRequireFocusManifest();
     void testWorkShelfGeneratedCardsAreVisible();
     void testBooksShelfStaysWithLocalEbooks();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
@@ -155,6 +184,7 @@ void LibraryViewTest::init()
 
 void LibraryViewTest::testCorpusShelvesUseTileGrid()
 {
+    writeMndFocusManifest(m_dir->path());
     LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
     LibraryView view(&store, nullptr, true);
 
@@ -163,7 +193,9 @@ void LibraryViewTest::testCorpusShelvesUseTileGrid()
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
 
-    shelves->setCurrentIndex(LibraryView::MndShelf);
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
     QTRY_VERIFY(grid->model());
     QTRY_COMPARE(grid->model()->rowCount(), 1);
 
@@ -178,6 +210,7 @@ void LibraryViewTest::testCorpusShelvesUseTileGrid()
 
 void LibraryViewTest::testCorpusShelfModelsPersistAcrossSwitches()
 {
+    writeMndFocusManifest(m_dir->path());
     LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
     LibraryView view(&store, nullptr, true);
 
@@ -186,20 +219,44 @@ void LibraryViewTest::testCorpusShelfModelsPersistAcrossSwitches()
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
 
-    shelves->setCurrentIndex(LibraryView::MndShelf);
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    const int workTab = tabIndexForText(shelves, QStringLiteral("Work"));
+    QVERIFY(mndTab >= 0);
+    QVERIFY(workTab >= 0);
+
+    shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
     QAbstractItemModel *mndModel = grid->model();
 
-    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    shelves->setCurrentIndex(workTab);
     QTRY_VERIFY(grid->model() != mndModel);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
     QAbstractItemModel *workModel = grid->model();
     QVERIFY(workModel != mndModel);
 
-    shelves->setCurrentIndex(LibraryView::MndShelf);
+    shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model(), mndModel);
-    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    shelves->setCurrentIndex(workTab);
     QTRY_COMPARE(grid->model(), workModel);
+}
+
+void LibraryViewTest::testDomainShelvesRequireFocusManifest()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Recent")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Books")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Fiction")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Non-fiction")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Work")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Starter Pack")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Papers")) >= 0);
+    QCOMPARE(tabIndexForText(shelves, QStringLiteral("Textbooks")), -1);
+    QCOMPARE(tabIndexForText(shelves, QStringLiteral("Medicine")), -1);
+    QCOMPARE(tabIndexForText(shelves, QStringLiteral("MND")), -1);
 }
 
 void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
@@ -212,7 +269,9 @@ void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
 
-    shelves->setCurrentIndex(LibraryView::WorkShelf);
+    const int workTab = tabIndexForText(shelves, QStringLiteral("Work"));
+    QVERIFY(workTab >= 0);
+    shelves->setCurrentIndex(workTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
     const QModelIndex index = grid->model()->index(0, 0);
     QVERIFY(index.data(PaperLibrarySectionedModel::SourceRowRole).isValid());
@@ -258,6 +317,7 @@ void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
 
 void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
 {
+    writeMndFocusManifest(m_dir->path());
     LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
     LibraryView view(&store, nullptr, true);
 
@@ -266,11 +326,16 @@ void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
 
-    shelves->setCurrentIndex(LibraryView::BooksShelf);
+    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(booksTab >= 0);
+    QVERIFY(mndTab >= 0);
+
+    shelves->setCurrentIndex(booksTab);
     QVERIFY(grid->model());
     QCOMPARE(grid->model()->rowCount(), 0);
 
-    shelves->setCurrentIndex(LibraryView::MndShelf);
+    shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
 }
 

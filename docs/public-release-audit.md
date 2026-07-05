@@ -1,21 +1,21 @@
 # Public Release Audit
 
 Date: 2026-07-05
+Last updated: 2026-07-05
 
 This audit checks the current public export against the public release rules in
 `docs/public-release-rules.md`.
 
 ## Overall Verdict
 
-PaperLibrary is publishable as an early public placeholder, but it is not yet a
-clean, polished public product by its own rules.
+PaperLibrary is publishable as an early public alpha, but it is not yet a
+fully polished public product by its own rules.
 
 The reader, privacy posture, local-first architecture, tile-first direction,
-starter-pack metadata, and focus-manifest concept are all real. The main release
-risk is that the current app still bakes a private reading taxonomy into public
-code. A public clone should feel like a general local library plus agent
-contracts, not like someone else's medical/research workspace with the documents
-removed.
+starter-pack metadata, and focus-manifest mechanism are all real. The main
+release risk is narrower than before: public app chrome now starts generic, but
+some fallback classifiers and labels still carry private/local assumptions that
+should move behind manifests, config, examples, or private local rules.
 
 ## What Is Working
 
@@ -29,9 +29,14 @@ removed.
 - The library UI is substantially tile-first. It has generated cover cards,
   real cover loading, metadata roles, downranking, context menus, keyboard open
   shortcuts, and new-tab document opening from library tiles.
+- Public default tabs are now generic. Domain shelves such as Medicine, MND, or
+  Textbooks appear only when the configured corpus provides a matching focus
+  manifest.
 - Focus manifests are implemented enough to be the public abstraction for
   agent-curated shelves. `Reading`, `Work`, `MND`, and `Medicine` manifests can
   drive rows, reasons, sections, metadata, and ranking.
+- Focus manifests now have a versioned public contract:
+  `docs/contracts/focus-manifest-v1.md`.
 - Recent model tests cover several important failures that came up in use:
   reading manifests, Work section order, Non-fiction vs Fiction, Caro not being
   Psychiatry, generated covers, and downranking.
@@ -39,16 +44,19 @@ removed.
   for disabled/no-CLI states, and avoids sending corpus documents through the
   auto-tagging path.
 - The public-domain starter pack is represented as metadata plus a downloader
-  instead of committed book binaries.
+  instead of committed book binaries, and an installed starter catalog renders
+  into a Starter Pack shelf.
 
 ## Partial Alignment
 
 ### Mechanism Over Taste
 
-The focus-manifest mechanism is the right direction. The problem is that the
-hard-coded public tabs still include `Textbooks`, `Medicine`, and `MND`, and
-the corpus model still contains private-domain concepts such as `Beyond Bayes`,
-`MND Project`, `paeds`, `OBGYN`, `Graeber`, `Caro`, and `Game of Thrones`.
+The focus-manifest mechanism is now the right public mechanism and the public
+tabs no longer hard-code `Textbooks`, `Medicine`, and `MND` as defaults.
+
+The remaining problem is that some fallback corpus/local classifiers still
+contain private-domain concepts such as `Beyond Bayes`, `MND Project`, `paeds`,
+`OBGYN`, `Graeber`, `Caro`, and `Game of Thrones`.
 
 Those are reasonable local examples, but they should move behind user config,
 sample fixtures, or local manifests before a serious public release.
@@ -56,10 +64,9 @@ sample fixtures, or local manifests before a serious public release.
 ### Intent Shelves Over File Type
 
 `Reading`, `Work`, and focus-manifest sections now express intent better than
-raw file type. However, the public UI still exposes `Textbooks` as a top-level
-default and routes several behaviors through broad keyword heuristics. The
-public product should make file type secondary and let user-defined shelves
-appear from manifests.
+raw file type. The public UI no longer exposes `Textbooks` as a default
+top-level shelf. The remaining issue is that broad keyword heuristics still
+exist as fallbacks; those need to become generic, sample-only, or configurable.
 
 ### Tile-First UX
 
@@ -80,33 +87,28 @@ user experience has already shown that "eventually fast" is not good enough.
 
 ### Starter Pack
 
-The starter pack has a manifest, rights notes, and a downloader. It is not yet a
-first-class app path. A fresh public clone should have an obvious "Install
-Starter Pack" or first-run seed action that creates useful tiles without manual
-filesystem work.
+The starter pack has a manifest, rights notes, a downloader, and a visible app
+shelf once installed. It still needs an obvious "Install Starter Pack" or
+first-run seed action so users do not need manual filesystem work.
 
 ## Main Release Gaps
 
-1. Make shelves configurable.
-   Public defaults should be `Recent`, `Books`, `Fiction`, `Non-fiction`,
-   `Papers`, `Work`, and `Starter Pack`. Domain shelves such as `Medicine` and
-   `MND` should appear only from a focus manifest or user config.
+1. Finish moving private taxonomy out of fallback code paths.
+   Public chrome is now generic, but owner-specific classifier terms should
+   become private local config, sample manifests, or generic fixtures.
 
-2. Move private taxonomy out of public code paths.
-   Keep generic fixture tests, but move owner-specific concepts to private
-   local manifests or clearly marked examples. The fallback classifier should
-   not assume one user's medicine, MND, anthropology, politics, or fiction
-   interests.
+2. Make focus shelves fully configurable.
+   Domain shelves appear from manifests today. The next step is a config file
+   or UI that can add arbitrary shelf names without code changes.
 
-3. Formalize data contracts.
-   `focus/<ShelfName>/manifest.json` is documented, but it needs a versioned
-   schema, examples, validation script, and tests for missing paths, relative
-   paths, DOI/id matching, section order, reason rendering, and privacy.
+3. Add validation for data contracts.
+   Focus Manifest v1 is documented, but it needs a validation script and tests
+   for missing paths, relative paths, DOI/id matching, section order, reason
+   rendering, and privacy.
 
 4. Wire the starter pack into the app.
-   The downloader should become a visible setup/import flow and the resulting
-   starter records should render as tiles in a fresh library without private
-   corpus configuration.
+   Starter records now render as tiles after installation. The missing piece is
+   a visible setup/import flow.
 
 5. Add performance budgets.
    Release tests should fail when shelf switching, first corpus render, or
@@ -114,9 +116,9 @@ filesystem work.
    be instant-feeling shelf switches even under rapid clicking.
 
 6. Expand UI behavior tests.
-   Keep the model tests, but add tests for double-click open, single-click
-   selection, arrow-key movement, Enter open, context-menu downranking, empty
-   corpus shelves, no-corpus startup, and disabled-AI startup.
+   Keep the model tests, but add tests for arrow-key movement, context-menu
+   downranking, empty corpus shelves, no-corpus startup, starter-pack catalog
+   rendering, and disabled-AI startup.
 
 7. Audit subprocess and file handling.
    Current subprocess calls use explicit arguments and timeouts in the key AI
@@ -133,8 +135,8 @@ filesystem work.
 Before calling the public release polished, a fresh clone with no private corpus
 should demonstrate this:
 
-- launch to useful tiles, not empty private shelves;
-- install starter-pack books from a visible app flow;
+- launch to generic shelves, not empty private-domain shelves;
+- install starter-pack books from a visible app flow and see tiles afterward;
 - open PDF and EPUB documents in new tabs while preserving the library tab;
 - switch shelves instantly on repeated clicks;
 - work with AI disabled and with no `claude` CLI installed;
@@ -149,8 +151,7 @@ should demonstrate this:
 - Public/private boundary: good but needs repeated scanning.
 - Reader functionality: good for early release.
 - Tile UX: promising, not polished.
-- Generality: weak.
+- Generality: improved; remaining fallback taxonomy needs cleanup.
 - Performance proof: weak.
-- Starter-pack integration: incomplete.
+- Starter-pack integration: partial.
 - Release confidence: early alpha, not polished public release.
-

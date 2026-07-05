@@ -15,7 +15,10 @@ mobile/manual/translation tree, and no old Okular config identity.
 - Chrome-style tabs and toolbar in the macOS titlebar.
 - Shell-owned EPUB reader using QtWebEngine.
 - Shell-owned PDF reader using QtPdf/PDFium.
-- Library shelves for local PDFs/EPUBs and catalog-backed corpus rows.
+- Generic library shelves for local PDFs/EPUBs, starter-pack books, and
+  catalog-backed corpus rows.
+- Domain shelves created from local focus manifests, not hard-coded public
+  defaults.
 - Tile-first browsing with generated covers, metadata, reading progress, and
   downranking.
 - Optional local `claude` CLI hooks for metadata and semantic navigation.
@@ -50,7 +53,7 @@ because LaunchServices does not preserve the shell environment.
 ## Tests
 
 ```bash
-ctest --test-dir build --output-on-failure -R '^(shelltest|librarystoretest|libraryautotaggertest|paperlibrarymodeltest|coverheuristictest|covergeneratortest|epubcovertest|epubimportertest|epubreadercorpustest|chromestriptest)$'
+ctest --test-dir build --output-on-failure -R '^(shelltest|librarystoretest|libraryautotaggertest|paperlibrarymodeltest|libraryviewtest|coverheuristictest|covergeneratortest|epubcovertest|epubimportertest|epubreadercorpustest|chromestriptest)$'
 ```
 
 ## Public Domain Starter Pack
@@ -69,8 +72,9 @@ scripts/dev/fetch-public-domain-starter.sh
 
 This downloads Project Gutenberg EPUBs into
 `~/Projects/PaperLibrary/starter-public-domain` by default and writes a
-`catalog.jsonl` for future import/UI wiring. It does not commit book binaries to
-this repository.
+`catalog.jsonl`. PaperLibrary reads that catalog into the Starter Pack shelf
+when the files are present. It does not commit book binaries to this
+repository.
 
 Project Gutenberg records these starter-pack works as public domain in the USA.
 Public-domain status differs by jurisdiction, so release packaging keeps source
@@ -95,6 +99,12 @@ privacy, performance, and release tests live in:
 
 ```text
 docs/public-release-rules.md
+```
+
+The focus-manifest contract for agent-created shelves lives in:
+
+```text
+docs/contracts/focus-manifest-v1.md
 ```
 
 The current readiness audit against those rules lives in:
