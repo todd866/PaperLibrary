@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -197,6 +198,7 @@ private Q_SLOTS:
     void testWorkShelfGeneratedCardsAreVisible();
     void testGeneratedCorpusCoverKeepsSemanticThumbnail();
     void testBooksShelfStaysWithLocalEbooks();
+    void testLocalBookClassificationIgnoresStaleTags();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
     void testCorpusActivationStoresCuratedMetadata();
     void testStarterPackEmptySetupTile();
@@ -481,6 +483,67 @@ void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
 
     shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
+}
+
+void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    auto addBook = [this, &store](const QString &fileName, const QString &title, const QStringList &tags, const QString &description = QString()) {
+        const QString path = m_dir->filePath(fileName);
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("not a real epub; enough for a local fixture path\n");
+        file.close();
+        const QUrl url = QUrl::fromLocalFile(path);
+        store.setTitle(url, title);
+        store.setTags(url, tags);
+        if (!description.isEmpty()) {
+            store.setDescription(url, description);
+        }
+    };
+
+    addBook(QStringLiteral("books/1941 The America That Went To War.epub"), QStringLiteral("1941"), {QStringLiteral("Psychiatry"), QStringLiteral("Book")});
+    addBook(QStringLiteral("books/Master of the Senate.epub"), QStringLiteral("Master of the Senate"), {QStringLiteral("Fiction"), QStringLiteral("Book")});
+    addBook(QStringLiteral("books/A Game Of Thrones.epub"), QStringLiteral("A Game Of Thrones"), {QStringLiteral("Non-fiction"), QStringLiteral("Book")});
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
+    QVERIFY(booksTab >= 0);
+    shelves->setCurrentIndex(booksTab);
+    QTRY_VERIFY(grid->model());
+    QTRY_VERIFY(grid->model()->rowCount() >= 3);
+
+    auto tagsForTitle = [grid](const QString &title) {
+        for (int row = 0; row < grid->model()->rowCount(); ++row) {
+            const QModelIndex index = grid->model()->index(row, 0);
+            if (index.data(Qt::DisplayRole).toString() == title) {
+                return index.data(LibraryView::TagsRole).toStringList();
+            }
+        }
+        return QStringList();
+    };
+
+    const QStringList warTags = tagsForTitle(QStringLiteral("1941"));
+    QVERIFY(warTags.contains(QStringLiteral("Non-fiction")));
+    QVERIFY(warTags.contains(QStringLiteral("Book")));
+    QVERIFY(!warTags.contains(QStringLiteral("Psychiatry")));
+
+    const QStringList caroTags = tagsForTitle(QStringLiteral("Master of the Senate"));
+    QVERIFY(caroTags.contains(QStringLiteral("Politics")));
+    QVERIFY(caroTags.contains(QStringLiteral("Book")));
+    QVERIFY(!caroTags.contains(QStringLiteral("Fiction")));
+
+    const QStringList thronesTags = tagsForTitle(QStringLiteral("A Game Of Thrones"));
+    QVERIFY(thronesTags.contains(QStringLiteral("Fiction")));
+    QVERIFY(thronesTags.contains(QStringLiteral("Book")));
+    QVERIFY(!thronesTags.contains(QStringLiteral("Non-fiction")));
 }
 
 void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()

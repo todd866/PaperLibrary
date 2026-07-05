@@ -163,6 +163,7 @@ private:
     static QString publicationTypeTitle(const ShelfEntry &entry);
     static bool isDocumentShelf(Shelf shelf);
     static QString smartShelfHaystack(const ShelfEntry &entry);
+    static QString smartShelfContentHaystack(const ShelfEntry &entry);
     static bool containsAnyNeedle(const QString &haystack, const QStringList &needles);
     static bool containsAnyWord(const QString &haystack, const QStringList &words);
     static bool isTextbookEntry(const ShelfEntry &entry);

@@ -2495,6 +2495,17 @@ QString LibraryView::smartShelfHaystack(const ShelfEntry &entry)
     return fields.join(QLatin1Char(' ')).toCaseFolded();
 }
 
+QString LibraryView::smartShelfContentHaystack(const ShelfEntry &entry)
+{
+    QStringList fields;
+    fields << entry.title << entry.description << entry.url.fileName();
+    if (entry.url.isLocalFile()) {
+        fields << entry.url.toLocalFile();
+    }
+    fields << entry.detailLines;
+    return fields.join(QLatin1Char(' ')).toCaseFolded();
+}
+
 bool LibraryView::containsAnyNeedle(const QString &haystack, const QStringList &needles)
 {
     return std::any_of(needles.cbegin(), needles.cend(), [&haystack](const QString &needle) {
@@ -2516,10 +2527,7 @@ bool LibraryView::containsAnyWord(const QString &haystack, const QStringList &wo
 
 bool LibraryView::isTextbookEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
-    if (compactPublicationTypeKey(publicationTypeTitle(entry)) == QLatin1String("textbooks")) {
-        return true;
-    }
+    const QString haystack = smartShelfContentHaystack(entry);
     return containsAnyWord(haystack, {QStringLiteral("textbook"), QStringLiteral("textbooks"), QStringLiteral("handbook"), QStringLiteral("manual"), QStringLiteral("atlas")})
         || containsAnyNeedle(haystack,
                              {QStringLiteral("lecture notes"),
@@ -2535,7 +2543,7 @@ bool LibraryView::isTextbookEntry(const ShelfEntry &entry)
 
 bool LibraryView::isMedicineEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return isMndEntry(entry) || isPsychiatryEntry(entry)
         || containsAnyNeedle(haystack,
                              {QStringLiteral("medicine"),
@@ -2561,7 +2569,7 @@ bool LibraryView::isMedicineEntry(const ShelfEntry &entry)
 
 bool LibraryView::isMndEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return containsAnyWord(haystack, {QStringLiteral("mnd"), QStringLiteral("als")})
         || containsAnyNeedle(haystack,
                              {QStringLiteral("motor neurone"),
@@ -2573,7 +2581,7 @@ bool LibraryView::isMndEntry(const ShelfEntry &entry)
 
 bool LibraryView::isPsychiatryEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     if (containsAnyNeedle(haystack,
                           {QStringLiteral("great depression"),
                            QStringLiteral("robert caro"),
@@ -2606,7 +2614,7 @@ bool LibraryView::isPsychiatryEntry(const ShelfEntry &entry)
 
 bool LibraryView::isAnthropologyEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return containsAnyNeedle(haystack,
                              {QStringLiteral("anthropolog"),
                               QStringLiteral("ethnograph"),
@@ -2621,7 +2629,7 @@ bool LibraryView::isAnthropologyEntry(const ShelfEntry &entry)
 
 bool LibraryView::isPoliticsEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return containsAnyNeedle(haystack,
                              {QStringLiteral("politics"),
                               QStringLiteral("political"),
@@ -2643,7 +2651,7 @@ bool LibraryView::isPoliticsEntry(const ShelfEntry &entry)
 
 bool LibraryView::isWorkEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return containsAnyNeedle(haystack,
                              {QStringLiteral("beyond bayes"),
                               QStringLiteral("highdimensional"),
@@ -2660,7 +2668,10 @@ bool LibraryView::isWorkEntry(const ShelfEntry &entry)
 
 bool LibraryView::isFictionEntry(const ShelfEntry &entry)
 {
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
+    if (containsAnyNeedle(haystack, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
+        return false;
+    }
     return containsAnyNeedle(haystack,
                              {QStringLiteral("game of thrones"),
                               QStringLiteral("song of ice and fire"),
@@ -2676,7 +2687,7 @@ bool LibraryView::isNonfictionEntry(const ShelfEntry &entry)
     if (isFictionEntry(entry)) {
         return false;
     }
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     return isAnthropologyEntry(entry) || isPoliticsEntry(entry)
         || containsAnyNeedle(haystack,
                              {QStringLiteral("robert caro"),
@@ -2693,6 +2704,14 @@ bool LibraryView::isNonfictionEntry(const ShelfEntry &entry)
                               QStringLiteral("non-fiction"),
                               QStringLiteral("biography"),
                               QStringLiteral("history"),
+                              QStringLiteral("world war"),
+                              QStringLiteral("went to war"),
+                              QStringLiteral("america that went to war"),
+                              QStringLiteral("conservation"),
+                              QStringLiteral("ecology"),
+                              QStringLiteral("environment"),
+                              QStringLiteral("almanac"),
+                              QStringLiteral("aldo leopold"),
                               QStringLiteral("memoir"),
                               QStringLiteral("essay"),
                               QStringLiteral("science")});
@@ -2700,14 +2719,7 @@ bool LibraryView::isNonfictionEntry(const ShelfEntry &entry)
 
 QString LibraryView::focusTagFor(const ShelfEntry &entry)
 {
-    for (const QString &tag : entry.tags) {
-        const QString trimmed = tag.trimmed();
-        if (!trimmed.isEmpty()) {
-            return trimmed;
-        }
-    }
-
-    const QString haystack = smartShelfHaystack(entry);
+    const QString haystack = smartShelfContentHaystack(entry);
     if (isMndEntry(entry)) {
         return QStringLiteral("MND Project");
     }
@@ -2743,6 +2755,12 @@ QString LibraryView::focusTagFor(const ShelfEntry &entry)
     }
     if (isNonfictionEntry(entry)) {
         return QStringLiteral("Non-fiction");
+    }
+    for (const QString &tag : entry.tags) {
+        const QString trimmed = tag.trimmed();
+        if (!trimmed.isEmpty()) {
+            return trimmed;
+        }
     }
     return publicationTypeTitle(entry);
 }
@@ -2788,7 +2806,8 @@ void LibraryView::enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata 
 
     ShelfEntry probe = entry;
     probe.tags.clear();
-    const QString haystack = smartShelfHaystack(probe);
+    probe.keywords.clear();
+    const QString haystack = smartShelfContentHaystack(probe);
 
     QString focus;
     if (isMndEntry(probe)) {
@@ -2819,17 +2838,63 @@ void LibraryView::enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata 
     } else if (isMedicineEntry(probe)) {
         focus = QStringLiteral("Medicine");
     }
-    if (!focus.isEmpty()) {
-        if (focus == QLatin1String("Politics") || focus == QLatin1String("Anthropology") || focus == QLatin1String("Fiction") || focus == QLatin1String("Non-fiction")) {
-            QStringList filteredTags;
-            for (const QString &tag : std::as_const(tags)) {
-                const QString key = compactPublicationTypeKey(tag);
-                if (key != QLatin1String("psychiatry") && key != QLatin1String("medicine")) {
-                    filteredTags.append(tag);
-                }
-            }
-            tags = filteredTags;
+
+    auto tagSupportedByFocus = [&focus](const QString &tag) {
+        const QString key = compactPublicationTypeKey(tag);
+        if (isPublicationTypeKey(key)) {
+            return true;
         }
+        if (key == QLatin1String("mnd") || key == QLatin1String("mndproject")) {
+            return focus == QLatin1String("MND Project");
+        }
+        if (key == QLatin1String("psychiatry")) {
+            return focus == QLatin1String("Psychiatry");
+        }
+        if (key == QLatin1String("paeds") || key == QLatin1String("paediatrics") || key == QLatin1String("pediatrics")) {
+            return focus == QLatin1String("Paeds");
+        }
+        if (key == QLatin1String("obgyn") || key == QLatin1String("obstetricsgynaecology") || key == QLatin1String("obstetricsgynecology")) {
+            return focus == QLatin1String("OBGYN");
+        }
+        if (key == QLatin1String("medicine")) {
+            return focus == QLatin1String("Medicine") || focus == QLatin1String("MND Project") || focus == QLatin1String("Psychiatry")
+                || focus == QLatin1String("Paeds") || focus == QLatin1String("OBGYN") || focus == QLatin1String("Neuroscience");
+        }
+        if (key == QLatin1String("neuroscience")) {
+            return focus == QLatin1String("Neuroscience") || focus == QLatin1String("MND Project");
+        }
+        if (key == QLatin1String("methodsstatistics") || key == QLatin1String("methods")) {
+            return focus == QLatin1String("Methods & Statistics") || focus == QLatin1String("Beyond Bayes");
+        }
+        if (key == QLatin1String("beyondbayes")) {
+            return focus == QLatin1String("Beyond Bayes");
+        }
+        if (key == QLatin1String("peerreview")) {
+            return focus == QLatin1String("Peer Review");
+        }
+        if (key == QLatin1String("fiction")) {
+            return focus == QLatin1String("Fiction");
+        }
+        if (key == QLatin1String("nonfiction")) {
+            return focus == QLatin1String("Non-fiction") || focus == QLatin1String("Politics") || focus == QLatin1String("Anthropology");
+        }
+        if (key == QLatin1String("politics")) {
+            return focus == QLatin1String("Politics");
+        }
+        if (key == QLatin1String("anthropology")) {
+            return focus == QLatin1String("Anthropology");
+        }
+        return true;
+    };
+    QStringList supportedTags;
+    for (const QString &tag : std::as_const(tags)) {
+        if (tagSupportedByFocus(tag)) {
+            supportedTags.append(tag);
+        }
+    }
+    tags = supportedTags;
+
+    if (!focus.isEmpty()) {
         prependUnique(focus);
     }
 
