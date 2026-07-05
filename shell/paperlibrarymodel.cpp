@@ -2325,17 +2325,7 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         return corpusPriorityHintFor(sourceIndex, text, source, journal);
     }
     if (role == Qt::ToolTipRole) {
-        const QString title = focusRow && !row.title.isEmpty() ? row.title : sourceIndex.data(Qt::DisplayRole).toString();
-        const QString detail = focusRow && !focusDetailText.isEmpty() ? focusDetailText : sourceIndex.data(PaperLibraryModel::DetailRole).toString();
-        const bool inferFocusReason = focusRow && m_smartFilter == Mnd;
-        const QString intent = focusRow && !row.focusReason.isEmpty() && !inferFocusReason ? focusReasonPrimary(row.focusReason)
-                                                                                           : corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
-        const QString relation =
-            focusRow && !row.focusReason.isEmpty() && !inferFocusReason ? focusReasonSecondary(row.focusReason)
-                                                                         : corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
-        const QString priority = focusRow && !row.focusSection.isEmpty() && !inferFocusReason ? row.focusSection : corpusPriorityHintFor(sourceIndex, text, source, journal);
-        const QString tags = QStringList(data(index, TopicTagsRole).toStringList().mid(0, 3)).join(QStringLiteral(" · "));
-        return corpusTileTooltip(title, {detail, priority, intent, relation, tags});
+        return QVariant();
     }
     if (role == KindRole) {
         if (focusRow && !row.focusKind.isEmpty()) {

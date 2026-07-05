@@ -21,9 +21,11 @@
 #include <QDir>
 #include <QEasingCurve>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGraphicsOpacityEffect>
 #include <QImage>
+#include <QItemSelectionModel>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -67,10 +69,10 @@
 #include "paperlibrarymodel.h"
 
 // Tile geometry: comfortable grid metrics around a book-cover sized thumbnail
-static constexpr int TileWidth = 160;
+static constexpr int TileWidth = 172;
 static constexpr int TilePadding = 12;
 static constexpr int CoverWidth = TileWidth - 2 * TilePadding;
-static constexpr int CoverHeight = 170;
+static constexpr int CoverHeight = 178;
 static constexpr int CoverRadius = 6;
 static constexpr int TitleGap = 8;
 static constexpr int TitleLines = 2;
@@ -78,7 +80,7 @@ static constexpr int TagGap = 2;
 static constexpr int ProgressGap = 7;
 static constexpr int ProgressBarHeight = 4;
 static constexpr int GridSpacing = 12;
-static constexpr int CorpusCoverHeight = 144;
+static constexpr int CorpusCoverHeight = 158;
 
 /**
  * Renders cover thumbnails asynchronously through macOS QuickLook
@@ -1729,7 +1731,7 @@ private:
         painter->drawEllipse(QRectF(coverRect.right() - 54, coverRect.top() + 20, 76, 76));
         painter->drawRoundedRect(QRectF(coverRect.left() + 11, coverRect.bottom() - 39, coverRect.width() - 22, 21), 4, 4);
 
-        const QRectF visualRect(coverRect.left() + 13, coverRect.top() + 30, coverRect.width() - 26, 50);
+        const QRectF visualRect(coverRect.left() + 13, coverRect.top() + 31, coverRect.width() - 26, 60);
         QColor visualPanel = palette.color(QPalette::Base);
         visualPanel.setAlphaF(darkMode ? 0.36 : 0.48);
         painter->setBrush(visualPanel);
@@ -1752,8 +1754,8 @@ private:
         titleFont.setPointSizeF(qMax(8.0, titleFont.pointSizeF() * 0.92));
         painter->setFont(titleFont);
         painter->setPen(palette.color(QPalette::Text));
-        const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 3);
-        int y = coverRect.top() + 84;
+        const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 2);
+        int y = coverRect.top() + 96;
         const QFontMetrics titleMetrics(titleFont);
         for (const QString &line : titleLines) {
             painter->drawText(QRect(coverRect.left() + 10, y, coverRect.width() - 20, titleMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
@@ -1766,7 +1768,7 @@ private:
         metaColor.setAlphaF(missing ? 0.36 : 0.56);
         painter->setFont(metaFont);
         painter->setPen(metaColor);
-        const int metaTop = qMax(y + 3, coverRect.bottom() - 36);
+        const int metaTop = qMax(y + 4, coverRect.bottom() - 43);
         QString meta = paperSummary.isEmpty() ? intent : paperSummary;
         if (!priority.isEmpty() && priority != intent && priority != detail) {
             const QString priorityTopic = corpusPaperTopicLabelForKey(priority.toCaseFolded());
@@ -1784,12 +1786,9 @@ private:
             painter->drawText(QRect(coverRect.left() + 10, metaTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 20));
         }
 
-        QString tagRow = papersShelf ? joinCompact({relation, intent}) : paperMetadata;
-        if (tagRow.isEmpty() && !papersShelf) {
-            tagRow = relation;
-        }
+        QString tagRow = paperMetadata;
         if (tagRow.isEmpty()) {
-            tagRow = paperMetadata;
+            tagRow = papersShelf ? joinCompact({relation, intent}) : relation;
         }
         if (tagRow.isEmpty() && !tags.isEmpty()) {
             tagRow = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
@@ -3387,11 +3386,13 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         }
         const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
         if (sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers) {
+            const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
             const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
-            if (!relation.isEmpty()) {
-                return {relation, true};
-            }
             const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+            const QString rationale = joinCompact({paperSummary, relation});
+            if (!rationale.isEmpty()) {
+                return {rationale, true};
+            }
             if (!intent.isEmpty()) {
                 return {intent, true};
             }
@@ -3475,6 +3476,8 @@ void LibraryView::setupPapersShelf()
     // "PDF not local — …"); most of the time it is hidden
     m_paperNotice = new QLabel(this);
     m_paperNotice->setMargin(8);
+    m_paperNotice->setTextFormat(Qt::PlainText);
+    m_paperNotice->setWordWrap(false);
     m_paperNotice->hide();
     m_paperNoticeTimer = new QTimer(this);
     m_paperNoticeTimer->setSingleShot(true);
@@ -3539,6 +3542,7 @@ void LibraryView::renderShelf(Shelf shelf, bool animate)
         configureTileGrid();
         m_grid->scrollToTop();
         delete oldSelection;
+        connectGridSelectionContext();
         ensurePapersFresh();
         showShelfGuide();
         requestCorpusCovers();
@@ -3552,12 +3556,14 @@ void LibraryView::renderShelf(Shelf shelf, bool animate)
         configureTileGrid();
         m_grid->scrollToTop();
         delete oldSelection;
+        connectGridSelectionContext();
         syncViewModeButton(); // the arrangement is a per-shelf choice
         if (m_paperNotice) {
             m_paperNotice->hide();
         }
     }
     selectFirstTile();
+    updateSelectedTileContext(m_grid->currentIndex());
     if (animate) {
         animateGridIn();
     } else if (m_gridFadeAnimation && m_gridFadeEffect) {
@@ -3849,13 +3855,67 @@ void LibraryView::showPaperNotice(const QString &text, bool autoHide)
     chip.setColor(QPalette::WindowText, noticeColor);
     m_paperNotice->setPalette(chip);
     m_paperNotice->setAutoFillBackground(true);
-    m_paperNotice->setText(text);
+    const int availableWidth = m_paperNotice->width() - 20;
+    m_paperNotice->setText(availableWidth > 200 ? QFontMetrics(m_paperNotice->font()).elidedText(text, Qt::ElideRight, availableWidth) : text);
     m_paperNotice->show();
     if (autoHide) {
         m_paperNoticeTimer->start();
     } else {
         m_paperNoticeTimer->stop();
     }
+}
+
+void LibraryView::connectGridSelectionContext()
+{
+    if (m_gridSelectionConnection) {
+        disconnect(m_gridSelectionConnection);
+        m_gridSelectionConnection = {};
+    }
+    if (!m_grid || !m_grid->selectionModel()) {
+        return;
+    }
+    m_gridSelectionConnection = connect(m_grid->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex &current) {
+        updateSelectedTileContext(current);
+    });
+}
+
+void LibraryView::updateSelectedTileContext(const QModelIndex &index)
+{
+    if (!usesCorpusList(activeShelf()) || !m_paperNotice) {
+        if (m_paperNotice) {
+            m_paperNotice->hide();
+        }
+        return;
+    }
+    if (!index.isValid() || isLibraryHeaderIndex(index) || !index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
+        showShelfGuide();
+        return;
+    }
+
+    const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+    const QString metadata = index.data(PaperLibraryModel::DetailRole).toString().trimmed();
+    const QString visualSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
+    const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString().trimmed();
+    const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString().trimmed();
+    const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
+
+    const QString why = joinCompact({visualSummary, relation});
+    QStringList parts;
+    if (!title.isEmpty()) {
+        parts.append(title);
+    }
+    if (!metadata.isEmpty()) {
+        parts.append(metadata);
+    }
+    if (!why.isEmpty()) {
+        parts.append(i18nc("@info selected corpus tile rationale", "Why: %1", why));
+    }
+    const QString queue = joinCompact({intent, priority});
+    if (!queue.isEmpty()) {
+        parts.append(i18nc("@info selected corpus tile queue context", "Queue: %1", queue));
+    }
+
+    showPaperNotice(parts.join(QStringLiteral("  |  ")), false);
 }
 
 QList<QUrl> LibraryView::shelfUrls(Shelf shelf) const

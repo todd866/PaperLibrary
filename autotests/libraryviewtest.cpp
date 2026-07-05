@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QListView>
 #include <QPainter>
 #include <QSignalSpy>
@@ -204,6 +205,7 @@ private Q_SLOTS:
     void testStarterPackEmptySetupTile();
     void testStarterPackInstalledMetadataTooltip();
     void testCorpusShelfPrebuildsBeforeFirstSwitch();
+    void testCorpusSelectionUsesInlineContextNotNativeTooltip();
     void testEmptyCorpusShelfUsesTile();
     void testRapidCorpusShelfSwitchingDoesNotReload();
 
@@ -694,6 +696,35 @@ void LibraryViewTest::testCorpusShelfPrebuildsBeforeFirstSwitch()
     QVERIFY(paperModel);
     QTRY_VERIFY(paperModel->isLoaded());
     QTRY_VERIFY(sectionedModelsContainTitle(&view, QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis")));
+}
+
+void LibraryViewTest::testCorpusSelectionUsesInlineContextNotNativeTooltip()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+
+    const QModelIndex index = grid->model()->index(0, 0);
+    QCOMPARE(index.data(Qt::ToolTipRole).toString(), QString());
+    grid->setCurrentIndex(index);
+
+    QTRY_VERIFY([&view]() {
+        const QList<QLabel *> labels = view.findChildren<QLabel *>();
+        return std::any_of(labels.cbegin(), labels.cend(), [](const QLabel *label) {
+            return !label->isHidden() && label->text().contains(QStringLiteral("Neurofilament Biomarkers")) && label->text().contains(QStringLiteral("Why:"));
+        });
+    }());
 }
 
 void LibraryViewTest::testEmptyCorpusShelfUsesTile()

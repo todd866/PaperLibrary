@@ -94,8 +94,8 @@ public:
      * The caption under a tile: the title for kept page renders and real
      * EPUB covers; for generated cards — which already display the title
      * as the artwork — the stored or OPF description, else the tag line,
-     * else nothing. The full title stays on the tile's tooltip and
-     * accessible name either way.
+     * else nothing. Corpus shelves surface the full title and rationale in
+     * the inline context strip instead of native hover tooltips.
      */
     static TileCaption tileCaption(const QModelIndex &index);
 
@@ -213,6 +213,8 @@ private:
     void applyChromePalette();
     /** Non-modal inline notice over the corpus shelf; auto-hides by default. */
     void showPaperNotice(const QString &text, bool autoHide = true);
+    void connectGridSelectionContext();
+    void updateSelectedTileContext(const QModelIndex &index);
     void tileClicked(const QModelIndex &index);
     void activateCurrentTile();
     void selectFirstTile();
@@ -280,6 +282,7 @@ private:
     int m_configuredGridCorpus = -1;
     QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
     QPropertyAnimation *m_gridFadeAnimation = nullptr;
+    QMetaObject::Connection m_gridSelectionConnection;
     QElapsedTimer m_lastShelfRender;
     int m_pendingShelfIndex = -1;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
