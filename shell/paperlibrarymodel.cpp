@@ -155,6 +155,280 @@ static QString cleanedDisplayTitle(QString title, const QString &path = QString(
     return curatedAfterCleanup.isEmpty() ? title : curatedAfterCleanup;
 }
 
+struct ImportedBookMetadata {
+    QString title;
+    QString authors;
+    QString year;
+};
+
+static bool isBookLikeMetadata(const QString &source, const QString &journal, const QString &title)
+{
+    const QString lower = QStringList({source, journal, title}).join(QLatin1Char(' ')).toCaseFolded();
+    return source.startsWith(QLatin1String("book:")) || source == QLatin1String("aa_book") || journal == QLatin1String("(book)") || lower.contains(QLatin1String("anna"))
+        || lower.contains(QLatin1String("isbn")) || lower.contains(QLatin1String("libgen")) || lower.contains(QLatin1String("pdfdrive"));
+}
+
+static QString cleanImportedBookSegment(QString text)
+{
+    text.replace(QChar(0x2028), QLatin1Char(' '));
+    text.replace(QLatin1Char('_'), QLatin1Char(' '));
+    text.replace(QRegularExpression(QStringLiteral("\\bAnna[’']s Archive\\b"), QRegularExpression::CaseInsensitiveOption), QString());
+    text.replace(QRegularExpression(QStringLiteral("\\[\\s*TRUE\\s+PDF\\s*\\]"), QRegularExpression::CaseInsensitiveOption), QString());
+    text.replace(QRegularExpression(QStringLiteral("\\(\\s*PDF\\s*Drive\\s*\\)"), QRegularExpression::CaseInsensitiveOption), QString());
+    text.replace(QRegularExpression(QStringLiteral("\\blibgen\\.[a-z]+\\b"), QRegularExpression::CaseInsensitiveOption), QString());
+    text.remove(QRegularExpression(QStringLiteral("\\b[0-9a-fA-F]{32}\\b")));
+    text.remove(QRegularExpression(QStringLiteral("\\bisbn(?:13)?\\s*97[89][0-9]{10}\\b"), QRegularExpression::CaseInsensitiveOption));
+    text.remove(QRegularExpression(QStringLiteral("\\b97[89][0-9]{10}\\b")));
+    text.remove(QRegularExpression(QStringLiteral("^\\[[^\\]]+\\]\\s*")));
+    text.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    return text.simplified();
+}
+
+static QString strippedPublisherTail(QString text)
+{
+    static const QRegularExpression yearParen(QStringLiteral("\\s*\\([^)]*(?:19|20)\\d{2}[^)]*\\)\\s*$"));
+    text.remove(yearParen);
+    text.remove(QRegularExpression(QStringLiteral("\\s*\\(Tier\\s+\\d+\\)\\s*$"), QRegularExpression::CaseInsensitiveOption));
+
+    static const QRegularExpression publisherTail(
+        QStringLiteral("\\s+(?:Oxford University Press|Princeton University Press|Cambridge University Press|Yale University Press|State University of New York Press|University of Nebraska Press|"
+                       "MIT Press|The MIT Press|Basic Books|Penguin(?: Random House)?(?: LLC)?|Penguin Press|PublicAffairs|Belknap Press|Melville House|PM Press|"
+                       "Farrar, Straus and Giroux|Knopf Doubleday Publishing Group|McGraw Hill|Elsevier(?:\\s+Health)?|Lippincott Williams & Wilkins|Garland Science|"
+                       "Harper Perennial|Pantheon Books|Plume|Beresta Books|CSIRO Publishing|Sinauer Associates|The Mountaineers|National Outdoor Leadership School|"
+                       "Springer(?: International Publishing)?|Pearson(?: Education(?:, Inc\\.)?)?|W\\. W\\. Norton(?: & Company)?|Wiley|Routledge(?:\\s+CRC)?|CRC Press|"
+                       "Random House|St\\. Martin's Press|Stanford University Press|University of Chicago Press|World Scientific|BenBella Books, Inc\\.|City Lights Publishers|"
+                       "Lightning Source Inc\\.)(?:,?\\s*[^()]{0,80})?$"),
+        QRegularExpression::CaseInsensitiveOption);
+    text.remove(publisherTail);
+    text.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    return text.simplified();
+}
+
+static bool looksLikePersonList(const QString &segment)
+{
+    const QString text = segment.simplified();
+    if (text.isEmpty() || text.size() > 120 || text.contains(QLatin1Char(':'))) {
+        return false;
+    }
+    const QString lower = text.toCaseFolded();
+    if (lower.startsWith(QLatin1String("the ")) || lower.startsWith(QLatin1String("a ")) || lower.startsWith(QLatin1String("an ")) || lower.startsWith(QLatin1String("first "))
+        || lower.startsWith(QLatin1String("textbook ")) || lower.startsWith(QLatin1String("medicine ")) || lower.startsWith(QLatin1String("context "))) {
+        return false;
+    }
+    if (lower.contains(QLatin1String(" the ")) || lower.contains(QLatin1String(" of ")) || lower.contains(QLatin1String(" and "))) {
+        return false;
+    }
+    const QStringList titleNeedles = {QStringLiteral(" edition"),
+                                      QStringLiteral(" press"),
+                                      QStringLiteral(" university"),
+                                      QStringLiteral(" science"),
+                                      QStringLiteral(" medicine"),
+                                      QStringLiteral(" biology"),
+                                      QStringLiteral(" anthropology"),
+                                      QStringLiteral(" physics"),
+                                      QStringLiteral(" anatomy"),
+                                      QStringLiteral(" physiology"),
+                                      QStringLiteral(" pathology"),
+                                      QStringLiteral(" history"),
+                                      QStringLiteral(" culture"),
+                                      QStringLiteral(" communication"),
+                                      QStringLiteral(" fundamentals"),
+                                      QStringLiteral(" principles"),
+                                      QStringLiteral(" handbook"),
+                                      QStringLiteral(" guide"),
+                                      QStringLiteral(" novel")};
+    for (const QString &needle : titleNeedles) {
+        if (lower.contains(needle)) {
+            return false;
+        }
+    }
+    const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() < 2 || words.size() > 18) {
+        return false;
+    }
+    if (lower.endsWith(QLatin1String(" md")) && words.size() <= 8) {
+        return true;
+    }
+    if (text.contains(QLatin1Char(';')) || text.contains(QLatin1Char(','))) {
+        const QString lastCommaSegment = text.section(QLatin1Char(','), -1).simplified();
+        if (lastCommaSegment.split(QLatin1Char(' '), Qt::SkipEmptyParts).size() < 2) {
+            return false;
+        }
+        return true;
+    }
+    int capitalish = 0;
+    for (const QString &word : words) {
+        if (!word.isEmpty() && (word.at(0).isUpper() || word.at(0) == QLatin1Char('&'))) {
+            ++capitalish;
+        }
+    }
+    return capitalish >= words.size() - 1;
+}
+
+static QString firstYearIn(const QString &text)
+{
+    const QRegularExpressionMatch match = QRegularExpression(QStringLiteral("\\b(19|20)\\d{2}\\b")).match(text);
+    return match.hasMatch() ? match.captured(0) : QString();
+}
+
+static bool looksLikeBookTitleRemainder(const QString &segment)
+{
+    const QString text = segment.simplified();
+    if (text.size() < 8) {
+        return false;
+    }
+    const QString lower = text.toCaseFolded();
+    const QString first = text.section(QLatin1Char(' '), 0, 0).toCaseFolded();
+    const QSet<QString> titleStarters = {QStringLiteral("a"),
+                                         QStringLiteral("an"),
+                                         QStringLiteral("the"),
+                                         QStringLiteral("biological"),
+                                         QStringLiteral("competitive"),
+                                         QStringLiteral("cybernetics"),
+                                         QStringLiteral("debt"),
+                                         QStringLiteral("democracy"),
+                                         QStringLiteral("elements"),
+                                         QStringLiteral("end"),
+                                         QStringLiteral("everything"),
+                                         QStringLiteral("free"),
+                                         QStringLiteral("fundamentals"),
+                                         QStringLiteral("handbook"),
+                                         QStringLiteral("historical"),
+                                         QStringLiteral("introduction"),
+                                         QStringLiteral("jaws"),
+                                         QStringLiteral("lawlessness"),
+                                         QStringLiteral("money"),
+                                         QStringLiteral("moral"),
+                                         QStringLiteral("neurocircuitry"),
+                                         QStringLiteral("paleolithic"),
+                                         QStringLiteral("pirate"),
+                                         QStringLiteral("principles"),
+                                         QStringLiteral("scientific"),
+                                         QStringLiteral("systems"),
+                                         QStringLiteral("theory"),
+                                         QStringLiteral("ultrasociety"),
+                                         QStringLiteral("war"),
+                                         QStringLiteral("working")};
+    if (titleStarters.contains(first)) {
+        return true;
+    }
+    if (looksLikePersonList(text.left(80))) {
+        return false;
+    }
+    return lower.contains(QLatin1String(" of ")) || lower.contains(QLatin1String(" and ")) || lower.contains(QLatin1String(" in ")) || lower.contains(QLatin1String(" from "))
+        || lower.contains(QLatin1String(" with ")) || lower.contains(QLatin1String(" without ")) || lower.contains(QLatin1String(" to "));
+}
+
+static bool splitLeadingAuthorTitle(const QString &text, QString *title, QString *authors)
+{
+    const QString cleaned = strippedPublisherTail(text);
+    const QStringList words = cleaned.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() < 5 || words.size() > 34) {
+        return false;
+    }
+
+    int bestCut = -1;
+    int bestScore = -1;
+    const int maxCut = std::min(12, static_cast<int>(words.size()) - 2);
+    for (int cut = 2; cut <= maxCut; ++cut) {
+        const QString leading = words.mid(0, cut).join(QLatin1Char(' '));
+        const QString remainder = words.mid(cut).join(QLatin1Char(' '));
+        if (!looksLikePersonList(leading) || !looksLikeBookTitleRemainder(remainder)) {
+            continue;
+        }
+
+        int score = 0;
+        const QString firstRemainderWord = remainder.section(QLatin1Char(' '), 0, 0).toCaseFolded();
+        if (firstRemainderWord == QLatin1String("the") || firstRemainderWord == QLatin1String("a") || firstRemainderWord == QLatin1String("an")) {
+            score += 4;
+        }
+        if (remainder.contains(QRegularExpression(QStringLiteral("\\b(of|and|in|from|with|without|to)\\b"), QRegularExpression::CaseInsensitiveOption))) {
+            score += 2;
+        }
+        if (leading.contains(QLatin1Char(',')) || leading.contains(QLatin1Char(';'))) {
+            score += 2;
+        }
+        score += leading.count(QRegularExpression(QStringLiteral("\\b[A-Z]\\.\\b")));
+        if (cut >= 3 && words.value(cut - 2).endsWith(QLatin1Char('.'))) {
+            score += 1;
+        }
+        if (score > bestScore || (score == bestScore && cut > bestCut && !remainder.section(QLatin1Char(' '), 0, 0).contains(QLatin1Char('.')))) {
+            bestScore = score;
+            bestCut = cut;
+        }
+    }
+
+    if (bestCut < 0 || bestScore < 2) {
+        return false;
+    }
+    *authors = words.mid(0, bestCut).join(QLatin1Char(' ')).simplified();
+    *title = words.mid(bestCut).join(QLatin1Char(' ')).simplified();
+    return !title->isEmpty() && !authors->isEmpty();
+}
+
+static ImportedBookMetadata importedBookMetadataFromTitle(const QString &rawTitle, const QString &authors, const QString &year, const QString &source, const QString &journal)
+{
+    ImportedBookMetadata metadata;
+    if (!isBookLikeMetadata(source, journal, rawTitle)) {
+        metadata.title = cleanedDisplayTitle(rawTitle, QString(), QStringList({authors, year, journal, source}).join(QLatin1Char(' ')));
+        metadata.authors = authors;
+        metadata.year = year;
+        return metadata;
+    }
+
+    const QString sourceScrubbed = cleanImportedBookSegment(rawTitle);
+    QStringList parts;
+    for (const QString &part : rawTitle.split(QRegularExpression(QStringLiteral("\\s{3,}")), Qt::SkipEmptyParts)) {
+        const QString cleaned = cleanImportedBookSegment(part);
+        if (!cleaned.isEmpty()) {
+            parts.append(cleaned);
+        }
+    }
+
+    QString inferredTitle;
+    QString inferredAuthors;
+    if (parts.size() >= 2) {
+        const QString first = parts.value(0);
+        const QString second = parts.value(1);
+        const QString third = parts.value(2);
+        if (parts.size() >= 3 && !third.contains(QRegularExpression(QStringLiteral("\\d"))) && looksLikePersonList(third) && !looksLikePersonList(second)) {
+            inferredTitle = QStringList({first, second}).join(QStringLiteral(": "));
+            inferredAuthors = third;
+        } else if (first.contains(QRegularExpression(QStringLiteral("^\\d+[a-z]?$"), QRegularExpression::CaseInsensitiveOption))) {
+            inferredTitle = second;
+        } else if (looksLikePersonList(second)) {
+            inferredTitle = first;
+            inferredAuthors = second;
+        } else if (looksLikePersonList(first)) {
+            inferredTitle = second;
+            inferredAuthors = first;
+        } else if (second.contains(QRegularExpression(QStringLiteral("\\b(19|20)\\d{2}\\b"))) && !looksLikePersonList(second)) {
+            inferredTitle = first;
+        } else {
+            inferredTitle = first;
+        }
+    }
+
+    if (inferredTitle.isEmpty()) {
+        inferredTitle = sourceScrubbed;
+    }
+
+    if (inferredAuthors.isEmpty() && authors.isEmpty()) {
+        QString leadingTitle;
+        QString leadingAuthors;
+        if (splitLeadingAuthorTitle(sourceScrubbed, &leadingTitle, &leadingAuthors)) {
+            inferredTitle = leadingTitle;
+            inferredAuthors = leadingAuthors;
+        }
+    }
+
+    inferredTitle = strippedPublisherTail(inferredTitle);
+    metadata.title = cleanedDisplayTitle(inferredTitle, QString(), QStringList({authors, year, journal, source}).join(QLatin1Char(' ')));
+    metadata.authors = authors.isEmpty() ? cleanImportedBookSegment(inferredAuthors) : authors.simplified();
+    metadata.year = year.isEmpty() ? firstYearIn(rawTitle) : year.simplified();
+    return metadata;
+}
+
 static QString derivedPdfPath(const QString &corpusDir, const QString &slug)
 {
     return corpusDir + QStringLiteral("/pdfs/") + slug + QStringLiteral(".pdf");
@@ -1117,7 +1391,10 @@ QList<PaperLibraryModel::Record> PaperLibraryModel::parseCatalog(const QByteArra
         record.year = object.value(QLatin1String("year")).toString();
         record.journal = object.value(QLatin1String("journal")).toString();
         record.source = object.value(QLatin1String("source")).toString();
-        record.title = cleanedDisplayTitle(rawTitle, QString(), QStringList({record.authors, record.year, record.journal, record.source}).join(QLatin1Char(' ')));
+        const ImportedBookMetadata cleanedMetadata = importedBookMetadataFromTitle(rawTitle, record.authors, record.year, record.source, record.journal);
+        record.title = cleanedMetadata.title;
+        record.authors = cleanedMetadata.authors;
+        record.year = cleanedMetadata.year;
         record.addedTs = object.value(QLatin1String("added_ts")).toString();
         record.bytes = static_cast<qint64>(object.value(QLatin1String("bytes")).toDouble());
 

@@ -1234,6 +1234,62 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     parable.journal = QStringLiteral("(book)");
     parable.source = QStringLiteral("book:epub");
 
+    SyntheticRecord noisyPsychBook = gadgetRecord();
+    noisyPsychBook.slug = QStringLiteral("md5-synthetic-noisy-psych-book");
+    noisyPsychBook.title = QStringLiteral("The psychiatric interview    Carlat, Daniel J     Books@Ovid , Fourth edition , 2017    Lippincott Williams & Wilkins Wolters Kluwer    isbn13 9781496327710    18f8cca535c356506ff7a04809905f5c    Anna’s Archive");
+    noisyPsychBook.authors.clear();
+    noisyPsychBook.year.clear();
+    noisyPsychBook.journal = QStringLiteral("(book)");
+    noisyPsychBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord authorTitleBook = gadgetRecord();
+    authorTitleBook.slug = QStringLiteral("md5-synthetic-author-title-book");
+    authorTitleBook.title = QStringLiteral("Susan P. Mattern   The Prince of Medicine  Galen in the Roman Empire (2013, Oxford University Press)   libgen.lc");
+    authorTitleBook.authors.clear();
+    authorTitleBook.year.clear();
+    authorTitleBook.journal = QStringLiteral("(book)");
+    authorTitleBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord commaAuthorBook = gadgetRecord();
+    commaAuthorBook.slug = QStringLiteral("md5-synthetic-comma-author-book");
+    commaAuthorBook.title = QStringLiteral("Craig Stanford, John S. Allen, Susan C. Anton   Biological Anthropology  The Natural History of Humankind, 3rd Edition   (2011, Pearson Education, Inc.)   libgen.lc");
+    commaAuthorBook.authors.clear();
+    commaAuthorBook.year.clear();
+    commaAuthorBook.journal = QStringLiteral("(book)");
+    commaAuthorBook.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord titleSubtitleAuthorBook = gadgetRecord();
+    titleSubtitleAuthorBook.slug = QStringLiteral("md5-synthetic-title-subtitle-author-book");
+    titleSubtitleAuthorBook.title = QStringLiteral("Mad in America   Bad Science, Bad Medicine, and the Enduring Mistreatment of the Mentally Ill    Robert Whitaker    Third trade paperback edition, New York, 2019    Basic Books    isbn13 9780738203850    245fe4fef83fca5ed4146ca49f76d704    Anna’s Archive");
+    titleSubtitleAuthorBook.authors.clear();
+    titleSubtitleAuthorBook.year.clear();
+    titleSubtitleAuthorBook.journal = QStringLiteral("(book)");
+    titleSubtitleAuthorBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord singleSpacedAuthorTitleBook = gadgetRecord();
+    singleSpacedAuthorTitleBook.slug = QStringLiteral("md5-synthetic-single-spaced-author-title-book");
+    singleSpacedAuthorTitleBook.title = QStringLiteral("Richard Wrangham The Goodness Paradox The Strange Relationship Between Virtue and Violence in Human Evolution Pantheon Books (29 Jan 2019)");
+    singleSpacedAuthorTitleBook.authors.clear();
+    singleSpacedAuthorTitleBook.year.clear();
+    singleSpacedAuthorTitleBook.journal = QStringLiteral("(book)");
+    singleSpacedAuthorTitleBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord pathomaStyleBook = gadgetRecord();
+    pathomaStyleBook.slug = QStringLiteral("md5-synthetic-pathoma-style-book");
+    pathomaStyleBook.title = QStringLiteral("Sattar Husain Fundamentals of Pathology (2021)");
+    pathomaStyleBook.authors.clear();
+    pathomaStyleBook.year.clear();
+    pathomaStyleBook.journal = QStringLiteral("(book)");
+    pathomaStyleBook.source = QStringLiteral("book:pdf");
+
+    SyntheticRecord multiAuthorNoCommaBook = gadgetRecord();
+    multiAuthorNoCommaBook.slug = QStringLiteral("md5-synthetic-multi-author-no-comma-book");
+    multiAuthorNoCommaBook.title = QStringLiteral("Thomas M. Cover Joy A. Thomas Elements of Information Theory Wiley (2012)");
+    multiAuthorNoCommaBook.authors.clear();
+    multiAuthorNoCommaBook.year.clear();
+    multiAuthorNoCommaBook.journal = QStringLiteral("(book)");
+    multiAuthorNoCommaBook.source = QStringLiteral("book:epub");
+
     SyntheticRecord dawnCommentary = gadgetRecord();
     dawnCommentary.slug = QStringLiteral("10-9999-synthetic-dawn-commentary");
     dawnCommentary.title = QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything");
@@ -1242,7 +1298,21 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     dawnCommentary.journal = QStringLiteral("Synthetic Cliodynamics");
     dawnCommentary.source = QStringLiteral("imported");
 
-    const QString corpusDir = writeCatalog({warHistory, noisyGraeber, ref13Graeber, sandCounty, parable, dawnCommentary, psychiatryRecord()});
+    const QString corpusDir =
+        writeCatalog({warHistory,
+                      noisyGraeber,
+                      ref13Graeber,
+                      sandCounty,
+                      parable,
+                      noisyPsychBook,
+                      authorTitleBook,
+                      commaAuthorBook,
+                      titleSubtitleAuthorBook,
+                      singleSpacedAuthorTitleBook,
+                      pathomaStyleBook,
+                      multiAuthorNoCommaBook,
+                      dawnCommentary,
+                      psychiatryRecord()});
 
     PaperLibraryModel model;
     QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
@@ -1253,8 +1323,12 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     sections.setSourceModel(&model);
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Psychiatry);
-    QCOMPARE(sections.rowCount(), 1);
-    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry"));
+    QStringList psychiatryTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        psychiatryTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY(psychiatryTitles.contains(QStringLiteral("Major Depression and Suicide Risk in Adolescent Psychiatry")));
+    QVERIFY(psychiatryTitles.contains(QStringLiteral("The psychiatric interview")));
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
     QStringList nonfictionTitles;
@@ -1269,6 +1343,8 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("1941")));
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("ref13 graeber 2011")));
     QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("Anna")));
+    QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("libgen")));
+    QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("978")));
 
     sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
     QStringList fictionTitles;
@@ -1276,6 +1352,53 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
         fictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
     }
     QVERIFY(fictionTitles.contains(QStringLiteral("Parable of the Sower")));
+
+    auto rowForTitle = [&model](const QString &title) {
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.data(model.index(row), Qt::DisplayRole).toString() == title) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const int psychBookRow = rowForTitle(QStringLiteral("The psychiatric interview"));
+    QVERIFY(psychBookRow >= 0);
+    QCOMPARE(model.data(model.index(psychBookRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Carlat, Daniel J"));
+    QCOMPARE(model.data(model.index(psychBookRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2017"));
+
+    const int princeRow = rowForTitle(QStringLiteral("The Prince of Medicine Galen in the Roman Empire"));
+    QStringList allTitles;
+    for (int row = 0; row < model.rowCount(); ++row) {
+        allTitles.append(model.data(model.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY2(princeRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(princeRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Susan P. Mattern"));
+    QCOMPARE(model.data(model.index(princeRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2013"));
+
+    const int anthropologyRow = rowForTitle(QStringLiteral("Biological Anthropology The Natural History of Humankind, 3rd Edition"));
+    QVERIFY2(anthropologyRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(anthropologyRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Craig Stanford, John S. Allen, Susan C. Anton"));
+    QCOMPARE(model.data(model.index(anthropologyRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2011"));
+
+    const int madRow = rowForTitle(QStringLiteral("Mad in America: Bad Science, Bad Medicine, and the Enduring Mistreatment of the Mentally Ill"));
+    QVERIFY2(madRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(madRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Robert Whitaker"));
+    QCOMPARE(model.data(model.index(madRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2019"));
+
+    const int goodnessRow = rowForTitle(QStringLiteral("The Goodness Paradox The Strange Relationship Between Virtue and Violence in Human Evolution"));
+    QVERIFY2(goodnessRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(goodnessRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Richard Wrangham"));
+    QCOMPARE(model.data(model.index(goodnessRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2019"));
+
+    const int pathologyRow = rowForTitle(QStringLiteral("Fundamentals of Pathology"));
+    QVERIFY2(pathologyRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(pathologyRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Sattar Husain"));
+    QCOMPARE(model.data(model.index(pathologyRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2021"));
+
+    const int informationTheoryRow = rowForTitle(QStringLiteral("Elements of Information Theory"));
+    QVERIFY2(informationTheoryRow >= 0, qPrintable(allTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(model.data(model.index(informationTheoryRow), PaperLibraryModel::AuthorsRole).toString(), QStringLiteral("Thomas M. Cover Joy A. Thomas"));
+    QCOMPARE(model.data(model.index(informationTheoryRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2012"));
 }
 
 void PaperLibraryModelTest::testReloadIfChanged()
