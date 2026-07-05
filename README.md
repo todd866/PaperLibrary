@@ -76,6 +76,18 @@ Project Gutenberg records these starter-pack works as public domain in the USA.
 Public-domain status differs by jurisdiction, so release packaging keeps source
 URLs and rights notes with every item.
 
+## Roadmap
+
+- Private web/PWA companion: a Vercel-hosted, authenticated PaperLibrary web
+  reader for phones and tablets, backed by a sanitized sync manifest,
+  reading-position sync, metadata/thumbnails/navigation maps, and private
+  signed document access where the user has the right to store the file.
+- E-ink companion: an experimental reader/sync client for owned e-ink devices,
+  including jailbroken Kindle hardware, focused on PaperLibrary metadata,
+  reading state, and local documents. This is not a DRM-circumvention goal.
+- Sync-first architecture: sync metadata, shelves, navigation, annotations,
+  progress, and user signals before attempting full document streaming.
+
 ## Attribution
 
 PaperLibrary is based on KDE Okular:
