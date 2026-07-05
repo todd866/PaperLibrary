@@ -1286,6 +1286,10 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_searchDebounce->setSingleShot(true);
     m_searchDebounce->setInterval(300);
     connect(m_searchDebounce, &QTimer::timeout, this, &LibraryView::startContentSearch);
+    m_shelfRenderTimer = new QTimer(this);
+    m_shelfRenderTimer->setSingleShot(true);
+    m_shelfRenderTimer->setInterval(45);
+    connect(m_shelfRenderTimer, &QTimer::timeout, this, &LibraryView::renderPendingShelf);
 
     m_openButton = new QPushButton(i18n("Open File…"), this);
     connect(m_openButton, &QPushButton::clicked, this, &LibraryView::openClicked);
@@ -2539,12 +2543,46 @@ void LibraryView::setupPapersShelf()
 
 void LibraryView::shelfChanged(int index)
 {
-    Q_UNUSED(index);
-    const Shelf shelf = activeShelf();
+    m_pendingShelfIndex = index;
+    const Shelf shelf = static_cast<Shelf>(index);
     const bool corpus = usesCorpusList(shelf);
     m_viewModeButton->setVisible(!corpus);
     m_paperSectionButton->setVisible(corpus);
     m_grid->setVisible(true);
+    if (corpus) {
+        syncPaperSectionButton();
+    } else {
+        syncViewModeButton();
+        if (m_paperNotice) {
+            m_paperNotice->hide();
+        }
+    }
+    if (m_corpusCoverWarmupTimer) {
+        m_corpusCoverWarmupTimer->stop();
+    }
+    m_corpusPrewarmActive = false;
+    if (m_shelfRenderTimer) {
+        m_shelfRenderTimer->start();
+    } else {
+        renderPendingShelf();
+    }
+}
+
+void LibraryView::renderPendingShelf()
+{
+    if (m_pendingShelfIndex < PdfShelf || m_pendingShelfIndex > PapersShelf || m_pendingShelfIndex != m_shelfSwitch->currentIndex()) {
+        m_pendingShelfIndex = m_shelfSwitch->currentIndex();
+    }
+    const Shelf shelf = activeShelf();
+    const bool animate = !m_lastShelfRender.isValid() || m_lastShelfRender.elapsed() > 160;
+    m_pendingShelfIndex = -1;
+    renderShelf(shelf, animate);
+    m_lastShelfRender.restart();
+}
+
+void LibraryView::renderShelf(Shelf shelf, bool animate)
+{
+    const bool corpus = usesCorpusList(shelf);
     if (corpus) {
         configureCorpusShelf(shelf);
         PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
@@ -2575,7 +2613,12 @@ void LibraryView::shelfChanged(int index)
         }
     }
     selectFirstTile();
-    animateGridIn();
+    if (animate) {
+        animateGridIn();
+    } else if (m_gridFadeAnimation && m_gridFadeEffect) {
+        m_gridFadeAnimation->stop();
+        m_gridFadeEffect->setOpacity(1.0);
+    }
     if (!searchQuery().isEmpty()) {
         applySearch(); // the content search follows the active shelf
     }

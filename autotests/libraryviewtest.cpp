@@ -191,14 +191,15 @@ void LibraryViewTest::testCorpusShelfModelsPersistAcrossSwitches()
     QAbstractItemModel *mndModel = grid->model();
 
     shelves->setCurrentIndex(LibraryView::WorkShelf);
+    QTRY_VERIFY(grid->model() != mndModel);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
     QAbstractItemModel *workModel = grid->model();
     QVERIFY(workModel != mndModel);
 
     shelves->setCurrentIndex(LibraryView::MndShelf);
-    QCOMPARE(grid->model(), mndModel);
+    QTRY_COMPARE(grid->model(), mndModel);
     shelves->setCurrentIndex(LibraryView::WorkShelf);
-    QCOMPARE(grid->model(), workModel);
+    QTRY_COMPARE(grid->model(), workModel);
 }
 
 void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()

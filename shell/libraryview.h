@@ -8,6 +8,7 @@
 #define PAPERLIBRARY_LIBRARYVIEW_H
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QList>
 #include <QUrl>
@@ -184,6 +185,8 @@ private:
     /** Build the corpus shelf's tab, model and sectioned tile model (corpus present). */
     void setupPapersShelf();
     void shelfChanged(int index);
+    void renderPendingShelf();
+    void renderShelf(Shelf shelf, bool animate);
     bool usesCorpusList(Shelf shelf) const;
     PaperLibrarySectionedModel *paperSectionsForShelf(Shelf shelf) const;
     PaperLibrarySectionedModel *activePaperSections() const;
@@ -242,6 +245,7 @@ private:
     int m_paperSectionModes[DocumentShelfCount + 1] = {};
     QLineEdit *m_searchField;
     QTimer *m_searchDebounce;
+    QTimer *m_shelfRenderTimer = nullptr;
     QProcess *m_contentSearch = nullptr;
     bool m_applyingChromePalette = false;
     bool m_deferInitialRefresh = false;
@@ -265,6 +269,8 @@ private:
     int m_configuredGridCorpus = -1;
     QGraphicsOpacityEffect *m_gridFadeEffect = nullptr;
     QPropertyAnimation *m_gridFadeAnimation = nullptr;
+    QElapsedTimer m_lastShelfRender;
+    int m_pendingShelfIndex = -1;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
 
     // The PaperLibrary corpus shelf; all null when no corpus is configured
