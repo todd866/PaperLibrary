@@ -350,11 +350,11 @@
         if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
             return;
         }
-        if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "PageDown" || event.key === " ") {
             if (turnPage(1)) {
                 event.preventDefault();
             }
-        } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        } else if (event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "PageUp") {
             if (turnPage(-1)) {
                 event.preventDefault();
             }
