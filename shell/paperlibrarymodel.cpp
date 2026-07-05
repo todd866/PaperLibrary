@@ -651,6 +651,32 @@ static QString papersReadNextSectionFor(const QModelIndex &index, const QString 
     return QStringLiteral("Other Papers");
 }
 
+static int papersReadNextSectionLimit(const QString &section)
+{
+    if (section == QLatin1String("Pinned")) {
+        return 7;
+    }
+    if (section == QLatin1String("Continue Reading")) {
+        return 4;
+    }
+    if (section == QLatin1String("Active Work")) {
+        return 5;
+    }
+    if (section == QLatin1String("MND Project")) {
+        return 6;
+    }
+    if (section == QLatin1String("Clinical Rotations") || section == QLatin1String("Methods & Statistics") || section == QLatin1String("Novelty / Adjacent Ideas")) {
+        return 5;
+    }
+    if (section == QLatin1String("Reviews & Guidelines") || section == QLatin1String("Highly Cited") || section == QLatin1String("Recent Additions")) {
+        return 4;
+    }
+    if (section == QLatin1String("Other Papers")) {
+        return 2;
+    }
+    return 6;
+}
+
 static int sectionRank(const QString &section)
 {
     const QStringList order = {
@@ -2221,6 +2247,16 @@ void PaperLibrarySectionedModel::setSectionMode(SectionMode mode)
     rebuild();
 }
 
+PaperLibrarySectionedModel::SmartFilter PaperLibrarySectionedModel::smartFilter() const
+{
+    return m_smartFilter;
+}
+
+PaperLibrarySectionedModel::SectionMode PaperLibrarySectionedModel::sectionMode() const
+{
+    return m_sectionMode;
+}
+
 void PaperLibrarySectionedModel::setQuery(const QString &query)
 {
     const QString folded = query.trimmed().toCaseFolded();
@@ -2841,7 +2877,7 @@ void PaperLibrarySectionedModel::rebuild()
     });
 
     const int maxRows = m_query.isEmpty() ? MaxCorpusFeedRows : MaxCorpusSearchRows;
-    const int maxRowsPerSection = m_query.isEmpty() ? MaxCorpusRowsPerSection : MaxCorpusSearchRows;
+    const int defaultMaxRowsPerSection = m_query.isEmpty() ? MaxCorpusRowsPerSection : MaxCorpusSearchRows;
     for (const QString &section : std::as_const(sectionOrder)) {
         if (m_rows.size() >= maxRows) {
             break;
@@ -2855,6 +2891,7 @@ void PaperLibrarySectionedModel::rebuild()
             }
             return sourceRowLikelyBeforeForShelf(m_source, leftRow, rightRow, m_smartFilter);
         });
+        const int maxRowsPerSection = (m_query.isEmpty() && m_smartFilter == Papers && m_sectionMode == ReadNext) ? papersReadNextSectionLimit(section) : defaultMaxRowsPerSection;
         int rowsFromSection = 0;
         for (const int sourceRow : sourceRowsForSection) {
             if (m_rows.size() >= maxRows || rowsFromSection >= maxRowsPerSection) {

@@ -237,6 +237,8 @@ public:
     void setCoverForPath(const QString &path, const QVariant &cover, bool generated);
     void setDownranked(const QModelIndex &index, bool downranked);
 
+    SmartFilter smartFilter() const;
+    SectionMode sectionMode() const;
     QString resolvePath(const QModelIndex &index) const;
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;

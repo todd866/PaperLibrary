@@ -938,7 +938,7 @@ static QString corpusPaperTopicLabelForKey(const QString &key, const QString &fa
         return QStringLiteral("Care pathway");
     }
     if (corpusPaperKeyContainsAny(key, {QStringLiteral("mnd"), QStringLiteral("als"), QStringLiteral("motor neuron"), QStringLiteral("amyotrophic")})) {
-        return QStringLiteral("ALS / MND frame");
+        return fallback.isEmpty() ? QStringLiteral("ALS / MND frame") : fallback;
     }
     return fallback;
 }
@@ -1263,6 +1263,38 @@ private:
         return corpusPaperKeyForIndex(index);
     }
 
+    static qreal seededUnit(const QString &seed, uint salt)
+    {
+        return (qHash(seed, salt) % 1000) / 999.0;
+    }
+
+    static void drawCorpusFingerprint(QPainter *painter, const QRectF &area, const QString &seed, QColor accent, const QPalette &palette)
+    {
+        QColor faint = palette.color(QPalette::Text);
+        faint.setAlphaF(0.15);
+        accent.setAlphaF(0.48);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+        painter->drawLine(QPointF(area.left(), area.bottom()), QPointF(area.right(), area.bottom()));
+
+        const int barCount = 5;
+        const qreal gap = 4.0;
+        const qreal barWidth = (area.width() - gap * (barCount - 1)) / barCount;
+        for (int i = 0; i < barCount; ++i) {
+            const qreal unit = seededUnit(seed, 37u + i * 19u);
+            const qreal height = 4.0 + unit * (area.height() - 4.0);
+            QRectF bar(area.left() + i * (barWidth + gap), area.bottom() - height, barWidth, height);
+            QColor barColor = (i % 2 == 0) ? accent : faint;
+            barColor.setAlphaF(i % 2 == 0 ? 0.50 : 0.24);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(barColor);
+            painter->drawRoundedRect(bar, 1.6, 1.6);
+        }
+        painter->restore();
+    }
+
     static void drawCorpusMotif(QPainter *painter, const QRectF &area, const QString &key, QColor accent, const QPalette &palette)
     {
         QColor faint = palette.color(QPalette::Text);
@@ -1509,7 +1541,13 @@ private:
 
             QPainterPath axon;
             axon.moveTo(soma);
-            axon.cubicTo(area.left() + area.width() * 0.45, area.top() + area.height() * 0.22, area.left() + area.width() * 0.62, area.top() + area.height() * 0.74, area.right() - 6, area.top() + area.height() * 0.38);
+            const qreal bend = seededUnit(key, 91u) * 10.0 - 5.0;
+            axon.cubicTo(area.left() + area.width() * 0.45,
+                         area.top() + area.height() * 0.22 + bend,
+                         area.left() + area.width() * 0.62,
+                         area.top() + area.height() * 0.74 - bend,
+                         area.right() - 6,
+                         area.top() + area.height() * 0.38);
             painter->drawPath(axon);
             const QList<QLineF> branches = {
                 QLineF(area.left() + area.width() * 0.42, area.top() + area.height() * 0.36, area.left() + area.width() * 0.28, area.top() + area.height() * 0.16),
@@ -1648,6 +1686,8 @@ private:
         const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+        const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
+        const bool papersShelf = sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers;
         const bool missing = index.data(PaperLibraryModel::MissingRole).toBool();
         const QString visualKey = visualKeyForCorpusCard(index);
         const QString paperTopic = corpusPaperTopicLabelForKey(visualKey, !focus.isEmpty() && focus != kind ? focus : kind);
@@ -1689,13 +1729,14 @@ private:
         painter->drawEllipse(QRectF(coverRect.right() - 54, coverRect.top() + 20, 76, 76));
         painter->drawRoundedRect(QRectF(coverRect.left() + 11, coverRect.bottom() - 39, coverRect.width() - 22, 21), 4, 4);
 
-        const QRectF visualRect(coverRect.left() + 14, coverRect.top() + 31, coverRect.width() - 28, 43);
+        const QRectF visualRect(coverRect.left() + 13, coverRect.top() + 30, coverRect.width() - 26, 50);
         QColor visualPanel = palette.color(QPalette::Base);
         visualPanel.setAlphaF(darkMode ? 0.36 : 0.48);
         painter->setBrush(visualPanel);
         painter->setPen(Qt::NoPen);
         painter->drawRoundedRect(visualRect, 5, 5);
-        drawCorpusMotif(painter, visualRect.adjusted(4, 3, -4, -3), visualKey, accent, palette);
+        drawCorpusMotif(painter, visualRect.adjusted(4, 3, -4, -10), visualKey, accent, palette);
+        drawCorpusFingerprint(painter, visualRect.adjusted(9, visualRect.height() - 11, -9, -4), visualKey, accent, palette);
 
         QFont kindFont = smallerFont(option.font);
         kindFont.setBold(true);
@@ -1712,7 +1753,7 @@ private:
         painter->setFont(titleFont);
         painter->setPen(palette.color(QPalette::Text));
         const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 3);
-        int y = coverRect.top() + 80;
+        int y = coverRect.top() + 84;
         const QFontMetrics titleMetrics(titleFont);
         for (const QString &line : titleLines) {
             painter->drawText(QRect(coverRect.left() + 10, y, coverRect.width() - 20, titleMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
@@ -1743,9 +1784,12 @@ private:
             painter->drawText(QRect(coverRect.left() + 10, metaTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 20));
         }
 
-        QString tagRow = paperMetadata;
-        if (tagRow.isEmpty()) {
+        QString tagRow = papersShelf ? joinCompact({relation, intent}) : paperMetadata;
+        if (tagRow.isEmpty() && !papersShelf) {
             tagRow = relation;
+        }
+        if (tagRow.isEmpty()) {
+            tagRow = paperMetadata;
         }
         if (tagRow.isEmpty() && !tags.isEmpty()) {
             tagRow = QStringList(tags.mid(0, 2)).join(QStringLiteral(" · "));
@@ -3340,6 +3384,17 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         const bool generatedCardShowing = index.data(PaperLibrarySectionedModel::GeneratedCoverRole).toBool() && !corpusCover.isNull();
         if (!corpusCover.isNull() && !generatedCardShowing) {
             return {index.data(Qt::DisplayRole).toString(), false};
+        }
+        const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
+        if (sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers) {
+            const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
+            if (!relation.isEmpty()) {
+                return {relation, true};
+            }
+            const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+            if (!intent.isEmpty()) {
+                return {intent, true};
+            }
         }
         const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
         if (!paperSummary.isEmpty()) {

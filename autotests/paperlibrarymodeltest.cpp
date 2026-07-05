@@ -900,7 +900,15 @@ void PaperLibraryModelTest::testPapersShelfSurfacesInterestNoveltyAndEngagement(
     generic.source = QStringLiteral("unpaywall");
     generic.addedTs = QStringLiteral("2026-07-01T00:00:00+00:00");
 
-    const QList<SyntheticRecord> records = {generic, novelty, methods, rotation, mndRecord(), activeWork, engaged};
+    QList<SyntheticRecord> records = {generic, novelty, methods, rotation, mndRecord(), activeWork, engaged};
+    for (int i = 0; i < 10; ++i) {
+        SyntheticRecord extraMnd = mndRecord();
+        extraMnd.slug = QStringLiteral("10-9999-synthetic-extra-mnd-paper-%1").arg(i);
+        extraMnd.doi = QStringLiteral("10.9999/synthetic.extra.mnd.%1").arg(i);
+        extraMnd.title = QStringLiteral("Amyotrophic Lateral Sclerosis Adjacent Cohort Paper %1").arg(i + 1);
+        extraMnd.addedTs = QStringLiteral("2026-01-%1T00:00:00+00:00").arg(10 + i, 2, 10, QLatin1Char('0'));
+        records.append(extraMnd);
+    }
     const QString corpusDir = writeCatalog(records);
     for (const SyntheticRecord &record : records) {
         QVERIFY(!touchFile(QStringLiteral("pdfs/%1.pdf").arg(record.slug)).isEmpty());
@@ -970,6 +978,15 @@ void PaperLibraryModelTest::testPapersShelfSurfacesInterestNoveltyAndEngagement(
     QModelIndex noveltyIndex = sections.index(noveltyRow);
     QCOMPARE(sections.data(noveltyIndex, PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Novel adjacent idea"));
     QCOMPARE(sections.data(noveltyIndex, PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Explore adjacent ideas"));
+
+    int visibleMndPapers = 0;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        const QString title = sections.data(sections.index(row), Qt::DisplayRole).toString();
+        if (title.contains(QStringLiteral("Amyotrophic Lateral Sclerosis")) || title.contains(QStringLiteral("Neurofilament Biomarkers"))) {
+            ++visibleMndPapers;
+        }
+    }
+    QCOMPARE(visibleMndPapers, 6);
 }
 
 void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
