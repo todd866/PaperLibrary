@@ -705,9 +705,6 @@ static QString curatedLocalTitleFor(const QString &text)
         || lower.contains(QLatin1String(".azw3")) || lower.contains(QLatin1String(".mobi")) || lower.contains(QLatin1String("bantam books"))
         || lower.contains(QLatin1String("penguin")) || lower.contains(QLatin1String("melville")) || lower.contains(QLatin1String("farrar"))
         || lower.contains(QLatin1String("mit press")) || lower.contains(QLatin1String("pm press"));
-    if (lower.contains(QLatin1String("1941")) && lower.contains(QLatin1String("america that went to war"))) {
-        return QStringLiteral("1941: The America That Went to War");
-    }
     if (lower.contains(QLatin1String("aldo leopold")) && lower.contains(QLatin1String("sand county almanac"))) {
         return QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation");
     }
@@ -805,6 +802,26 @@ static QString cleanedLocalTitle(QString title, const QUrl &url)
 static QString cleanedFilenameTitle(const QUrl &url)
 {
     return cleanedLocalTitle(QString(), url);
+}
+
+static bool titleNeedsGeneratedMetadata(const QString &title, const QUrl &url)
+{
+    const QString simplified = title.simplified();
+    if (simplified.isEmpty()) {
+        return true;
+    }
+    const QString pathBase = QFileInfo(url.isLocalFile() ? url.toLocalFile() : url.fileName()).completeBaseName().simplified();
+    if (!pathBase.isEmpty() && simplified.compare(pathBase, Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (simplified.contains(QRegularExpression(QStringLiteral("\\b[0-9a-fA-F]{24,}\\b")))) {
+        return true;
+    }
+    if (simplified.contains(QRegularExpression(QStringLiteral("\\b10[-.][0-9]{4,}[-._/A-Za-z0-9]+"), QRegularExpression::CaseInsensitiveOption))) {
+        return true;
+    }
+    const QStringList words = simplified.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    return simplified.size() <= 8 || words.size() <= 2;
 }
 
 static CoverGenerator::CoverSpec corpusCoverSpecForIndex(const QModelIndex &index)
@@ -2325,6 +2342,31 @@ void LibraryView::configureTileGrid()
 
 void LibraryView::refresh()
 {
+    auto persistCorrectedTags = [this](const LibraryStore::Entry &stored, const ShelfEntry &shelfEntry) {
+        if (stored.tags.isEmpty() || stored.tags == shelfEntry.tags) {
+            return;
+        }
+        bool removedStoredTag = false;
+        for (const QString &tag : stored.tags) {
+            const QString key = compactPublicationTypeKey(tag);
+            bool retained = false;
+            for (const QString &candidate : shelfEntry.tags) {
+                if (compactPublicationTypeKey(candidate) == key) {
+                    retained = true;
+                    break;
+                }
+            }
+            if (!retained) {
+                removedStoredTag = true;
+                break;
+            }
+        }
+        if (!removedStoredTag) {
+            return;
+        }
+        m_store->setTags(shelfEntry.url, shelfEntry.tags);
+    };
+
     const QList<LibraryStore::Entry> pdfEntries = m_store->entries({QStringLiteral("pdf")});
     QList<ShelfEntry> pdfs;
     pdfs.reserve(pdfEntries.size());
@@ -2332,7 +2374,9 @@ void LibraryView::refresh()
         // Title precedence: curated store title, else filename sans extension
         const QString title = cleanedLocalTitle(entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title, entry.url);
         ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
+        enrichShelfEntryFromCorpus(shelfEntry);
         enrichShelfEntry(shelfEntry);
+        persistCorrectedTags(entry, shelfEntry);
         pdfs.append(shelfEntry);
     }
 
@@ -2381,7 +2425,9 @@ void LibraryView::refresh()
         }
         ShelfEntry shelfEntry{
             entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB"), {}};
+        enrichShelfEntryFromCorpus(shelfEntry);
         enrichShelfEntry(shelfEntry, metadata);
+        persistCorrectedTags(entry, shelfEntry);
         books.append(shelfEntry);
     }
 
@@ -2401,6 +2447,7 @@ void LibraryView::refresh()
         const EpubCover::Metadata metadata = EpubCover::metadata(book.path);
         ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
         enrichShelfEntry(shelfEntry, &metadata);
+        persistCorrectedTags(stored, shelfEntry);
         booksOnly.append(shelfEntry);
     }
     const auto entryLikelyBefore = [](const ShelfEntry &a, const ShelfEntry &b) {
@@ -2734,6 +2781,12 @@ bool LibraryView::isPsychiatryEntry(const ShelfEntry &entry)
     const QString haystack = smartShelfContentHaystack(entry);
     if (containsAnyNeedle(haystack,
                           {QStringLiteral("great depression"),
+                           QStringLiteral("world war"),
+                           QStringLiteral("america that went to war"),
+                           QStringLiteral("went to war"),
+                           QStringLiteral("submarine warfare"),
+                           QStringLiteral("military history"),
+                           QStringLiteral("wwii"),
                            QStringLiteral("robert caro"),
                            QStringLiteral("robert a. caro"),
                            QStringLiteral("path to power"),
@@ -2748,7 +2801,11 @@ bool LibraryView::isPsychiatryEntry(const ShelfEntry &entry)
     return containsAnyNeedle(haystack,
                              {QStringLiteral("psychiat"),
                               QStringLiteral("mental health"),
-                              QStringLiteral("depression"),
+                              QStringLiteral("clinical depression"),
+                              QStringLiteral("major depression"),
+                              QStringLiteral("major depressive"),
+                              QStringLiteral("depressive disorder"),
+                              QStringLiteral("postpartum depression"),
                               QStringLiteral("anxiety"),
                               QStringLiteral("bipolar"),
                               QStringLiteral("schizophrenia"),
@@ -2917,6 +2974,14 @@ QString LibraryView::focusTagFor(const ShelfEntry &entry)
 
 void LibraryView::enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata *epubMetadata)
 {
+    if (epubMetadata && !epubMetadata->title.isEmpty()) {
+        const QString metadataTitle = cleanedLocalTitle(epubMetadata->title, entry.url);
+        if (!metadataTitle.isEmpty()
+            && (titleNeedsGeneratedMetadata(entry.title, entry.url) || metadataTitle.size() > entry.title.simplified().size() + 8)) {
+            entry.title = metadataTitle;
+        }
+    }
+
     if (entry.description.isEmpty() && epubMetadata && !epubMetadata->description.isEmpty()) {
         entry.description = epubMetadata->description.simplified();
     }
@@ -3540,6 +3605,49 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
     return {QStringList(index.data(TagsRole).toStringList().mid(0, 2)).join(QStringLiteral(" · ")), true};
 }
 
+void LibraryView::enrichShelfEntryFromCorpus(ShelfEntry &entry) const
+{
+    if (!m_paperModel || !m_paperModel->isLoaded() || !entry.url.isLocalFile()) {
+        return;
+    }
+
+    const QString localPath = entry.url.toLocalFile();
+    const QString canonical = QFileInfo(localPath).canonicalFilePath();
+    int row = canonical.isEmpty() ? -1 : m_paperModel->rowForLookupPath(canonical);
+    if (row < 0) {
+        row = m_paperModel->rowForLookupPath(localPath);
+    }
+    if (row < 0) {
+        row = m_paperModel->rowForLookupSlug(QFileInfo(localPath).completeBaseName());
+    }
+    if (row < 0) {
+        return;
+    }
+
+    const QModelIndex index = m_paperModel->index(row, 0);
+    const QString title = index.data(Qt::DisplayRole).toString().simplified();
+    if (!title.isEmpty() && (titleNeedsGeneratedMetadata(entry.title, entry.url) || title.size() > entry.title.simplified().size() + 8)) {
+        entry.title = title;
+    }
+
+    const QString authors = index.data(PaperLibraryModel::AuthorsRole).toString().simplified();
+    const QString year = index.data(PaperLibraryModel::YearRole).toString().simplified();
+    const QString journal = index.data(PaperLibraryModel::JournalRole).toString().simplified();
+    const QString detail = joinCompact({authors, year, journal});
+    if (!detail.isEmpty()) {
+        entry.description = detail;
+        entry.detailLines.append(detail);
+    }
+
+    const QString doi = index.data(PaperLibraryModel::DoiRole).toString().simplified();
+    const QString source = index.data(PaperLibraryModel::SourceRole).toString().simplified();
+    for (const QString &keyword : {authors, year, journal, doi, source}) {
+        if (!keyword.isEmpty() && !entry.keywords.contains(keyword)) {
+            entry.keywords.append(keyword);
+        }
+    }
+}
+
 const EpubCover::Metadata &LibraryView::epubMetadataFor(const QString &filePath)
 {
     auto it = m_epubMetadata.constFind(filePath);
@@ -3577,6 +3685,7 @@ void LibraryView::setupPapersShelf()
         });
     }
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
+        refresh();
         prebuildCorpusShelves();
         showShelfGuide();
         requestCorpusCovers();

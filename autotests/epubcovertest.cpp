@@ -52,6 +52,7 @@ private Q_SLOTS:
     void testContentsEpubFixture();
 
     void testMetadataFromOpf();
+    void testSparseTitlePromotesDescriptionTitle();
     void testMetadataAbsentFieldsAreEmpty();
     void testMetadataOfMissingFileIsEmpty();
     void testDirectoryBundleCoverAndMetadata();
@@ -257,9 +258,37 @@ void EpubCoverTest::testMetadataFromOpf()
     QVERIFY(!path.isEmpty());
 
     const EpubCover::Metadata metadata = EpubCover::metadata(path);
+    QCOMPARE(metadata.title, QStringLiteral("An Uncommonly Good Book"));
     QCOMPARE(metadata.creators, QStringLiteral("Jane Doe, John Q. Smith"));
     QCOMPARE(metadata.year, QStringLiteral("1987"));
     QCOMPARE(metadata.description, QStringLiteral("An uncommonly good book."));
+}
+
+void EpubCoverTest::testSparseTitlePromotesDescriptionTitle()
+{
+    const char *opf = R"(<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>1941</dc:title>
+    <dc:creator>William M. Christie</dc:creator>
+    <dc:date>2016</dc:date>
+    <dc:description>&lt;p&gt;&lt;i&gt;1941: The America That Went to War&lt;/i&gt; presents a detailed history of the United States on the eve of World War II and after the Depression.&lt;/p&gt;</dc:description>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+</package>)";
+    const QString path = writeEpubDir({
+        {QStringLiteral("META-INF/container.xml"), containerXml},
+        {QStringLiteral("OEBPS/content.opf"), opf},
+        {QStringLiteral("OEBPS/content.xhtml"), QByteArrayLiteral("<html/>")},
+    });
+    QVERIFY(!path.isEmpty());
+
+    const EpubCover::Metadata metadata = EpubCover::metadata(path);
+    QCOMPARE(metadata.title, QStringLiteral("1941: The America That Went to War"));
+    QCOMPARE(metadata.creators, QStringLiteral("William M. Christie"));
+    QCOMPARE(metadata.year, QStringLiteral("2016"));
 }
 
 void EpubCoverTest::testMetadataAbsentFieldsAreEmpty()
@@ -279,6 +308,7 @@ void EpubCoverTest::testMetadataAbsentFieldsAreEmpty()
     QVERIFY(!path.isEmpty());
 
     const EpubCover::Metadata metadata = EpubCover::metadata(path);
+    QVERIFY(metadata.title.isEmpty());
     QVERIFY(metadata.creators.isEmpty());
     QVERIFY(metadata.year.isEmpty());
     QVERIFY(metadata.description.isEmpty());
@@ -287,6 +317,7 @@ void EpubCoverTest::testMetadataAbsentFieldsAreEmpty()
 void EpubCoverTest::testMetadataOfMissingFileIsEmpty()
 {
     const EpubCover::Metadata metadata = EpubCover::metadata(m_dir->filePath(QStringLiteral("does-not-exist.epub")));
+    QVERIFY(metadata.title.isEmpty());
     QVERIFY(metadata.creators.isEmpty());
     QVERIFY(metadata.year.isEmpty());
     QVERIFY(metadata.description.isEmpty());
@@ -311,6 +342,7 @@ void EpubCoverTest::testDirectoryBundleCoverAndMetadata()
     QCOMPARE(extracted.pixelColor(0, 0), QColor(30, 200, 90));
 
     const EpubCover::Metadata metadata = EpubCover::metadata(root);
+    QCOMPARE(metadata.title, QStringLiteral("An Uncommonly Good Book"));
     QCOMPARE(metadata.creators, QStringLiteral("Jane Doe, John Q. Smith"));
     QCOMPARE(metadata.year, QStringLiteral("1987"));
     QCOMPARE(metadata.description, QStringLiteral("An uncommonly good book."));

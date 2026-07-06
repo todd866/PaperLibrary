@@ -201,6 +201,7 @@ private Q_SLOTS:
     void testGeneratedCorpusCoverKeepsSemanticThumbnail();
     void testBooksShelfStaysWithLocalEbooks();
     void testLocalBookClassificationIgnoresStaleTags();
+    void testLocalPdfTileUsesCorpusMetadata();
     void testTilesSelectOnClickAndOpenOnDoubleClick();
     void testDraggingTileDownDownranksLocalBook();
     void testCorpusActivationStoresCuratedMetadata();
@@ -506,10 +507,59 @@ void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
             store.setDescription(url, description);
         }
     };
+    auto addEpubBundle = [this, &store](const QString &fileName, const QString &title, const QStringList &tags) {
+        const QString root = m_dir->filePath(fileName);
+        QVERIFY(QDir().mkpath(root + QStringLiteral("/META-INF")));
+        QVERIFY(QDir().mkpath(root + QStringLiteral("/OEBPS")));
 
-    addBook(QStringLiteral("books/1941 The America That Went To War.epub"), QStringLiteral("1941"), {QStringLiteral("Psychiatry"), QStringLiteral("Book")});
-    addBook(QStringLiteral("books/Master of the Senate.epub"), QStringLiteral("Master of the Senate"), {QStringLiteral("Fiction"), QStringLiteral("Book")});
-    addBook(QStringLiteral("books/A Game Of Thrones.epub"), QStringLiteral("A Game Of Thrones"), {QStringLiteral("Non-fiction"), QStringLiteral("Book")});
+        QFile container(root + QStringLiteral("/META-INF/container.xml"));
+        QVERIFY(container.open(QIODevice::WriteOnly));
+        container.write(R"(<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>)");
+        container.close();
+
+        QFile opf(root + QStringLiteral("/OEBPS/content.opf"));
+        QVERIFY(opf.open(QIODevice::WriteOnly));
+        opf.write(R"(<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>1941</dc:title>
+    <dc:creator>William M. Christie</dc:creator>
+    <dc:date>2016</dc:date>
+    <dc:description>&lt;p&gt;&lt;i&gt;1941: The America That Went to War&lt;/i&gt; presents a detailed history of the United States on the eve of World War II, after the Depression.&lt;/p&gt;</dc:description>
+  </metadata>
+  <manifest>
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+</package>)");
+        opf.close();
+
+        QFile content(root + QStringLiteral("/OEBPS/content.xhtml"));
+        QVERIFY(content.open(QIODevice::WriteOnly));
+        content.write("<html/>\n");
+        content.close();
+
+        const QUrl url = QUrl::fromLocalFile(root);
+        store.setTitle(url, title);
+        store.setTags(url, tags);
+    };
+    auto bookUrl = [this](const QString &fileName) {
+        return QUrl::fromLocalFile(m_dir->filePath(fileName));
+    };
+
+    const QString warFile = QStringLiteral("books/1941.epub");
+    const QString caroFile = QStringLiteral("books/Master of the Senate.epub");
+    const QString thronesFile = QStringLiteral("books/A Game Of Thrones.epub");
+    addEpubBundle(warFile, QStringLiteral("1941"), {QStringLiteral("Psychiatry"), QStringLiteral("Book")});
+    addBook(caroFile, QStringLiteral("Master of the Senate"), {QStringLiteral("Fiction"), QStringLiteral("Book")});
+    addBook(thronesFile, QStringLiteral("A Game Of Thrones"), {QStringLiteral("Non-fiction"), QStringLiteral("Book")});
+    const QUrl warUrl = bookUrl(warFile);
+    const QUrl caroUrl = bookUrl(caroFile);
+    const QUrl thronesUrl = bookUrl(thronesFile);
 
     LibraryView view(&store, nullptr, true);
     view.refresh();
@@ -538,16 +588,45 @@ void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
     QVERIFY(warTags.contains(QStringLiteral("Non-fiction")));
     QVERIFY(warTags.contains(QStringLiteral("Book")));
     QVERIFY(!warTags.contains(QStringLiteral("Psychiatry")));
+    QCOMPARE(store.metadata(warUrl).tags, warTags);
 
     const QStringList caroTags = tagsForTitle(QStringLiteral("Master of the Senate"));
     QVERIFY(caroTags.contains(QStringLiteral("Politics")));
     QVERIFY(caroTags.contains(QStringLiteral("Book")));
     QVERIFY(!caroTags.contains(QStringLiteral("Fiction")));
+    QCOMPARE(store.metadata(caroUrl).tags, caroTags);
 
     const QStringList thronesTags = tagsForTitle(QStringLiteral("A Game of Thrones"));
     QVERIFY(thronesTags.contains(QStringLiteral("Fiction")));
     QVERIFY(thronesTags.contains(QStringLiteral("Book")));
     QVERIFY(!thronesTags.contains(QStringLiteral("Non-fiction")));
+    QCOMPARE(store.metadata(thronesUrl).tags, thronesTags);
+}
+
+void LibraryViewTest::testLocalPdfTileUsesCorpusMetadata()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    const QUrl url = QUrl::fromLocalFile(m_dir->filePath(QStringLiteral("pdfs/10-9999-synthetic-mnd-tiles.pdf")));
+    store.recordOpen(url, QDateTime(QDate(2026, 7, 6), QTime(7, 46)));
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QTRY_VERIFY(grid->model());
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+
+    const QModelIndex index = grid->model()->index(0, 0);
+    QTRY_COMPARE(index.data(Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    const QStringList tags = index.data(LibraryView::TagsRole).toStringList();
+    QVERIFY(tags.contains(QStringLiteral("MND Project")));
+    QVERIFY(tags.contains(QStringLiteral("Paper")));
+    QCOMPARE(index.data(LibraryView::DescriptionRole).toString(), QStringLiteral("Casey Clinician · 2026 · Journal of Synthetic Neurology"));
+    QVERIFY(!index.data(Qt::DisplayRole).toString().contains(QStringLiteral("10-9999")));
 }
 
 void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()

@@ -24,6 +24,7 @@ namespace EpubCover
  * Display-only, opaque strings; every field may be empty.
  */
 struct Metadata {
+    QString title;       /**< dc:title, promoted from description when the package title is too sparse */
     QString creators;    /**< dc:creator values joined with ", " */
     QString year;        /**< first plausible 4-digit year in dc:date */
     QString description; /**< dc:description as plain text, HTML stripped */

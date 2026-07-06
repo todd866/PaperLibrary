@@ -189,6 +189,8 @@ private:
     void populate(QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode);
     void populateSections(QStandardItemModel *model, const QList<Section> &sections);
     QStandardItem *makeTileItem(const ShelfEntry &entry);
+    /** Borrow generated metadata from the loaded corpus for local PDFs/books. */
+    void enrichShelfEntryFromCorpus(ShelfEntry &entry) const;
     /** OPF metadata for @p filePath, parsed once per session per book. */
     const EpubCover::Metadata &epubMetadataFor(const QString &filePath);
     /** Build the corpus shelf's tab, model and sectioned tile model (corpus present). */

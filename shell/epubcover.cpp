@@ -227,9 +227,51 @@ QImage extractFrom(const EpubSource &source)
     return QImage::fromData(source.largestImage());
 }
 
+bool sparsePackageTitle(const QString &title)
+{
+    const QString simplified = title.simplified();
+    if (simplified.isEmpty()) {
+        return true;
+    }
+    if (simplified.size() <= 8) {
+        return true;
+    }
+    const QStringList words = simplified.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    return words.size() <= 2 && !simplified.contains(QLatin1Char(':')) && !simplified.contains(QLatin1Char('&'));
+}
+
+QString promotedTitleFromDescription(const QString &packageTitle, const QString &descriptionHtml)
+{
+    const QString base = packageTitle.simplified();
+    if (!sparsePackageTitle(base) || descriptionHtml.isEmpty()) {
+        return QString();
+    }
+
+    static const QRegularExpression emphasizedTitlePattern(QStringLiteral("<\\s*(?:i|em)\\b[^>]*>([^<]{3,180})<\\s*/\\s*(?:i|em)\\s*>"),
+                                                           QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatchIterator matches = emphasizedTitlePattern.globalMatch(descriptionHtml);
+    while (matches.hasNext()) {
+        const QString candidate = QTextDocumentFragment::fromHtml(matches.next().captured(1)).toPlainText().simplified();
+        if (candidate.size() <= base.size() + 4) {
+            continue;
+        }
+        if (base.isEmpty()) {
+            return candidate;
+        }
+        const QString candidateLower = candidate.toCaseFolded();
+        const QString baseLower = base.toCaseFolded();
+        if (candidateLower.startsWith(baseLower + QLatin1Char(':')) || candidateLower.startsWith(baseLower + QStringLiteral(" - "))
+            || candidateLower.startsWith(baseLower + QStringLiteral(" – "))) {
+            return candidate;
+        }
+    }
+    return QString();
+}
+
 EpubCover::Metadata parseMetadata(const QByteArray &opf)
 {
     EpubCover::Metadata metadata;
+    QString title;
     QStringList creators;
     QString date;
     QString description;
@@ -239,7 +281,9 @@ EpubCover::Metadata parseMetadata(const QByteArray &opf)
         if (xml.readNext() != QXmlStreamReader::StartElement) {
             continue;
         }
-        if (xml.name() == QLatin1String("creator")) {
+        if (xml.name() == QLatin1String("title") && title.isEmpty()) {
+            title = xml.readElementText(QXmlStreamReader::IncludeChildElements).trimmed();
+        } else if (xml.name() == QLatin1String("creator")) {
             const QString creator = xml.readElementText(QXmlStreamReader::IncludeChildElements).trimmed();
             if (!creator.isEmpty()) {
                 creators.append(creator);
@@ -251,6 +295,11 @@ EpubCover::Metadata parseMetadata(const QByteArray &opf)
         }
     }
 
+    metadata.title = title.simplified();
+    const QString promotedTitle = promotedTitleFromDescription(metadata.title, description);
+    if (!promotedTitle.isEmpty()) {
+        metadata.title = promotedTitle;
+    }
     metadata.creators = creators.join(QStringLiteral(", "));
 
     // dc:date shapes vary ("1987", "1987-03-01", ISO timestamps): the
