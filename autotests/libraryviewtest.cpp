@@ -632,7 +632,7 @@ void LibraryViewTest::testLocalCorpusPdfPrefersFileRenderOverManifestThumbnail()
              QDir(m_dir->path()).filePath(QStringLiteral("focus/MND/") + thumbnail));
     // The manifest still exposes a thumbnail path, but because the PDF is
     // local the app must not install that decorative asset as the tile cover
-    // ahead of the file-derived QuickLook render.
+    // ahead of the file-derived render.
     const QPixmap cover = index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>();
     if (!cover.isNull()) {
         const QImage image = cover.toImage();
