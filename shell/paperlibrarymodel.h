@@ -225,6 +225,7 @@ public:
         FocusRole,
         ThumbnailSeedRole,
         ThumbnailPathRole,
+        ThumbnailSourceRole,
         ShelfIntentRole,
         RelationHintRole,
         PriorityHintRole,
@@ -271,6 +272,7 @@ private:
         QString focusSection;
         QString focusReason;
         QString focusThumbnailPath;
+        QString focusThumbnailSource;
         QString focusPath;
         int focusOrder = -1;
         double focusScore = 0.0;

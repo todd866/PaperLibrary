@@ -279,6 +279,7 @@ private Q_SLOTS:
     void testWorkShelfGeneratedCardsAreVisible();
     void testWorkShelfGeneratedCardsVaryByDocumentTitle();
     void testLocalCorpusPdfPrefersFileRenderOverManifestThumbnail();
+    void testExtractedCorpusThumbnailOverridesLocalPdfRender();
     void testGeneratedCorpusCoverKeepsSemanticThumbnail();
     void testBooksShelfStaysWithLocalEbooks();
     void testBooksShelfFetchesMoreRowsOnScroll();
@@ -646,6 +647,60 @@ void LibraryViewTest::testLocalCorpusPdfPrefersFileRenderOverManifestThumbnail()
         }
         QVERIFY2(assetPixels < image.width() * image.height() / 4, qPrintable(QString::number(assetPixels)));
     }
+}
+
+void LibraryViewTest::testExtractedCorpusThumbnailOverridesLocalPdfRender()
+{
+    QDir(m_dir->path()).mkpath(QStringLiteral("focus/MND"));
+    const QString thumbnail = writeFocusThumbnail(m_dir->path(), QStringLiteral("MND"), QStringLiteral("mnd-extracted.png"), QColor(220, 78, 42));
+    QVERIFY(!thumbnail.isEmpty());
+
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), QStringLiteral("10-9999-synthetic-mnd-tiles"));
+    object.insert(QStringLiteral("title"), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    object.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    object.insert(QStringLiteral("section"), QStringLiteral("00-current"));
+    object.insert(QStringLiteral("reason"), QStringLiteral("Core project paper; biomarker framing"));
+    object.insert(QStringLiteral("thumbnail"), thumbnail);
+    object.insert(QStringLiteral("thumbnail_source"), QStringLiteral("paperlibrary-file-extracted"));
+    QJsonArray array;
+    array.append(object);
+    QFile manifest(QDir(m_dir->path()).filePath(QStringLiteral("focus/MND/manifest.json")));
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
+    manifest.close();
+
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    PaperLibrarySectionedModel *sections = qobject_cast<PaperLibrarySectionedModel *>(grid->model());
+    QVERIFY(sections);
+    const QModelIndex index = sections->index(0, 0);
+    QCOMPARE(index.data(PaperLibrarySectionedModel::ThumbnailSourceRole).toString(), QStringLiteral("paperlibrary-file-extracted"));
+    QTRY_VERIFY(!index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>().isNull());
+
+    const QImage image = index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>().toImage();
+    int assetPixels = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (pixel.red() > 170 && pixel.green() > 40 && pixel.green() < 120 && pixel.blue() < 80) {
+                ++assetPixels;
+            }
+        }
+    }
+    QVERIFY2(assetPixels > image.width() * image.height() / 3, qPrintable(QString::number(assetPixels)));
 }
 
 void LibraryViewTest::testGeneratedCorpusCoverKeepsSemanticThumbnail()

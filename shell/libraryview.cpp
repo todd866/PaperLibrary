@@ -1016,6 +1016,35 @@ static CoverGenerator::CoverSpec corpusCoverSpecForIndex(const QModelIndex &inde
     return spec;
 }
 
+static bool thumbnailSourceOverridesLocalRender(const QString &source)
+{
+    const QString folded = source.toCaseFolded();
+    if (folded.isEmpty()) {
+        return false;
+    }
+    if (folded.contains(QLatin1String("typographic")) || folded.contains(QLatin1String("semantic"))
+        || folded.contains(QLatin1String("generic")) || folded.contains(QLatin1String("local-generated"))) {
+        return false;
+    }
+    return folded.contains(QLatin1String("file-extracted")) || folded.contains(QLatin1String("pdf-page"))
+        || folded.contains(QLatin1String("figure")) || folded.contains(QLatin1String("manual"))
+        || folded.contains(QLatin1String("curated")) || folded.contains(QLatin1String("corpus-thumbnail"));
+}
+
+static bool installThumbnailCover(PaperLibrarySectionedModel *sections, const QModelIndex &index, const QString &coverKey)
+{
+    const QString thumbnailPath = index.data(PaperLibrarySectionedModel::ThumbnailPathRole).toString();
+    if (thumbnailPath.isEmpty()) {
+        return false;
+    }
+    const QPixmap thumbnail(thumbnailPath);
+    if (thumbnail.isNull()) {
+        return false;
+    }
+    sections->setCoverForPath(coverKey, QVariant::fromValue(thumbnail), false);
+    return true;
+}
+
 /** Word-wraps @p text into at most @p maxLines lines of @p width, eliding the last. */
 static QStringList wrapTitle(const QString &text, const QFont &font, int width, int maxLines)
 {
@@ -4862,8 +4891,9 @@ void LibraryView::requestNextCorpusCoverBatch()
         return;
     }
 
-    // Keep each pass bounded. Local PDFs are rendered from the actual file;
-    // manifest thumbnails are only a fallback for rows without a local file.
+    // Keep each pass bounded. Curated/file-extracted corpus thumbnails are
+    // authoritative; otherwise local PDFs render from the file and manifest
+    // thumbnails remain a fallback for rows without a local file.
     static constexpr int MaxCorpusCoverRequests = 16;
     const int rows = sections->rowCount();
     m_nextCorpusCoverRow = requestCorpusCoversForSections(sections, m_nextCorpusCoverRow, MaxCorpusCoverRequests);
@@ -4893,6 +4923,11 @@ int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sect
         if (coverKey.isEmpty()) {
             continue;
         }
+        const QString thumbnailSource = index.data(PaperLibrarySectionedModel::ThumbnailSourceRole).toString();
+        if (thumbnailSourceOverridesLocalRender(thumbnailSource) && installThumbnailCover(sections, index, coverKey)) {
+            ++requested;
+            continue;
+        }
         const QString pdfPath = sections->resolvePath(index);
         if (!pdfPath.isEmpty()) {
             const CoverGenerator::CoverSpec spec = corpusCoverSpecForIndex(index);
@@ -4905,13 +4940,8 @@ int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sect
             ++requested;
             continue;
         }
-        const QString thumbnailPath = index.data(PaperLibrarySectionedModel::ThumbnailPathRole).toString();
-        if (!thumbnailPath.isEmpty()) {
-            const QPixmap thumbnail(thumbnailPath);
-            if (!thumbnail.isNull()) {
-                sections->setCoverForPath(coverKey, QVariant::fromValue(thumbnail), false);
-                ++requested;
-            }
+        if (installThumbnailCover(sections, index, coverKey)) {
+            ++requested;
         }
     }
     return row;

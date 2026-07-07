@@ -2800,6 +2800,7 @@ struct FocusManifestEntry {
     QString sectionLabel;
     QString focusLink;
     QString thumbnailPath;
+    QString thumbnailSource;
     int order = -1;
     double score = 0.0;
 };
@@ -2951,6 +2952,30 @@ static QString objectThumbnailPath(const QJsonObject &object)
             if (!path.isEmpty()) {
                 return path;
             }
+        }
+    }
+    return QString();
+}
+
+static QString objectThumbnailSource(const QJsonObject &object)
+{
+    const QString direct = object.value(QStringLiteral("thumbnail_source")).toString().trimmed();
+    if (!direct.isEmpty()) {
+        return direct;
+    }
+
+    const QStringList keys = {
+        QStringLiteral("thumbnail"),
+        QStringLiteral("image"),
+    };
+    for (const QString &key : keys) {
+        const QJsonValue value = object.value(key);
+        if (!value.isObject()) {
+            continue;
+        }
+        const QString source = value.toObject().value(QStringLiteral("source")).toString().trimmed();
+        if (!source.isEmpty()) {
+            return source;
         }
     }
     return QString();
@@ -3112,6 +3137,7 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
         entry.sectionLabel = focusSectionLabel(entry.section);
         entry.focusLink = object.value(QLatin1String("focus_link")).toString().trimmed();
         entry.thumbnailPath = focusManifestThumbnailPath(corpusDir, shelfName, object, entry.id);
+        entry.thumbnailSource = objectThumbnailSource(object);
         entry.score = object.value(QLatin1String("score")).toDouble();
         entry.order = order++;
         if (entry.title.isEmpty()) {
@@ -3320,6 +3346,18 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         if (row.sourceRow >= 0 && m_source) {
             const QString slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
             return inferredCorpusThumbnailPath(m_source->corpusDir(), slug);
+        }
+        return QString();
+    }
+    if (role == ThumbnailSourceRole) {
+        if (!row.focusThumbnailPath.isEmpty()) {
+            return row.focusThumbnailSource;
+        }
+        if (row.sourceRow >= 0 && m_source) {
+            const QString slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
+            if (!inferredCorpusThumbnailPath(m_source->corpusDir(), slug).isEmpty()) {
+                return QStringLiteral("paperlibrary-corpus-thumbnail");
+            }
         }
         return QString();
     }
@@ -3795,6 +3833,7 @@ void PaperLibrarySectionedModel::rebuild()
             row.focusSection = entry.sectionLabel;
             row.focusReason = entry.reason;
             row.focusThumbnailPath = entry.thumbnailPath;
+            row.focusThumbnailSource = entry.thumbnailSource;
             row.focusPath = entry.path;
             row.focusOrder = entry.order;
             row.focusScore = entry.score;

@@ -1033,6 +1033,8 @@ void PaperLibraryModelTest::testSectionedModelInfersCorpusThumbnailAssetPath()
 
     QCOMPARE(sections.rowCount(), 1);
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailPathRole).toString(), thumbnail);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailSourceRole).toString(),
+             QStringLiteral("paperlibrary-corpus-thumbnail"));
 }
 
 void PaperLibraryModelTest::testMndPaperTopicInferencePrefersPaperSpecificSignals()
@@ -1270,6 +1272,7 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     curated.insert(QStringLiteral("reason"), QStringLiteral("Beyond Bayes manuscript; Bayesian/FEP literature"));
     curated.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
     curated.insert(QStringLiteral("section"), QStringLiteral("00-beyond-bayes-revision"));
+    curated.insert(QStringLiteral("thumbnail_source"), QStringLiteral("paperlibrary-file-extracted"));
     manifest.append(curated);
 
     QJsonObject loose;
@@ -1333,6 +1336,7 @@ void PaperLibraryModelTest::testFocusManifestInfersThumbnailAssetPath()
     curated.insert(QStringLiteral("reason"), QStringLiteral("Beyond Bayes manuscript; Bayesian/FEP literature"));
     curated.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
     curated.insert(QStringLiteral("section"), QStringLiteral("00-beyond-bayes-revision"));
+    curated.insert(QStringLiteral("thumbnail_source"), QStringLiteral("paperlibrary-file-extracted"));
     QJsonArray manifest;
     manifest.append(curated);
     QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Work/manifest.json")));
@@ -1351,6 +1355,8 @@ void PaperLibraryModelTest::testFocusManifestInfersThumbnailAssetPath()
 
     QCOMPARE(sections.rowCount(), 1);
     QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailPathRole).toString(), thumbnail);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailSourceRole).toString(),
+             QStringLiteral("paperlibrary-file-extracted"));
 }
 
 void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
