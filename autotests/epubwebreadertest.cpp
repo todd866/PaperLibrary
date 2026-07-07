@@ -48,6 +48,7 @@ private Q_SLOTS:
     void testEpub3NavDocument();
     void testWeakNcxUsesInBookContentsLinks();
     void testFallbackNavigationFromSpineHeadings();
+    void testReportedReaderPositionTitle();
 };
 
 void EpubWebReaderTest::testEpub3NavDocument()
@@ -204,6 +205,23 @@ void EpubWebReaderTest::testFallbackNavigationFromSpineHeadings()
     QCOMPARE(inspection.navigation.at(0).spineIndex, 0);
     QCOMPARE(inspection.navigation.at(1).title, QStringLiteral("Title Two"));
     QCOMPARE(inspection.navigation.at(1).spineIndex, 1);
+}
+
+void EpubWebReaderTest::testReportedReaderPositionTitle()
+{
+    const QString title = reportedReaderPositionTitle(1234.6, 7);
+    const ReportedReaderPosition parsed = parseReportedReaderPositionTitle(title);
+    QVERIFY(parsed.valid);
+    QCOMPARE(parsed.scrollOffset, 1235.0);
+
+    const ReportedReaderPosition negative = parseReportedReaderPositionTitle(reportedReaderPositionTitle(-200.0, 8));
+    QVERIFY(negative.valid);
+    QCOMPARE(negative.scrollOffset, 0.0);
+
+    QVERIFY(!parseReportedReaderPositionTitle(QStringLiteral("A Game of Thrones")).valid);
+    QVERIFY(!parseReportedReaderPositionTitle(QStringLiteral("__paperlibrary_epub_position__|abc|123")).valid);
+    QVERIFY(!parseReportedReaderPositionTitle(QStringLiteral("__paperlibrary_epub_position__|9|not-a-number")).valid);
+    QVERIFY(!parseReportedReaderPositionTitle(QStringLiteral("__paperlibrary_epub_position__|9|1000000001")).valid);
 }
 
 QTEST_GUILESS_MAIN(EpubWebReaderTest)

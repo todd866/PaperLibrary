@@ -14,6 +14,7 @@ static const char OPEN_COUNT_KEY[] = "OpenCount";
 static const char LAST_OPENED_KEY[] = "LastOpened"; // msecs since epoch
 static const char PINNED_KEY[] = "Pinned";
 static const char DOWNRANKED_KEY[] = "Downranked";
+static const char FINISHED_READING_KEY[] = "FinishedReading";
 static const char TITLE_KEY[] = "Title";
 static const char TAGS_KEY[] = "Tags";
 static const char DESCRIPTION_KEY[] = "Description";
@@ -86,6 +87,22 @@ void LibraryStore::setDownranked(const QUrl &url, bool downranked)
 bool LibraryStore::isDownranked(const QUrl &url) const
 {
     return libraryGroup().group(entryKey(url)).readEntry(DOWNRANKED_KEY, false);
+}
+
+void LibraryStore::setFinishedReading(const QUrl &url, bool finished)
+{
+    KConfigGroup group = libraryGroup().group(entryKey(url));
+    group.writeEntry(FINISHED_READING_KEY, finished);
+    if (finished) {
+        group.writeEntry(PINNED_KEY, false);
+        group.writeEntry(DOWNRANKED_KEY, false);
+    }
+    m_config->sync();
+}
+
+bool LibraryStore::isFinishedReading(const QUrl &url) const
+{
+    return libraryGroup().group(entryKey(url)).readEntry(FINISHED_READING_KEY, false);
 }
 
 void LibraryStore::writeMetadataEntry(const QUrl &url, const char *key, const QVariant &value)
@@ -165,6 +182,9 @@ QList<LibraryStore::Entry> LibraryStore::entries(const QStringList &suffixFilter
     }
 
     std::sort(result.begin(), result.end(), [](const Entry &a, const Entry &b) {
+        if (a.finishedReading != b.finishedReading) {
+            return !a.finishedReading;
+        }
         if (a.downranked != b.downranked) {
             return !a.downranked;
         }
@@ -193,6 +213,7 @@ LibraryStore::Entry LibraryStore::readEntry(const KConfigGroup &group, const QUr
     }
     entry.pinned = group.readEntry(PINNED_KEY, false);
     entry.downranked = group.readEntry(DOWNRANKED_KEY, false);
+    entry.finishedReading = group.readEntry(FINISHED_READING_KEY, false);
     entry.title = group.readEntry(TITLE_KEY, QString());
     entry.tags = group.readEntry(TAGS_KEY, QStringList());
     entry.description = group.readEntry(DESCRIPTION_KEY, QString());

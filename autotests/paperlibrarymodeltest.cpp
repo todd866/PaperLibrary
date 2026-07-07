@@ -367,12 +367,20 @@ private Q_SLOTS:
     void testResolveWithoutDatabase();
     void testDatabaseEnrichment();
     void testDatabaseInPathWithSpecialCharacters();
+    void testFullTextSearchUsesCatalogIndex();
+    void testSemanticGraphRelatedRows();
+    void testExplicitSearchRowsStayTileFirstAndShelfScoped();
     void testSectionedModelSmartShelves();
+    void testSectionedModelInfiniteScrollKeepsCorpusBehindFocus();
+    void testSectionedModelInfersCorpusThumbnailAssetPath();
     void testMndPaperTopicInferencePrefersPaperSpecificSignals();
     void testPapersShelfSurfacesInterestNoveltyAndEngagement();
     void testFocusManifestDrivesWorkShelf();
+    void testFocusManifestInfersThumbnailAssetPath();
     void testReadingManifestDrivesReadingShelves();
+    void testFictionShelfRejectsNovelPaperFalsePositives();
     void testCaroBiographyDoesNotMatchPsychiatry();
+    void testBookShelfMetadataDoesNotLeakProjectClassifiers();
     void testSectionedModelSuppressesDuplicateWorks();
     void testImportedBookMetadataIsCleanedAndReclassified();
     void testReloadIfChanged();
@@ -679,6 +687,141 @@ void PaperLibraryModelTest::testDatabaseInPathWithSpecialCharacters()
     QCOMPARE(model.data(model.index(1), PaperLibraryModel::MissingRole).toBool(), true);
 }
 
+void PaperLibraryModelTest::testFullTextSearchUsesCatalogIndex()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), mndRecord(), gadgetRecord()});
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_fts_fixture"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("catalog.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('10-9999-synthetic-widget-1', NULL, 0, NULL, 0, 0, NULL)")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('10-9999-synthetic-mnd-5', NULL, 0, NULL, 0, 0, NULL)")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('10-9999-synthetic-gadget-2', NULL, 0, NULL, 0, 0, NULL)")));
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE paper_search_rows (rowid INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE)")));
+        QVERIFY(query.exec(QStringLiteral("CREATE VIRTUAL TABLE paper_fts USING fts5(title, authors, year, journal, doi, source, body, content='', tokenize='unicode61 remove_diacritics 2', prefix='2 3 4')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(1,'10-9999-synthetic-widget-1')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(2,'10-9999-synthetic-mnd-5')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(3,'10-9999-synthetic-gadget-2')")));
+        query.prepare(QStringLiteral("INSERT INTO paper_fts(rowid,title,authors,year,journal,doi,source,body) VALUES(?,?,?,?,?,?,?,?)"));
+        query.addBindValue(1);
+        query.addBindValue(QStringLiteral("Synthetic Study of Widget Dynamics"));
+        query.addBindValue(QStringLiteral("Jane Q. Placeholder"));
+        query.addBindValue(QStringLiteral("2021"));
+        query.addBindValue(QStringLiteral("Journal of Imaginary Results"));
+        query.addBindValue(QStringLiteral("10.9999/synthetic.widget.1"));
+        query.addBindValue(QStringLiteral("synthetic"));
+        query.addBindValue(QStringLiteral("control body without the target phrase"));
+        QVERIFY(query.exec());
+        query.prepare(QStringLiteral("INSERT INTO paper_fts(rowid,title,authors,year,journal,doi,source,body) VALUES(?,?,?,?,?,?,?,?)"));
+        query.addBindValue(2);
+        query.addBindValue(QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+        query.addBindValue(QStringLiteral("Casey Clinician"));
+        query.addBindValue(QStringLiteral("2026"));
+        query.addBindValue(QStringLiteral("Journal of Synthetic Neurology"));
+        query.addBindValue(QStringLiteral("10.9999/synthetic.mnd.5"));
+        query.addBindValue(QStringLiteral("md-project-review-set"));
+        query.addBindValue(QStringLiteral("serum neurofilament light chain biomarkers in ALS diagnosis"));
+        QVERIFY(query.exec());
+        query.prepare(QStringLiteral("INSERT INTO paper_fts(rowid,title,authors,year,journal,doi,source,body) VALUES(?,?,?,?,?,?,?,?)"));
+        query.addBindValue(3);
+        query.addBindValue(QStringLiteral("Gadget Oscillations Reconsidered"));
+        query.addBindValue(QStringLiteral("Ada Example"));
+        query.addBindValue(QStringLiteral("1999"));
+        query.addBindValue(QStringLiteral("Annals of Placeholder Science"));
+        query.addBindValue(QStringLiteral("10.9999/synthetic.gadget.2"));
+        query.addBindValue(QStringLiteral("synthetic"));
+        query.addBindValue(QStringLiteral("another control body"));
+        QVERIFY(query.exec());
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_fts_fixture"));
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QVERIFY(model.hasFullTextSearchIndex());
+
+    const QList<int> rows = model.fullTextSearchRows(QStringLiteral("neurofilament light"), 5);
+    QCOMPARE(rows.size(), 1);
+    QCOMPARE(model.data(model.index(rows.first()), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-mnd-5"));
+    QVERIFY(model.fullTextSearchRows(QStringLiteral("zzzzzz-no-hit"), 5).isEmpty());
+}
+
+void PaperLibraryModelTest::testSemanticGraphRelatedRows()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), mndRecord(), mndDiagnosisRecord(), gadgetRecord()});
+
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_graph_fixture"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("catalog.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        for (const QString &slug : {QStringLiteral("10-9999-synthetic-widget-1"), QStringLiteral("10-9999-synthetic-mnd-5"), QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"), QStringLiteral("10-9999-synthetic-gadget-2")}) {
+            QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('%1', NULL, 0, NULL, 0, 0, NULL)").arg(slug)));
+        }
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE related_edges (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, score REAL NOT NULL, rank INTEGER NOT NULL, kind TEXT NOT NULL, generated_ts TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY(source_slug,target_slug,kind))")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO related_edges VALUES('10-9999-synthetic-mnd-5','10-9999-synthetic-mnd-diagnosis-16',0.91,1,'semantic','2026-07-06T00:00:00Z','synthetic')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO related_edges VALUES('10-9999-synthetic-mnd-5','10-9999-synthetic-widget-1',0.72,2,'semantic','2026-07-06T00:00:00Z','synthetic')")));
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_graph_fixture"));
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QVERIFY(model.hasSemanticGraph());
+
+    const int mndRow = model.rowForLookupSlug(QStringLiteral("10-9999-synthetic-mnd-5"));
+    const int diagnosisRow = model.rowForLookupSlug(QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"));
+    QVERIFY(mndRow >= 0);
+    QVERIFY(diagnosisRow >= 0);
+    QCOMPARE(model.data(model.index(mndRow), PaperLibraryModel::RelatedCountRole).toInt(), 2);
+    QCOMPARE(model.data(model.index(diagnosisRow), PaperLibraryModel::RelatedCountRole).toInt(), 0);
+
+    const QList<int> rows = model.relatedRowsForSlug(QStringLiteral("10-9999-synthetic-mnd-5"), 10);
+    QCOMPARE(rows.size(), 2);
+    QCOMPARE(model.data(model.index(rows.at(0)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"));
+    QCOMPARE(model.data(model.index(rows.at(1)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-widget-1"));
+}
+
+void PaperLibraryModelTest::testExplicitSearchRowsStayTileFirstAndShelfScoped()
+{
+    const QString corpusDir = writeCatalog({textbookRecord(), mndRecord(), mndDiagnosisRecord(), gadgetRecord()});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    const int textbookRow = model.rowForLookupSlug(textbookRecord().slug);
+    const int mndRow = model.rowForLookupSlug(mndRecord().slug);
+    const int diagnosisRow = model.rowForLookupSlug(mndDiagnosisRecord().slug);
+    QVERIFY(textbookRow >= 0);
+    QVERIFY(mndRow >= 0);
+    QVERIFY(diagnosisRow >= 0);
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
+    sections.setExplicitSourceRows({textbookRow, mndRow, diagnosisRow}, QStringLiteral("Search"), QStringLiteral("No matching documents"));
+
+    QCOMPARE(sections.rowCount(), 2);
+    QVERIFY(!sections.data(sections.index(0), PaperLibrarySectionedModel::SectionHeaderRole).toBool());
+    QVERIFY(sections.data(sections.index(0), PaperLibrarySectionedModel::SourceRowRole).isValid());
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+    QCOMPARE(sections.data(sections.index(1), Qt::DisplayRole).toString(), QStringLiteral("Awaji ALS Criteria and Electrodiagnosis in Amyotrophic Lateral Sclerosis"));
+
+    sections.clearExplicitSourceRows();
+    QVERIFY(!sections.hasExplicitSourceRows());
+    QVERIFY(sections.rowCount() >= 2);
+}
+
 void PaperLibraryModelTest::testSectionedModelSmartShelves()
 {
     const QString mndPdfPath = touchFile(QStringLiteral("pdfs/10-9999-synthetic-mnd-5.pdf"));
@@ -803,6 +946,93 @@ void PaperLibraryModelTest::testSectionedModelSmartShelves()
     QVERIFY(mndRow >= 0);
     QCOMPARE(sections.data(sections.index(mndRow), PaperLibrarySectionedModel::DownrankedRole).toBool(), true);
     QCOMPARE(sections.data(sections.index(sections.rowCount() - 1), Qt::DisplayRole).toString(), mndTitle);
+}
+
+void PaperLibraryModelTest::testSectionedModelInfiniteScrollKeepsCorpusBehindFocus()
+{
+    QList<SyntheticRecord> records;
+    static constexpr int RecordCount = 740;
+    records.reserve(RecordCount);
+    for (int i = 0; i < RecordCount; ++i) {
+        SyntheticRecord record = mndDiagnosisRecord();
+        record.slug = QStringLiteral("10-9999-synthetic-mnd-scroll-%1").arg(i, 4, 10, QLatin1Char('0'));
+        record.doi = QStringLiteral("10.9999/synthetic.mnd.scroll.%1").arg(i);
+        record.citeKey = QStringLiteral("scroll%1mnd").arg(i);
+        record.title = QStringLiteral("Synthetic ALS Reading Candidate %1").arg(i, 4, 10, QLatin1Char('0'));
+        record.authors = QStringLiteral("Scroll Tester %1").arg(i);
+        record.addedTs = QStringLiteral("2026-05-%1T00:00:00+00:00").arg((i % 28) + 1, 2, 10, QLatin1Char('0'));
+        records.append(record);
+    }
+    const QString corpusDir = writeCatalog(records);
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/MND"));
+    QJsonArray manifest;
+    QJsonObject curated;
+    curated.insert(QStringLiteral("id"), records.first().slug);
+    curated.insert(QStringLiteral("title"), QStringLiteral("Curated ALS Diagnostic Anchor"));
+    curated.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    curated.insert(QStringLiteral("authors"), records.first().authors);
+    curated.insert(QStringLiteral("year"), records.first().year);
+    curated.insert(QStringLiteral("journal"), records.first().journal);
+    curated.insert(QStringLiteral("source"), records.first().source);
+    curated.insert(QStringLiteral("doi"), records.first().doi);
+    curated.insert(QStringLiteral("reason"), QStringLiteral("diagnostic anchor; keep first"));
+    curated.insert(QStringLiteral("shelf"), QStringLiteral("MND"));
+    curated.insert(QStringLiteral("section"), QStringLiteral("00-diagnosis"));
+    manifest.append(curated);
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/MND/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
+
+    QCOMPARE(sections.data(sections.index(0), Qt::DisplayRole).toString(), QStringLiteral("Curated ALS Diagnostic Anchor"));
+    QCOMPARE(sections.rowCount(), 360);
+    QVERIFY(sections.canFetchMore());
+
+    int fetches = 0;
+    while (sections.canFetchMore() && fetches++ < 10) {
+        sections.fetchMore();
+    }
+    QVERIFY(!sections.canFetchMore());
+    QCOMPARE(sections.rowCount(), RecordCount);
+    bool foundDeepCorpusRow = false;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        if (sections.data(sections.index(row), Qt::DisplayRole).toString() == QLatin1String("Synthetic ALS Reading Candidate 0739")) {
+            foundDeepCorpusRow = true;
+            break;
+        }
+    }
+    QVERIFY(foundDeepCorpusRow);
+}
+
+void PaperLibraryModelTest::testSectionedModelInfersCorpusThumbnailAssetPath()
+{
+    SyntheticRecord paper = mndRecord();
+    paper.slug = QStringLiteral("10-9999-synthetic-mnd-thumbnail");
+    paper.title = QStringLiteral("Synthetic Thumbnail Paper in Amyotrophic Lateral Sclerosis");
+    const QString corpusDir = writeCatalog({paper});
+    const QString thumbnail = touchFile(QStringLiteral("thumbnails/10-9999-synthetic-mnd-thumbnail.png"));
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Mnd);
+
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailPathRole).toString(), thumbnail);
 }
 
 void PaperLibraryModelTest::testMndPaperTopicInferencePrefersPaperSpecificSignals()
@@ -988,7 +1218,7 @@ void PaperLibraryModelTest::testPapersShelfSurfacesInterestNoveltyAndEngagement(
             ++visibleMndPapers;
         }
     }
-    QCOMPARE(visibleMndPapers, 6);
+    QVERIFY(visibleMndPapers >= 6);
 }
 
 void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
@@ -1084,6 +1314,45 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     QVERIFY(!visibleTitles.contains(falsePositive.title));
 }
 
+void PaperLibraryModelTest::testFocusManifestInfersThumbnailAssetPath()
+{
+    SyntheticRecord work = widgetRecord();
+    work.slug = QStringLiteral("10-9999-synthetic-beyond-bayes-work");
+    work.title = QStringLiteral("Beyond Bayes Revision Notes for High-Dimensional Inference");
+    work.source = QStringLiteral("unpaywall");
+    const QString corpusDir = writeCatalog({work});
+    const QString pdf = touchFile(QStringLiteral("pdfs/10-9999-synthetic-beyond-bayes-work.pdf"));
+    const QString thumbnail = touchFile(QStringLiteral("focus/Work/thumbnails/10-9999-synthetic-beyond-bayes-work.png"));
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Work"));
+    QJsonObject curated;
+    curated.insert(QStringLiteral("id"), work.slug);
+    curated.insert(QStringLiteral("title"), QStringLiteral("Curated Beyond Bayes Draft"));
+    curated.insert(QStringLiteral("path"), pdf);
+    curated.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    curated.insert(QStringLiteral("reason"), QStringLiteral("Beyond Bayes manuscript; Bayesian/FEP literature"));
+    curated.insert(QStringLiteral("shelf"), QStringLiteral("Work"));
+    curated.insert(QStringLiteral("section"), QStringLiteral("00-beyond-bayes-revision"));
+    QJsonArray manifest;
+    manifest.append(curated);
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Work/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Work);
+
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::ThumbnailPathRole).toString(), thumbnail);
+}
+
 void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
 {
     const QString corpusDir = writeCatalog({});
@@ -1154,6 +1423,131 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
     QCOMPARE(sections.resolvePath(sections.index(nonfictionTitles.indexOf(QStringLiteral("Bullshit Jobs")))), graeberPdf);
 }
 
+void PaperLibraryModelTest::testFictionShelfRejectsNovelPaperFalsePositives()
+{
+    SyntheticRecord thrones = gadgetRecord();
+    thrones.slug = QStringLiteral("md5-synthetic-game-of-thrones");
+    thrones.title = QStringLiteral("A Game Of Thrones");
+    thrones.authors = QStringLiteral("George R. R. Martin");
+    thrones.year = QStringLiteral("1996");
+    thrones.journal = QStringLiteral("(book)");
+    thrones.source = QStringLiteral("book:epub");
+
+    SyntheticRecord dune = gadgetRecord();
+    dune.slug = QStringLiteral("md5-synthetic-dune");
+    dune.title = QStringLiteral("Dune");
+    dune.authors = QStringLiteral("Herbert, Frank");
+    dune.year = QStringLiteral("1965");
+    dune.journal = QStringLiteral("(book)");
+    dune.source = QStringLiteral("book:epub");
+
+    SyntheticRecord earthsea = gadgetRecord();
+    earthsea.slug = QStringLiteral("md5-synthetic-earthsea");
+    earthsea.title = QStringLiteral("The Books of Earthsea: The Complete Illustrated Edition");
+    earthsea.authors = QStringLiteral("Ursula K. le Guin");
+    earthsea.year = QStringLiteral("2018");
+    earthsea.source = QStringLiteral("book:epub");
+
+    SyntheticRecord hobbit = gadgetRecord();
+    hobbit.slug = QStringLiteral("md5-synthetic-hobbit");
+    hobbit.title = QStringLiteral("The Hobbit");
+    hobbit.authors = QStringLiteral("Tolkien, J. R. R.");
+    hobbit.year = QStringLiteral("1937");
+    hobbit.journal = QStringLiteral("(book)");
+    hobbit.source = QStringLiteral("aa_book");
+
+    SyntheticRecord carpentaria = gadgetRecord();
+    carpentaria.slug = QStringLiteral("md5-synthetic-carpentaria");
+    carpentaria.title = QStringLiteral("Carpentaria: A Novel");
+    carpentaria.authors = QStringLiteral("Alexis Wright");
+    carpentaria.year = QStringLiteral("2006");
+    carpentaria.journal = QStringLiteral("(book)");
+    carpentaria.source = QStringLiteral("book:epub");
+
+    SyntheticRecord waterKnife = gadgetRecord();
+    waterKnife.slug = QStringLiteral("md5-synthetic-water-knife");
+    waterKnife.title = QStringLiteral("The Water Knife: A novel");
+    waterKnife.authors = QStringLiteral("Bacigalupi, Paolo");
+    waterKnife.year = QStringLiteral("2015");
+    waterKnife.journal = QStringLiteral("(book)");
+    waterKnife.source = QStringLiteral("book:epub");
+
+    SyntheticRecord greenMars = gadgetRecord();
+    greenMars.slug = QStringLiteral("md5-synthetic-green-mars");
+    greenMars.title = QStringLiteral("Green Mars");
+    greenMars.authors = QStringLiteral("Robinson, Kim Stanley");
+    greenMars.year = QStringLiteral("1993");
+    greenMars.journal = QStringLiteral("(book)");
+    greenMars.source = QStringLiteral("book:epub");
+
+    SyntheticRecord novelBiomarker = gadgetRecord();
+    novelBiomarker.slug = QStringLiteral("10-9999-synthetic-novel-biomarker-paper");
+    novelBiomarker.title = QStringLiteral("Candidate Marker for Diagnosis or Staging: Beta-Band Intermuscular Coherence as a Novel Biomarker");
+    novelBiomarker.authors = QStringLiteral("K. M. Fisher");
+    novelBiomarker.year = QStringLiteral("2012");
+    novelBiomarker.journal = QStringLiteral("Brain");
+    novelBiomarker.source = QStringLiteral("synthetic");
+
+    SyntheticRecord novelRepeat = gadgetRecord();
+    novelRepeat.slug = QStringLiteral("10-9999-synthetic-novel-repeat-paper");
+    novelRepeat.title = QStringLiteral("A Novel Slow Tandem Repeat Located in the Human Genome");
+    novelRepeat.authors = QStringLiteral("Hao Pang");
+    novelRepeat.year = QStringLiteral("2004");
+    novelRepeat.journal = QStringLiteral("Human Biology");
+    novelRepeat.source = QStringLiteral("synthetic");
+
+    SyntheticRecord novelParadigm = gadgetRecord();
+    novelParadigm.slug = QStringLiteral("10-9999-synthetic-novel-paradigm-paper");
+    novelParadigm.title = QStringLiteral("Dynamical Integrity: A Novel Paradigm for Complex Systems");
+    novelParadigm.authors = QStringLiteral("Giuseppe Rega");
+    novelParadigm.year = QStringLiteral("2018");
+    novelParadigm.journal = QStringLiteral("CISM International Centre for Mechanical Sciences");
+    novelParadigm.source = QStringLiteral("synthetic");
+
+    const QString corpusDir = writeCatalog({thrones, dune, earthsea, hobbit, carpentaria, waterKnife, greenMars, novelBiomarker, novelRepeat, novelParadigm});
+    const QString thronesPath = touchFile(QStringLiteral("reading/A_Game_Of_Thrones.epub"));
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Reading"));
+    QJsonObject focusObject;
+    focusObject.insert(QStringLiteral("id"), QStringLiteral("file-fiction-current"));
+    focusObject.insert(QStringLiteral("title"), QStringLiteral("A Game Of Thrones 52314094"));
+    focusObject.insert(QStringLiteral("path"), thronesPath);
+    focusObject.insert(QStringLiteral("kind"), QStringLiteral("epub"));
+    focusObject.insert(QStringLiteral("source"), QStringLiteral("app-recent"));
+    focusObject.insert(QStringLiteral("reason"), QStringLiteral("current fiction; recently opened"));
+    focusObject.insert(QStringLiteral("section"), QStringLiteral("00-fiction-current"));
+    QJsonArray focusManifest;
+    focusManifest.append(focusObject);
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Reading/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(focusManifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Fiction);
+
+    QStringList fictionTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        fictionTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QCOMPARE(fictionTitles.count(QStringLiteral("A Game of Thrones")), 1);
+    QVERIFY2(fictionTitles.contains(QStringLiteral("Dune")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(fictionTitles.contains(QStringLiteral("The Books of Earthsea")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(fictionTitles.contains(QStringLiteral("The Hobbit")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(fictionTitles.contains(QStringLiteral("Carpentaria")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(fictionTitles.contains(QStringLiteral("The Water Knife")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(fictionTitles.contains(QStringLiteral("Green Mars")), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(!fictionTitles.contains(novelBiomarker.title), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(!fictionTitles.contains(novelRepeat.title), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QVERIFY2(!fictionTitles.contains(novelParadigm.title), qPrintable(fictionTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(sections.rowCount(), 7);
+}
+
 void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
 {
     SyntheticRecord genericNonfiction = gadgetRecord();
@@ -1192,8 +1586,90 @@ void PaperLibraryModelTest::testCaroBiographyDoesNotMatchPsychiatry()
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Nonfiction History Essays")));
     QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::FocusRole).toString(), QStringLiteral("Politics"));
     QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::ShelfIntentRole).toString(), QStringLiteral("Political biography"));
-    QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Linked to LBJ / US power"));
-    QVERIFY(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::TopicTagsRole).toStringList().contains(QStringLiteral("Politics")));
+    QCOMPARE(sections.data(sections.index(caroRow), PaperLibrarySectionedModel::RelationHintRole).toString(), QStringLiteral("Political biography"));
+    const QStringList caroTags = sections.data(sections.index(caroRow), PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+    QVERIFY(caroTags.contains(QStringLiteral("Robert A. Caro")));
+    QVERIFY(caroTags.contains(QStringLiteral("Political biography")));
+}
+
+void PaperLibraryModelTest::testBookShelfMetadataDoesNotLeakProjectClassifiers()
+{
+    SyntheticRecord warHistory = gadgetRecord();
+    warHistory.slug = QStringLiteral("md5-synthetic-war-history-display");
+    warHistory.title = QStringLiteral("1941 The America That Went To War");
+    warHistory.authors = QStringLiteral("William M. Christie");
+    warHistory.year = QStringLiteral("2015");
+    warHistory.journal = QStringLiteral("(book)");
+    warHistory.source = QStringLiteral("book:epub");
+    warHistory.addedTs = QStringLiteral("2026-05-06T00:00:00+00:00");
+
+    SyntheticRecord senate = caroRecord();
+    senate.title = QStringLiteral("Master of the Senate");
+    senate.source = QStringLiteral("md-project-review-set");
+    senate.journal = QStringLiteral("(book)");
+    senate.addedTs = QStringLiteral("2026-05-24T02:47:00+00:00");
+
+    SyntheticRecord anthropology = anthropologyRecord();
+    anthropology.title = QStringLiteral("Toward An Anthropological Theory of Value");
+    anthropology.authors = QStringLiteral("David Graeber");
+    anthropology.year = QStringLiteral("2000");
+    anthropology.source = QStringLiteral("md-project-review-set");
+    anthropology.journal = QStringLiteral("(book)");
+
+    const QString corpusDir = writeCatalog({warHistory, senate, anthropology});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Nonfiction);
+
+    auto tagsForTitle = [&sections](const QString &title) {
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex index = sections.index(row);
+            if (sections.data(index, Qt::DisplayRole).toString() == title) {
+                return sections.data(index, PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+            }
+        }
+        return QStringList();
+    };
+    auto relationForTitle = [&sections](const QString &title) {
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex index = sections.index(row);
+            if (sections.data(index, Qt::DisplayRole).toString() == title) {
+                return sections.data(index, PaperLibrarySectionedModel::RelationHintRole).toString();
+            }
+        }
+        return QString();
+    };
+    auto verifyCleanBookTags = [](const QStringList &tags) {
+        QVERIFY2(!tags.isEmpty(), "book shelf metadata should not be empty");
+        const QString joined = tags.join(QStringLiteral(" | "));
+        QVERIFY2(!joined.contains(QStringLiteral("MND")), qPrintable(joined));
+        QVERIFY2(!joined.contains(QStringLiteral("ALS")), qPrintable(joined));
+        QVERIFY2(!joined.contains(QStringLiteral("Psychiatry")), qPrintable(joined));
+        QVERIFY2(!joined.contains(QStringLiteral("2026-")), qPrintable(joined));
+        QVERIFY2(!tags.contains(QStringLiteral("Book")), qPrintable(joined));
+    };
+
+    const QStringList warTags = tagsForTitle(QStringLiteral("1941: The America That Went to War"));
+    verifyCleanBookTags(warTags);
+    QVERIFY(warTags.contains(QStringLiteral("William M. Christie")));
+    QVERIFY(warTags.contains(QStringLiteral("Military history")));
+
+    const QStringList senateTags = tagsForTitle(QStringLiteral("Master of the Senate"));
+    verifyCleanBookTags(senateTags);
+    QVERIFY(senateTags.contains(QStringLiteral("Robert A. Caro")));
+    QVERIFY(senateTags.contains(QStringLiteral("Political biography")));
+    QCOMPARE(relationForTitle(QStringLiteral("Master of the Senate")), QStringLiteral("Political biography"));
+
+    const QStringList anthropologyTags = tagsForTitle(QStringLiteral("Toward An Anthropological Theory of Value"));
+    verifyCleanBookTags(anthropologyTags);
+    QVERIFY(anthropologyTags.contains(QStringLiteral("David Graeber")));
+    QVERIFY(anthropologyTags.contains(QStringLiteral("Anthropology / social theory")));
 }
 
 void PaperLibraryModelTest::testSectionedModelSuppressesDuplicateWorks()

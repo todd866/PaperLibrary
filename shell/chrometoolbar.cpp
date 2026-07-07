@@ -195,6 +195,7 @@ ChromeToolbar::ChromeToolbar(QWidget *parent)
 
     m_layout->addSpacing(8);
     addActionButton(m_layout, QStringLiteral("edit_find"), QStringLiteral("chrome-search"), QStringLiteral("edit-find"));
+    addActionButton(m_layout, QStringLiteral("pdf_related_papers"), QStringLiteral("chrome-related"), QStringLiteral("view-filter"));
     addActionButton(m_layout, QStringLiteral("pdf_ai_navigation"), QStringLiteral("chrome-ai-navigation"), QStringLiteral("tools-wizard"));
 
     // Overflow "⋮": every remaining useful document action lives in its menu.
@@ -329,6 +330,7 @@ void ChromeToolbar::setPdfView(PdfView *reader, QAction *showSidebarAction)
     setButtonAction(QStringLiteral("view_zoom_out"), m_pdfZoomOutAction);
     setButtonAction(QStringLiteral("view_zoom_in"), m_pdfZoomInAction);
     setButtonAction(QStringLiteral("edit_find"), reader->findAction());
+    setButtonAction(QStringLiteral("pdf_related_papers"), reader->relatedPapersAction());
     setButtonAction(QStringLiteral("pdf_ai_navigation"), reader->aiNavigationAction());
 
     m_layout->insertWidget(m_pageWidgetSlot, m_pdfPageWidget, 0, Qt::AlignVCenter);

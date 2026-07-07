@@ -61,15 +61,21 @@ public:
         FictionShelf = 6,
         NonfictionShelf = 7,
         StarterPackShelf = 8,
-        PapersShelf = 9,
+        FinishedShelf = 9,
+        PapersShelf = 10,
     };
-    static constexpr int DocumentShelfCount = 9;
+    static constexpr int DocumentShelfCount = 10;
 
     /** How a shelf arranges its tiles; persisted per shelf. */
     enum ViewMode {
         FrequentMode = 0, /**< type sections, entries pinned/frequency-ranked within each */
         GenreMode = 1,    /**< legacy config token; user-facing "By Type" */
         FolderMode = 2,   /**< sections by parent folder, shared prefix trimmed */
+    };
+
+    enum CorpusSearchMode {
+        ShelfMetadataSearch = 0,
+        FullTextSearch = 1,
     };
 
     /** Item roles shared by the shelf models and the tile delegate. */
@@ -80,10 +86,13 @@ public:
         ProgressRole,       /**< double 0..1 from Apple Books, -1 when absent */
         HeaderRole,         /**< legacy bool: not emitted for normal shelves */
         FormatRole,         /**< "PDF"/"EPUB", drawn on the cover placeholder */
-        TagsRole,           /**< QStringList; the first two feed the tile's tag row */
+        TagsRole,           /**< QStringList; semantic/sorting tags, including publication type */
+        DisplayTagsRole,    /**< QStringList; concise human metadata painted under the tile */
+        DisplayTitleRole,   /**< reader-facing short tile title; DisplayRole keeps canonical title */
         DescriptionRole,    /**< stored description, else the EPUB's OPF one */
         GeneratedCoverRole, /**< bool: CoverRole holds a generated card, not a render */
         DownrankedRole,     /**< bool: thumbs-down feed signal */
+        FinishedReadingRole,/**< bool: long-form item marked completed by the reader */
     };
 
     /** What the delegate paints under a tile's cover. */
@@ -121,6 +130,12 @@ public:
      */
     void setSearchQuery(const QString &query);
 
+    /** Switch to @p shelf when it is available in this library view. */
+    bool showShelf(Shelf shelf);
+
+    /** Enter adjacent-documents mode for the currently selected corpus tile. */
+    bool showAdjacentDocumentsForCurrentTile();
+
 public Q_SLOTS:
     /**
      * Open @p url. A @p booksProgress in 0..1 asks the shell to jump to
@@ -148,6 +163,7 @@ private:
         QStringList keywords;
         bool pinned = false;
         bool downranked = false;
+        bool finishedReading = false;
         int openCount = 0;
         QDateTime lastOpened;
         double progress = -1.0;
@@ -179,6 +195,8 @@ private:
     static bool isFictionEntry(const ShelfEntry &entry);
     static bool isNonfictionEntry(const ShelfEntry &entry);
     static QString focusTagFor(const ShelfEntry &entry);
+    static QString displaySubjectForTile(const ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
+    static QStringList displayTagsForTile(const ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
     static void enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
     static bool shelfHasReadingProgress(const QList<ShelfEntry> &entries);
     static QList<ShelfEntry> loadStarterPackEntries();
@@ -187,7 +205,11 @@ private:
     void addShelfTab(Shelf shelf, const QString &label);
     int tabIndexForShelf(Shelf shelf) const;
     void populate(QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode);
-    void populateSections(QStandardItemModel *model, const QList<Section> &sections);
+    void populate(Shelf shelf, QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode);
+    void populateSections(Shelf shelf, QStandardItemModel *model, const QList<Section> &sections);
+    QList<ShelfEntry> displayEntriesForShelf(Shelf shelf) const;
+    void appendMoreDocumentShelfRows(Shelf shelf);
+    void maybeFetchMoreRowsForActiveShelf();
     QStandardItem *makeTileItem(const ShelfEntry &entry);
     /** Borrow generated metadata from the loaded corpus for local PDFs/books. */
     void enrichShelfEntryFromCorpus(ShelfEntry &entry) const;
@@ -206,6 +228,13 @@ private:
     void setPaperSectionMode(Shelf shelf, int mode);
     int paperSectionMode(Shelf shelf) const;
     void syncPaperSectionButton();
+    CorpusSearchMode corpusSearchMode() const;
+    void setCorpusSearchMode(CorpusSearchMode mode);
+    void syncCorpusSearchButton();
+    void setCorpusResultMode(const QString &label, const QString &detail = QString());
+    void clearCorpusResultMode();
+    void syncCorpusResultButton();
+    bool clearActiveCorpusResult();
     void showShelfGuide();
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
@@ -222,6 +251,7 @@ private:
     void updateSelectedTileContext(const QModelIndex &index);
     bool downrankTile(const QModelIndex &index);
     void resetTileDrag();
+    bool showAdjacentDocumentsForIndex(const QModelIndex &index);
     void tileClicked(const QModelIndex &index);
     void activateCurrentTile();
     void selectFirstTile();
@@ -258,7 +288,13 @@ private:
     QAction *m_viewModeActions[3];
     QToolButton *m_paperSectionButton = nullptr;
     QAction *m_paperSectionActions[7] = {};
-    ViewMode m_viewModes[DocumentShelfCount] = {FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode, FrequentMode};
+    QToolButton *m_corpusSearchButton = nullptr;
+    QAction *m_corpusSearchActions[2] = {};
+    QToolButton *m_corpusResultButton = nullptr;
+    QString m_corpusResultLabel;
+    QString m_corpusResultDetail;
+    CorpusSearchMode m_corpusSearchMode = ShelfMetadataSearch;
+    ViewMode m_viewModes[DocumentShelfCount] = {};
     int m_paperSectionModes[DocumentShelfCount + 1] = {};
     QLineEdit *m_searchField;
     QTimer *m_searchDebounce;
@@ -280,6 +316,7 @@ private:
     QStandardItemModel *m_fictionModel;
     QStandardItemModel *m_nonfictionModel;
     QStandardItemModel *m_starterPackModel;
+    QStandardItemModel *m_finishedModel;
     CoverLoader *m_coverLoader;
     QTimer *m_corpusCoverWarmupTimer = nullptr;
     int m_nextCorpusCoverRow = 0;
@@ -294,8 +331,11 @@ private:
     QPoint m_tileDragPressPos;
     bool m_tileDragCandidate = false;
     bool m_tileDragArmed = false;
+    bool m_fetchingMoreRows = false;
     QElapsedTimer m_lastShelfRender;
     int m_pendingShelfIndex = -1;
+    int m_documentShelfRowLimit[DocumentShelfCount] = {};
+    QString m_documentShelfQuery;
     QHash<QString, EpubCover::Metadata> m_epubMetadata; // per-session OPF cache
 
     // The PaperLibrary corpus shelf; all null when no corpus is configured

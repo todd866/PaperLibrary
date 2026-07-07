@@ -20,6 +20,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QEasingCurve>
+#include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -38,17 +39,23 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPdfDocument>
+#include <QPdfDocumentRenderOptions>
+#include <QPointer>
 #include <QProcess>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSet>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
 #include <QTabBar>
 #include <QTextLayout>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -71,28 +78,34 @@
 
 // Tile geometry: comfortable grid metrics around a book-cover sized thumbnail
 static constexpr int TileWidth = 172;
+static constexpr int CorpusTileWidth = 226;
 static constexpr int TilePadding = 12;
 static constexpr int CoverWidth = TileWidth - 2 * TilePadding;
+static constexpr int CorpusCoverWidth = CorpusTileWidth - 2 * TilePadding;
 static constexpr int CoverHeight = 178;
 static constexpr int CoverRadius = 6;
 static constexpr int TitleGap = 8;
-static constexpr int TitleLines = 2;
+static constexpr int TitleLines = 3;
+static constexpr int MetadataLines = 2;
 static constexpr int TagGap = 2;
 static constexpr int ProgressGap = 7;
 static constexpr int ProgressBarHeight = 4;
 static constexpr int GridSpacing = 12;
-static constexpr int CorpusCoverHeight = 158;
+static constexpr int CorpusCoverHeight = 198;
 static constexpr int DownrankDragDistance = 48;
+static constexpr int InitialDocumentShelfRows = 96;
+static constexpr int DocumentShelfFetchBatchRows = 96;
+static constexpr int DocumentShelfFetchThresholdPx = 900;
 
 /**
- * Renders cover thumbnails asynchronously through macOS QuickLook
- * (qlmanage ships with the OS) into a disk cache keyed by (path, mtime),
- * at most two renders at a time. EPUBs never go near QuickLook (it hangs
- * on them): their real cover is pulled straight from the archive.
- * Renders the heuristic judges to be mostly-white text pages are
- * discarded for a generated typographic card, as are renders that fail
- * or time out — so on platforms without QuickLook every titled entry
- * still gets a cover. Files that yield neither render nor card are
+ * Renders cover thumbnails asynchronously into a disk cache keyed by
+ * (path, mtime), at most two renders at a time. EPUBs use their embedded
+ * cover; PDFs use QtPdf in-process instead of macOS QuickLook so shelf
+ * warmup does not spawn GUI helper processes. Successful PDF renders are
+ * kept even when they are plain text pages: for papers, the first page is
+ * still a file-derived fingerprint and is more truthful than a synthetic
+ * card. Renders that fail fall back to a generated typographic card.
+ * Files that yield neither render nor card are
  * remembered for the session so they keep their placeholder without a
  * retry storm.
  */
@@ -107,19 +120,15 @@ public:
         , m_cacheDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/library-covers"))
     {
         QDir().mkpath(m_cacheDir);
-#if defined(Q_OS_MACOS)
-        const QString systemQlmanage = QStringLiteral("/usr/bin/qlmanage");
-        m_qlmanage = QFileInfo::exists(systemQlmanage) ? systemQlmanage : QStandardPaths::findExecutable(QStringLiteral("qlmanage"));
-#endif
     }
 
     ~CoverLoader() override
     {
-        const QList<QProcess *> processes = findChildren<QProcess *>();
-        for (QProcess *process : processes) {
-            process->disconnect(this);
-            process->kill();
-            process->waitForFinished(1000);
+        const QList<QThread *> threads = findChildren<QThread *>();
+        for (QThread *thread : threads) {
+            thread->disconnect(this);
+            thread->requestInterruption();
+            thread->wait(1000);
         }
     }
 
@@ -152,16 +161,15 @@ public:
         }
         if (filePath.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) {
             // An epub carries its cover in its own zip: extract it directly
-            // and never involve QuickLook, which hangs forever on EPUBs here
+            // and avoid sending it through the PDF renderer.
             if (m_failed.contains(filePath) || !extractEpubCover(filePath)) {
                 m_failed.insert(filePath); // no embedded image; don't reparse
                 generateTypographic(filePath, spec);
             }
             return;
         }
-        if (m_qlmanage.isEmpty() || m_failed.contains(filePath)) {
-            // No QuickLook on this platform, or it failed on this file
-            // before: straight to the typographic card
+        if (m_failed.contains(filePath)) {
+            // Failed on this file before: straight to the typographic card.
             generateTypographic(filePath, spec);
             return;
         }
@@ -179,13 +187,12 @@ private:
     // every cache key, so bumping it retires all stale artifacts in place —
     // including page renders cached by an older design whose classifier
     // verdicts (or lack of one) no longer hold.
-    static constexpr QLatin1StringView DesignVersion {"tg3"};
+    static constexpr QLatin1StringView DesignVersion {"tg5"};
 
     QString coverPath(const QString &filePath) const
     {
         // Keyed by (design, path, mtime): a changed file re-renders under
         // a new name, and a design bump retires the whole render family.
-        // Only renders that PASSED the classifier are ever stored here.
         const qint64 mtime = QFileInfo(filePath).lastModified().toMSecsSinceEpoch();
         const QByteArray key = QCryptographicHash::hash(QStringLiteral("%1:%2:%3").arg(DesignVersion, filePath).arg(mtime).toUtf8(), QCryptographicHash::Sha1).toHex();
         return m_cacheDir + QStringLiteral("/r-") + DesignVersion + QLatin1Char('-') + QString::fromLatin1(key) + QStringLiteral(".png");
@@ -236,7 +243,7 @@ private:
                 return false;
             }
             if (cover.width() > 512 || cover.height() > 512) {
-                // qlmanage-render sized, so the cache stays small
+                // Match the PDF render cache budget so warmup stays bounded.
                 cover = cover.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
             if (!cover.save(target)) {
@@ -257,83 +264,66 @@ private:
 
     void startRender(const QString &filePath)
     {
-        // Each render gets its own output dir: qlmanage names the thumbnail
-        // after the source file, and basenames may collide across requests
-        const QString outDir = m_cacheDir + QStringLiteral("/render-%1-%2").arg(QCoreApplication::applicationPid()).arg(++m_renderSerial);
-        QDir().mkpath(outDir);
-
         ++m_running;
-        QProcess *process = new QProcess(this);
-        auto finalize = [this, process, filePath, outDir]() {
-            if (process->property("finalized").toBool()) {
-                return;
-            }
-            process->setProperty("finalized", true);
-            process->deleteLater();
-            --m_running;
-            m_pending.remove(filePath);
-            const CoverGenerator::CoverSpec spec = m_specs.take(filePath);
-
-            const QString produced = outDir + QLatin1Char('/') + QFileInfo(filePath).fileName() + QStringLiteral(".png");
-            bool announced = false;
-            if (QFileInfo::exists(produced)) {
-                // The classifier gates the cache: a render only becomes a
-                // cached cover after it has EARNED its place. A mostly-white
-                // text page is replaced by the typographic card up front and
-                // its render never touches the cache — so no future session
-                // can serve a classifier-failing render, whatever it finds
-                // on disk
-                const bool keepRender = CoverHeuristic::analyze(QImage(produced)) == CoverHeuristic::KeepRender;
-                if (!keepRender && generateTypographic(filePath, spec)) {
-                    announced = true; // the card is cached and announced instead
-                } else {
-                    // Keep the render — also the fallback for untitled
-                    // entries whose card cannot be generated
-                    const QString target = coverPath(filePath);
+        const QString target = coverPath(filePath);
+        QPointer<CoverLoader> guard(this);
+        QThread *thread = QThread::create([guard, filePath, target]() {
+            QString readyPath;
+            QPdfDocument document;
+            if (document.load(filePath) == QPdfDocument::Error::None && document.status() == QPdfDocument::Status::Ready && document.pageCount() > 0) {
+                QSizeF pageSize = document.pagePointSize(0);
+                if (pageSize.isEmpty()) {
+                    pageSize = QSizeF(612, 792);
+                }
+                QSize renderSize = pageSize.toSize().scaled(QSize(512, 512), Qt::KeepAspectRatio);
+                renderSize = renderSize.expandedTo(QSize(96, 96));
+                QPdfDocumentRenderOptions options;
+                options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+                const QImage image = document.render(0, renderSize, options);
+                if (!image.isNull()) {
                     QFile::remove(target);
-                    if (QFile::rename(produced, target)) {
-                        Q_EMIT coverReady(filePath, target);
-                        announced = true;
+                    if (image.save(target)) {
+                        readyPath = target;
                     }
                 }
             }
-            QDir(outDir).removeRecursively();
-
-            if (!announced) {
-                // QuickLook could not render it (or timed out): never retry
-                // this session; titled entries get the typographic card
-                m_failed.insert(filePath);
-                generateTypographic(filePath, spec);
-            }
-            startNext();
-        };
-        connect(process, &QProcess::finished, this, finalize);
-        connect(process, &QProcess::errorOccurred, this, [finalize](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                finalize();
+            if (guard) {
+                QMetaObject::invokeMethod(guard, [guard, filePath, readyPath]() {
+                    if (guard) {
+                        guard->finishRender(filePath, readyPath);
+                    }
+                }, Qt::QueuedConnection);
             }
         });
+        thread->setParent(this);
+        thread->setObjectName(QStringLiteral("PaperLibraryPdfCoverRender"));
+        connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start();
+    }
 
-        // QuickLook can stall for a long time (e.g. EPUBs whose extension
-        // never answers, or iCloud files that need downloading first); a
-        // watchdog keeps a hung render from starving the queue
-        QTimer *watchdog = new QTimer(process);
-        watchdog->setSingleShot(true);
-        connect(watchdog, &QTimer::timeout, process, &QProcess::kill); // kill → finished(CrashExit) → finalize
-        watchdog->start(20000);
-
-        process->start(m_qlmanage, {QStringLiteral("-t"), QStringLiteral("-s"), QStringLiteral("512"), QStringLiteral("-o"), outDir, filePath});
+    void finishRender(const QString &filePath, const QString &readyPath)
+    {
+        --m_running;
+        m_pending.remove(filePath);
+        const CoverGenerator::CoverSpec spec = m_specs.take(filePath);
+        if (!readyPath.isEmpty()) {
+            Q_EMIT coverReady(filePath, readyPath);
+        } else {
+            // The file could not be rendered by QtPdf; do not retry this
+            // session. Titled entries get the quiet typographic fallback.
+            m_failed.insert(filePath);
+            generateTypographic(filePath, spec);
+        }
+        startNext();
     }
 
     QWidget *m_host; // supplies the palette for generated cards
     QString m_cacheDir;
-    QString m_qlmanage;
     QStringList m_queue;
     QSet<QString> m_pending;
     QHash<QString, CoverGenerator::CoverSpec> m_specs;
     QSet<QString> m_failed;
     int m_running = 0;
-    int m_renderSerial = 0;
 };
 
 // The per-shelf view mode lives in the PaperLibrary app config.
@@ -365,6 +355,8 @@ static const char *viewModeConfigKey(LibraryView::Shelf shelf)
         return "LibraryViewModeNonfiction";
     case LibraryView::StarterPackShelf:
         return "LibraryViewModeStarterPack";
+    case LibraryView::FinishedShelf:
+        return "LibraryViewModeFinished";
     case LibraryView::PdfShelf:
         return "LibraryViewModeRecent";
     case LibraryView::PapersShelf:
@@ -433,6 +425,7 @@ static const char *paperSectionModeConfigKey(LibraryView::Shelf shelf)
         return "PaperSectionModeNonfiction";
     case LibraryView::PapersShelf:
         return "PaperSectionModePapers";
+    case LibraryView::FinishedShelf:
     case LibraryView::StarterPackShelf:
     case LibraryView::PdfShelf:
         break;
@@ -453,6 +446,7 @@ static int defaultPaperSectionModeForShelf(LibraryView::Shelf shelf)
     case LibraryView::MndShelf:
     case LibraryView::FictionShelf:
     case LibraryView::PapersShelf:
+    case LibraryView::FinishedShelf:
     case LibraryView::StarterPackShelf:
     case LibraryView::PdfShelf:
         break;
@@ -477,6 +471,7 @@ static PaperLibrarySectionedModel::SmartFilter paperFilterForShelf(LibraryView::
         return PaperLibrarySectionedModel::Nonfiction;
     case LibraryView::PapersShelf:
     case LibraryView::StarterPackShelf:
+    case LibraryView::FinishedShelf:
     case LibraryView::BooksShelf:
     case LibraryView::PdfShelf:
         break;
@@ -531,56 +526,23 @@ static int paperSectionModeFromName(const QString &name, int fallback)
     return fallback;
 }
 
-static QString corpusShelfGuide(LibraryView::Shelf shelf, int mode)
+static QString corpusSearchModeName(LibraryView::CorpusSearchMode mode)
 {
-    QString modeLabel;
     switch (mode) {
-    case PaperLibrarySectionedModel::ByTopic:
-        modeLabel = i18nc("@label corpus library grouping", "Topics");
-        break;
-    case PaperLibrarySectionedModel::ByProject:
-        modeLabel = i18nc("@label corpus library grouping", "Projects");
-        break;
-    case PaperLibrarySectionedModel::ByType:
-        modeLabel = i18nc("@label corpus library grouping", "Types");
-        break;
-    case PaperLibrarySectionedModel::BySource:
-        modeLabel = i18nc("@label corpus library grouping", "Sources");
-        break;
-    case PaperLibrarySectionedModel::ByYear:
-        modeLabel = i18nc("@label corpus library grouping", "Years");
-        break;
-    case PaperLibrarySectionedModel::ByJournal:
-        modeLabel = i18nc("@label corpus library grouping", "Journals");
-        break;
-    case PaperLibrarySectionedModel::ReadNext:
-    default:
-        modeLabel = i18nc("@label corpus library grouping", "For you");
+    case LibraryView::FullTextSearch:
+        return QStringLiteral("FullText");
+    case LibraryView::ShelfMetadataSearch:
         break;
     }
+    return QStringLiteral("Shelf");
+}
 
-    switch (shelf) {
-    case LibraryView::MedicineShelf:
-        return i18nc("@info corpus shelf guide", "%1: user-defined medicine focus shelf", modeLabel);
-    case LibraryView::MndShelf:
-        return i18nc("@info corpus shelf guide", "%1: user-defined motor-neuron-disease focus shelf", modeLabel);
-    case LibraryView::WorkShelf:
-        return i18nc("@info corpus shelf guide", "%1: current projects, active reading queues, and related work", modeLabel);
-    case LibraryView::TextbooksShelf:
-        return i18nc("@info corpus shelf guide", "%1: textbooks and reference books grouped for quick retrieval", modeLabel);
-    case LibraryView::BooksShelf:
-        return i18nc("@info corpus shelf guide", "%1: long-form books from the corpus", modeLabel);
-    case LibraryView::FictionShelf:
-        return i18nc("@info corpus shelf guide", "%1: fiction queue and current series reading", modeLabel);
-    case LibraryView::NonfictionShelf:
-        return i18nc("@info corpus shelf guide", "%1: biography, history, politics, anthropology, social theory", modeLabel);
-    case LibraryView::PapersShelf:
-        return i18nc("@info corpus shelf guide", "%1: papers ranked by active projects and adjacent reading", modeLabel);
-    case LibraryView::StarterPackShelf:
-    case LibraryView::PdfShelf:
-        break;
+static LibraryView::CorpusSearchMode corpusSearchModeFromName(const QString &name)
+{
+    if (name == QLatin1String("FullText")) {
+        return LibraryView::FullTextSearch;
     }
-    return QString();
+    return LibraryView::ShelfMetadataSearch;
 }
 
 static QString compactPublicationTypeKey(QString label)
@@ -696,6 +658,220 @@ static QString progressTooltipLine(double progress)
     return i18nc("@info:tooltip Apple Books reading progress", "Progress: %1%", qRound(qBound(0.0, progress, 1.0) * 100));
 }
 
+static QString firstCreatorForDisplay(QString creators)
+{
+    creators = creators.simplified();
+    if (creators.isEmpty()) {
+        return QString();
+    }
+    const QString normalized = creators;
+    const QList<QChar> hardSeparators = {QLatin1Char(';'), QLatin1Char('|')};
+    int cut = -1;
+    for (const QChar separator : hardSeparators) {
+        const int index = normalized.indexOf(separator);
+        if (index > 0 && (cut < 0 || index < cut)) {
+            cut = index;
+        }
+    }
+    const int andIndex = normalized.indexOf(QStringLiteral(" and "), 0, Qt::CaseInsensitive);
+    if (andIndex > 0 && (cut < 0 || andIndex < cut)) {
+        cut = andIndex;
+    }
+    const int commaIndex = normalized.indexOf(QStringLiteral(", "));
+    if (commaIndex > 0 && (cut < 0 || commaIndex < cut)) {
+        cut = commaIndex;
+    }
+    if (cut > 0) {
+        creators = creators.left(cut).trimmed();
+    }
+    creators.remove(QRegularExpression(QStringLiteral("\\s*\\((?:editor|ed\\.?|author)\\)\\s*$"), QRegularExpression::CaseInsensitiveOption));
+    return creators.simplified();
+}
+
+static QString compactMetadataLine(QString line)
+{
+    line = line.simplified();
+    line.remove(QRegularExpression(QStringLiteral("\\s*,?\\s*(?:M\\.?D\\.?|Ph\\.?D\\.?)\\.?$"), QRegularExpression::CaseInsensitiveOption));
+    line.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    line = line.simplified();
+
+    static const QHash<QString, QString> replacements = {
+        {QStringLiteral("World War II"), QStringLiteral("WWII history")},
+        {QStringLiteral("World War I"), QStringLiteral("WWI history")},
+        {QStringLiteral("Medicine"), QStringLiteral("Medical")},
+    };
+    const QString replacement = replacements.value(line);
+    if (!replacement.isEmpty()) {
+        return replacement;
+    }
+
+    // The tile face has a fixed two-line budget. Tooltips keep the full
+    // metadata; here, prefer a short stable label over a clipped sentence.
+    static constexpr int SoftLimit = 24;
+    if (line.size() <= SoftLimit) {
+        return line;
+    }
+
+    QStringList words = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() >= 3) {
+        const QString compact = words.first().left(1) + QStringLiteral(". ") + words.last();
+        if (compact.size() <= SoftLimit) {
+            return compact;
+        }
+    }
+    return line.left(SoftLimit - 1).trimmed() + QStringLiteral("…");
+}
+
+static bool hasMultipleCreators(const QString &creators)
+{
+    const QString normalized = creators.simplified();
+    return normalized.contains(QLatin1Char(';')) || normalized.contains(QLatin1Char('|')) || normalized.contains(QStringLiteral(" and "), Qt::CaseInsensitive)
+        || normalized.contains(QRegularExpression(QStringLiteral(",\\s+[^,;]+\\s+[^,;]+")));
+}
+
+static QString surnameForCitation(QString creator)
+{
+    creator = firstCreatorForDisplay(creator);
+    creator.remove(QRegularExpression(QStringLiteral("\\s*,?\\s*(?:M\\.?D\\.?|Ph\\.?D\\.?|FRACP|FAAN)\\.?$"), QRegularExpression::CaseInsensitiveOption));
+    creator = creator.simplified();
+    if (creator.isEmpty()) {
+        return QString();
+    }
+    const QStringList words = creator.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (words.size() == 1) {
+        return words.constFirst();
+    }
+    const QString last = words.constLast();
+    const QString previous = words.value(words.size() - 2);
+    const QString previousKey = previous.toCaseFolded();
+    static const QSet<QString> particles = {QStringLiteral("da"),  QStringLiteral("de"),  QStringLiteral("del"), QStringLiteral("della"), QStringLiteral("den"),
+                                            QStringLiteral("der"), QStringLiteral("di"),  QStringLiteral("dos"), QStringLiteral("du"),    QStringLiteral("la"),
+                                            QStringLiteral("le"),  QStringLiteral("van"), QStringLiteral("von")};
+    if (particles.contains(previousKey)) {
+        return previous + QLatin1Char(' ') + last;
+    }
+    return last;
+}
+
+static QString yearFromMetadataLine(const QString &line)
+{
+    const QRegularExpression yearExpression(QStringLiteral("\\b(19|20)\\d{2}\\b"));
+    const QRegularExpressionMatch match = yearExpression.match(line);
+    return match.hasMatch() ? match.captured(0) : QString();
+}
+
+static QString citationLabelForPaper(const QString &authors, const QString &year)
+{
+    const QString surname = surnameForCitation(authors);
+    QString cleanYear = year.simplified();
+    if (cleanYear.isEmpty()) {
+        cleanYear = yearFromMetadataLine(authors);
+    }
+    if (surname.isEmpty()) {
+        return cleanYear;
+    }
+    return joinCompact({surname + (hasMultipleCreators(authors) ? QStringLiteral(" et al.") : QString()), cleanYear}).replace(QStringLiteral(" · "), QStringLiteral(" "));
+}
+
+static QString cleanPaperTitleForThesis(QString title)
+{
+    title = title.simplified();
+    title.remove(QRegularExpression(QStringLiteral("<[^>]+>")));
+    title.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    title.remove(QRegularExpression(QStringLiteral("\\s*\\((?:P\\d+(?:\\.\\d+)*[-\\w]*|[A-Z]{2,})\\)\\s*$")));
+    title.replace(QRegularExpression(QStringLiteral("\\bamyotrophic lateral sclerosis\\s*\\(\\s*ALS\\s*\\)"), QRegularExpression::CaseInsensitiveOption),
+                  QStringLiteral("amyotrophic lateral sclerosis"));
+    title.remove(QRegularExpression(QStringLiteral("\\s*\\((?:ALS|MND)\\)"), QRegularExpression::CaseInsensitiveOption));
+    title.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+    return title.simplified();
+}
+
+static QString thesisLineForPaper(QString title, const QString &topic = QString())
+{
+    title = cleanPaperTitleForThesis(title);
+    const QString lower = title.toCaseFolded();
+    if (title.isEmpty()) {
+        return topic;
+    }
+    if (lower.contains(QLatin1String("clinical factors")) && lower.contains(QLatin1String("cognitive error")) && lower.contains(QLatin1String("misdiagnos"))) {
+        return QStringLiteral("Clinical factors that may drive cognitive error in ALS misdiagnosis");
+    }
+    if (lower.contains(QLatin1String("diagnostic criteria")) && lower.contains(QLatin1String("amyotrophic lateral sclerosis"))) {
+        return QStringLiteral("How ALS diagnostic criteria perform in clinical cohorts");
+    }
+    if (lower.contains(QLatin1String("misdiagnos")) && (lower.contains(QLatin1String("als")) || lower.contains(QLatin1String("amyotrophic")))) {
+        return QStringLiteral("Why ALS can be misdiagnosed and which mimics matter");
+    }
+    if (lower.contains(QLatin1String("neurofilament"))) {
+        return QStringLiteral("Neurofilament evidence for ALS diagnosis, staging, or prognosis");
+    }
+    if (lower.contains(QLatin1String("cognitive")) && (lower.contains(QLatin1String("als")) || lower.contains(QLatin1String("amyotrophic")))) {
+        return QStringLiteral("Cognitive / FTD involvement in ALS");
+    }
+    if (lower.startsWith(QLatin1String("letter re:"))) {
+        return QStringLiteral("Letter / correction thread on ") + title.mid(QStringLiteral("letter re:").size()).trimmed();
+    }
+    if (lower.startsWith(QLatin1String("author response:"))) {
+        return QStringLiteral("Author response on ") + title.mid(QStringLiteral("author response:").size()).trimmed();
+    }
+    if (!topic.isEmpty() && title.size() > 82) {
+        return topic + QStringLiteral(": ") + title.left(78).trimmed() + QStringLiteral("…");
+    }
+    return title;
+}
+
+static bool isPaperishEntryData(const QString &format, const QString &title, const QString &description, const QStringList &tags, const QStringList &keywords, const QStringList &detailLines)
+{
+    if (format != QLatin1String("PDF")) {
+        return false;
+    }
+    const QString haystack = QStringList({title, description, tags.join(QLatin1Char(' ')), keywords.join(QLatin1Char(' ')), detailLines.join(QLatin1Char(' '))})
+                                 .join(QLatin1Char(' '))
+                                 .toCaseFolded();
+    return haystack.contains(QLatin1String("paper")) || haystack.contains(QLatin1String("journal")) || haystack.contains(QLatin1String("doi"))
+        || haystack.contains(QRegularExpression(QStringLiteral("\\b10\\.\\d{4,}/")));
+}
+
+static QString paperMetadataLineFromDescription(const QString &description, const QStringList &detailLines)
+{
+    for (const QString &line : detailLines) {
+        if (!yearFromMetadataLine(line).isEmpty()) {
+            return line.simplified();
+        }
+    }
+    if (!yearFromMetadataLine(description).isEmpty()) {
+        return description.simplified();
+    }
+    return QString();
+}
+
+static QString citationLabelForEntryData(const QString &description, const QStringList &detailLines)
+{
+    const QString metadata = paperMetadataLineFromDescription(description, detailLines);
+    const QStringList parts = metadata.split(QStringLiteral(" · "), Qt::SkipEmptyParts);
+    QString authors = parts.value(0).trimmed();
+    QString year;
+    for (const QString &part : parts) {
+        year = yearFromMetadataLine(part);
+        if (!year.isEmpty()) {
+            break;
+        }
+    }
+    if (authors.isEmpty()) {
+        authors = description;
+    }
+    return citationLabelForPaper(authors, year);
+}
+
+static bool isDisplayOnlyGenericTag(const QString &tag)
+{
+    const QString key = compactPublicationTypeKey(tag);
+    return key == QLatin1String("book") || key == QLatin1String("books") || key == QLatin1String("epub") || key == QLatin1String("ebook")
+        || key == QLatin1String("ebooks") || key == QLatin1String("document") || key == QLatin1String("documents") || key == QLatin1String("other")
+        || key == QLatin1String("misc") || key == QLatin1String("miscellaneous") || key == QLatin1String("unknown") || key == QLatin1String("unidentified")
+        || key == QLatin1String("uncategorized") || key == QLatin1String("untagged");
+}
+
 static QString curatedLocalTitleFor(const QString &text)
 {
     const QString lower = text.toCaseFolded();
@@ -707,6 +883,9 @@ static QString curatedLocalTitleFor(const QString &text)
         || lower.contains(QLatin1String("mit press")) || lower.contains(QLatin1String("pm press"));
     if (lower.contains(QLatin1String("aldo leopold")) && lower.contains(QLatin1String("sand county almanac"))) {
         return QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation");
+    }
+    if (lower.contains(QLatin1String("medicine for mountaineer")) || lower.contains(QLatin1String("mountaineering & other wilderness activities"))) {
+        return QStringLiteral("Medicine for Mountaineering & Other Wilderness Activities");
     }
     if (lower.contains(QLatin1String("ref13 graeber 2011"))) {
         return QStringLiteral("Debt: The First 5,000 Years");
@@ -856,7 +1035,7 @@ static QStringList wrapTitle(const QString &text, const QFont &font, int width, 
         const bool lastAllowed = i == maxLines - 1;
         const bool moreToCome = line.textStart() + line.textLength() < text.size();
         if (lastAllowed && moreToCome) {
-            lines.append(QFontMetrics(font).elidedText(text.mid(line.textStart()).trimmed(), Qt::ElideMiddle, width));
+            lines.append(QFontMetrics(font).elidedText(text.mid(line.textStart()).trimmed(), Qt::ElideRight, width));
         } else {
             lines.append(text.mid(line.textStart(), line.textLength()).trimmed());
         }
@@ -1136,6 +1315,17 @@ static QString corpusPaperMetadataLineForIndex(const QModelIndex &index)
     return parts.join(QStringLiteral(" · "));
 }
 
+static QString corpusPaperCitationLabelForIndex(const QModelIndex &index)
+{
+    return citationLabelForPaper(index.data(PaperLibraryModel::AuthorsRole).toString(), index.data(PaperLibraryModel::YearRole).toString());
+}
+
+static QString corpusPaperThesisForIndex(const QModelIndex &index)
+{
+    const QString key = corpusPaperKeyForIndex(index);
+    return thesisLineForPaper(index.data(Qt::DisplayRole).toString(), corpusPaperSummaryForKey(key));
+}
+
 /**
  * Paints library tiles: a cover (thumbnail or placeholder) with rounded
  * corners over a soft ambient shadow, the title (up to two lines) with a
@@ -1153,11 +1343,13 @@ public:
         if (isHeader(index)) {
             // A near-viewport-wide item forces the following tile onto a new row
             const QListView *view = qobject_cast<const QListView *>(option.widget);
-            const int width = view ? qMax(TileWidth, view->viewport()->width() - 2 * GridSpacing - 8) : 3 * TileWidth;
+            const int width = view ? qMax(CorpusTileWidth, view->viewport()->width() - 2 * GridSpacing - 8) : 3 * CorpusTileWidth;
             return QSize(width, option.fontMetrics.height() + 14);
         }
 
-        const int coverHeight = isCorpusTile(index) ? CorpusCoverHeight : CoverHeight;
+        const bool corpusTile = isCorpusTile(index);
+        const int coverHeight = corpusTile ? CorpusCoverHeight : CoverHeight;
+        const int tileWidth = corpusTile ? CorpusTileWidth : TileWidth;
         int height = TilePadding + coverHeight;
         if (reservesProgressRow(index)) {
             height += ProgressGap + QFontMetrics(smallerFont(option.font)).height();
@@ -1165,7 +1357,7 @@ public:
         height += TitleGap + TitleLines * option.fontMetrics.height();
         height += TagGap + QFontMetrics(smallerFont(option.font)).height(); // tag row, reserved even when untagged
         height += TilePadding;
-        return QSize(TileWidth, height);
+        return QSize(tileWidth, height);
     }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &opt, const QModelIndex &index) const override
@@ -1202,7 +1394,8 @@ public:
 
         const bool corpusTile = isCorpusTile(index);
         const int coverHeight = corpusTile ? CorpusCoverHeight : CoverHeight;
-        const QRect coverBox(option.rect.left() + TilePadding, option.rect.top() + TilePadding, CoverWidth, coverHeight);
+        const int coverWidth = corpusTile ? CorpusCoverWidth : CoverWidth;
+        const QRect coverBox(option.rect.left() + TilePadding, option.rect.top() + TilePadding, coverWidth, coverHeight);
 
         // Real covers keep their aspect ratio, sitting on the box's bottom
         // edge like books on a shelf; placeholders fill the box
@@ -1247,7 +1440,9 @@ public:
         painter->setBrush(Qt::NoBrush);
         painter->drawRoundedRect(QRectF(coverRect).adjusted(0.5, 0.5, -0.5, -0.5), CoverRadius, CoverRadius);
 
-        if (index.data(LibraryView::PinnedRole).toBool() || index.data(PaperLibraryModel::PinnedRole).toBool()) {
+        const bool pinned = corpusTile ? index.data(PaperLibraryModel::PinnedRole).toBool() : index.data(LibraryView::PinnedRole).toBool();
+        const bool downranked = corpusTile ? index.data(PaperLibrarySectionedModel::DownrankedRole).toBool() : index.data(LibraryView::DownrankedRole).toBool();
+        if (pinned) {
             const QPointF badgeCenter(coverRect.right() - 12, coverRect.top() + 13);
             painter->setPen(Qt::NoPen);
             painter->setBrush(palette.color(QPalette::Highlight));
@@ -1255,7 +1450,7 @@ public:
             painter->setBrush(palette.color(QPalette::HighlightedText));
             painter->drawPath(starPath(badgeCenter, 5.5));
         }
-        if (index.data(LibraryView::DownrankedRole).toBool() || index.data(PaperLibrarySectionedModel::DownrankedRole).toBool()) {
+        if (downranked) {
             const QPointF badgeCenter(coverRect.right() - 12, coverRect.top() + 13);
             QColor badge = palette.color(QPalette::Text);
             badge.setAlphaF(0.45);
@@ -1268,6 +1463,10 @@ public:
             arrow.lineTo(badgeCenter.x() + 5, badgeCenter.y() - 2);
             painter->setPen(QPen(palette.color(QPalette::Base), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter->drawPath(arrow);
+        }
+        const QVariant relatedValue = corpusTile ? index.data(PaperLibraryModel::RelatedCountRole) : QVariant();
+        if (relatedValue.isValid() && relatedValue.toInt() >= 0) {
+            drawConnectionBadge(painter, coverRect, relatedValue.toInt(), option, palette);
         }
 
         int titleTop = coverBox.bottom() + 1;
@@ -1335,9 +1534,14 @@ public:
 
             // Muted tag row right under the title (its space is reserved in
             // sizeHint either way, so untagged tiles stay the same height)
-            const QStringList tags = index.data(LibraryView::TagsRole).toStringList();
-            const QStringList corpusTags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
-            const QStringList shownTags = tags.isEmpty() ? corpusTags : tags;
+            QStringList displayTags;
+            QStringList shownTags;
+            if (corpusTile) {
+                shownTags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+            } else {
+                displayTags = index.data(LibraryView::DisplayTagsRole).toStringList();
+                shownTags = displayTags.isEmpty() ? index.data(LibraryView::TagsRole).toStringList() : displayTags;
+            }
             if (!shownTags.isEmpty()) {
                 const QFont tagFont = smallerFont(option.font);
                 const QFontMetrics tagMetrics(tagFont);
@@ -1345,8 +1549,12 @@ public:
                 tagColor.setAlphaF(0.55);
                 painter->setFont(tagFont);
                 painter->setPen(tagColor);
-                const QString tagRow = QStringList(shownTags.mid(0, 2)).join(QStringLiteral(" · "));
-                painter->drawText(QRect(textLeft, lineTop + TagGap, textWidth, tagMetrics.height()), Qt::AlignHCenter | Qt::AlignTop, tagMetrics.elidedText(tagRow, Qt::ElideRight, textWidth));
+                const QStringList tagLines = wrapTitle(QStringList(shownTags.mid(0, 2)).join(QStringLiteral(" · ")), tagFont, textWidth, MetadataLines);
+                int tagTop = lineTop + TagGap;
+                for (const QString &line : tagLines) {
+                    painter->drawText(QRect(textLeft, tagTop, textWidth, tagMetrics.height()), Qt::AlignHCenter | Qt::AlignTop, line);
+                    tagTop += tagMetrics.height();
+                }
             }
         }
 
@@ -1381,9 +1589,80 @@ private:
         return false;
     }
 
+    static void drawConnectionBadge(QPainter *painter, const QRect &coverRect, int relatedCount, const QStyleOptionViewItem &option, const QPalette &palette)
+    {
+        const QString label = relatedCount > 99 ? QStringLiteral("99+") : QString::number(relatedCount);
+        QFont badgeFont = smallerFont(option.font);
+        badgeFont.setBold(true);
+        const QFontMetrics metrics(badgeFont);
+        const int width = qMax(34, metrics.horizontalAdvance(label) + 26);
+        const QRectF badgeRect(coverRect.right() - width - 7, coverRect.bottom() - 25, width, 18);
+
+        QColor fill = relatedCount > 0 ? palette.color(QPalette::Highlight) : palette.color(QPalette::Text);
+        fill.setAlphaF(relatedCount > 0 ? 0.82 : 0.24);
+        QColor stroke = relatedCount > 0 ? palette.color(QPalette::HighlightedText) : palette.color(QPalette::Base);
+        stroke.setAlphaF(relatedCount > 0 ? 0.92 : 0.86);
+
+        painter->save();
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(fill);
+        painter->drawRoundedRect(badgeRect, 8, 8);
+
+        const QPointF a(badgeRect.left() + 9, badgeRect.center().y() + 2);
+        const QPointF b(badgeRect.left() + 15, badgeRect.center().y() - 4);
+        const QPointF c(badgeRect.left() + 21, badgeRect.center().y() + 3);
+        painter->setPen(QPen(stroke, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->drawLine(a, b);
+        painter->drawLine(b, c);
+        painter->setBrush(stroke);
+        painter->drawEllipse(a, 2.0, 2.0);
+        painter->drawEllipse(b, 2.0, 2.0);
+        painter->drawEllipse(c, 2.0, 2.0);
+
+        painter->setFont(badgeFont);
+        painter->setPen(stroke);
+        painter->drawText(badgeRect.adjusted(24, 0, -5, 0), Qt::AlignVCenter | Qt::AlignRight, label);
+        painter->restore();
+    }
+
     static QString visualKeyForCorpusCard(const QModelIndex &index)
     {
         return corpusPaperKeyForIndex(index);
+    }
+
+    static QString corpusCardTitleForIndex(const QModelIndex &index, const QString &citationTitle, const PaperLibrarySectionedModel *sections)
+    {
+        const QString fullTitle = index.data(Qt::DisplayRole).toString().trimmed();
+        if (fullTitle.isEmpty()) {
+            return citationTitle;
+        }
+
+        const QString key = QStringList({fullTitle,
+                                         index.data(PaperLibraryModel::DetailRole).toString(),
+                                         index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString(),
+                                         index.data(PaperLibrarySectionedModel::RelationHintRole).toString(),
+                                         index.data(PaperLibrarySectionedModel::FocusRole).toString(),
+                                         index.data(PaperLibraryModel::SourceRole).toString()})
+                                .join(QLatin1Char(' '))
+                                .toCaseFolded();
+        const bool workShelf = sections && sections->smartFilter() == PaperLibrarySectionedModel::Work;
+        const bool activeWorkObject = keyContainsAny(key,
+                                                     {QStringLiteral("manuscript"),
+                                                      QStringLiteral("draft"),
+                                                      QStringLiteral("response to reviewer"),
+                                                      QStringLiteral("response to reviewers"),
+                                                      QStringLiteral("reviewer response"),
+                                                      QStringLiteral("revision"),
+                                                      QStringLiteral("peer review"),
+                                                      QStringLiteral("highdimensional project")});
+        if (workShelf || activeWorkObject) {
+            return fullTitle;
+        }
+
+        if (!citationTitle.isEmpty() && fullTitle.size() > 76) {
+            return citationTitle;
+        }
+        return fullTitle;
     }
 
     static qreal seededUnit(const QString &seed, uint salt)
@@ -1531,6 +1810,130 @@ private:
                                                QStringLiteral("cortical"),
                                                QStringLiteral("axon"),
                                                QStringLiteral("psychiat")});
+        const bool responseLike = keyContainsAny(key,
+                                                 {QStringLiteral("response to reviewer"),
+                                                  QStringLiteral("response to reviewers"),
+                                                  QStringLiteral("reviewer response"),
+                                                  QStringLiteral("responses to reviewers"),
+                                                  QStringLiteral("peer review"),
+                                                  QStringLiteral("major revision")});
+        const bool manuscriptLike = keyContainsAny(key,
+                                                   {QStringLiteral("manuscript"),
+                                                    QStringLiteral("draft"),
+                                                    QStringLiteral("anonymous manuscript"),
+                                                    QStringLiteral("submission draft"),
+                                                    QStringLiteral("paper anonymous")});
+        const bool highDimensionalLike = keyContainsAny(key,
+                                                        {QStringLiteral("high-dimensional"),
+                                                         QStringLiteral("high dimensional"),
+                                                         QStringLiteral("dimensionality"),
+                                                         QStringLiteral("coherence"),
+                                                         QStringLiteral("phase space"),
+                                                         QStringLiteral("observable dimension")});
+        const bool bayesianLike = keyContainsAny(key,
+                                                 {QStringLiteral("bayes"),
+                                                  QStringLiteral("bayesian"),
+                                                  QStringLiteral("posterior"),
+                                                  QStringLiteral("prior"),
+                                                  QStringLiteral("model selection"),
+                                                  QStringLiteral("inference")});
+
+        if (responseLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            const QRectF manuscript(area.left() + 8, area.top() + 7, area.width() * 0.54, area.height() - 15);
+            painter->drawRoundedRect(manuscript, 3, 3);
+            for (int i = 0; i < 4; ++i) {
+                const qreal y = manuscript.top() + 8 + i * 7;
+                painter->drawLine(QPointF(manuscript.left() + 7, y), QPointF(manuscript.right() - 6 - (i % 2) * 11, y));
+            }
+            painter->setPen(pen);
+            const QRectF comment(area.right() - 41, area.top() + 8, 33, 18);
+            painter->drawRoundedRect(comment, 5, 5);
+            painter->drawLine(QPointF(comment.left() + 9, comment.bottom()), QPointF(comment.left() + 14, comment.bottom() + 6));
+            painter->drawLine(QPointF(manuscript.right() - 4, manuscript.center().y()), QPointF(comment.left() - 4, comment.center().y()));
+            painter->setBrush(accent);
+            painter->drawEllipse(QPointF(comment.left() + 9, comment.center().y()), 2.1, 2.1);
+            painter->drawEllipse(QPointF(comment.left() + 17, comment.center().y()), 2.1, 2.1);
+            painter->drawEllipse(QPointF(comment.left() + 25, comment.center().y()), 2.1, 2.1);
+            painter->setPen(QPen(accent, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            QPainterPath check;
+            check.moveTo(area.right() - 35, area.bottom() - 14);
+            check.lineTo(area.right() - 27, area.bottom() - 7);
+            check.lineTo(area.right() - 12, area.bottom() - 27);
+            painter->drawPath(check);
+            return;
+        }
+
+        if (manuscriptLike) {
+            QColor pageWash = palette.color(QPalette::Base);
+            pageWash.setAlphaF(0.34);
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->setBrush(pageWash);
+            painter->drawRoundedRect(QRectF(area.left() + 16, area.top() + 6, area.width() - 30, area.height() - 18), 4, 4);
+            painter->drawRoundedRect(QRectF(area.left() + 9, area.top() + 11, area.width() - 29, area.height() - 17), 4, 4);
+            painter->setPen(pen);
+            painter->drawLine(QPointF(area.left() + 20, area.top() + 21), QPointF(area.right() - 22, area.top() + 21));
+            painter->drawLine(QPointF(area.left() + 20, area.top() + 29), QPointF(area.right() - 37, area.top() + 29));
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            for (int i = 0; i < 3; ++i) {
+                const qreal y = area.top() + 42 + i * 7;
+                painter->drawLine(QPointF(area.left() + 20, y), QPointF(area.right() - 18 - i * 9, y));
+            }
+            painter->setBrush(accent);
+            painter->setPen(Qt::NoPen);
+            painter->drawRoundedRect(QRectF(area.left() + 20, area.bottom() - 15, area.width() - 41, 5), 2, 2);
+            return;
+        }
+
+        if (highDimensionalLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            const QRectF cube(area.left() + 15, area.top() + 12, area.width() * 0.45, area.height() * 0.48);
+            const QPointF offset(area.width() * 0.16, -area.height() * 0.16);
+            painter->drawRect(cube);
+            painter->drawRect(cube.translated(offset));
+            painter->drawLine(cube.topLeft(), cube.topLeft() + offset);
+            painter->drawLine(cube.topRight(), cube.topRight() + offset);
+            painter->drawLine(cube.bottomLeft(), cube.bottomLeft() + offset);
+            painter->drawLine(cube.bottomRight(), cube.bottomRight() + offset);
+            painter->setPen(pen);
+            QPainterPath manifold;
+            manifold.moveTo(area.left() + 8, area.bottom() - 12);
+            manifold.cubicTo(area.left() + area.width() * 0.32,
+                             area.top() + 15 + seededUnit(key, 151u) * 9,
+                             area.left() + area.width() * 0.62,
+                             area.bottom() - 6 - seededUnit(key, 157u) * 12,
+                             area.right() - 9,
+                             area.top() + 17);
+            painter->drawPath(manifold);
+            painter->setBrush(accent);
+            for (int i = 0; i < 5; ++i) {
+                const qreal x = area.left() + 15 + i * area.width() * 0.18;
+                const qreal y = area.bottom() - 13 - seededUnit(key, 170u + i) * (area.height() - 23);
+                painter->drawEllipse(QPointF(x, y), 2.5, 2.5);
+            }
+            return;
+        }
+
+        if (bayesianLike) {
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(area.left() + 8, area.bottom() - 8), QPointF(area.right() - 7, area.bottom() - 8));
+            painter->drawLine(QPointF(area.left() + 8, area.bottom() - 8), QPointF(area.left() + 8, area.top() + 7));
+            painter->setPen(QPen(accent, 1.7, Qt::SolidLine, Qt::RoundCap));
+            QPainterPath prior;
+            prior.moveTo(area.left() + 9, area.bottom() - 10);
+            prior.cubicTo(area.left() + area.width() * 0.27, area.top() + 12, area.left() + area.width() * 0.44, area.top() + 12, area.left() + area.width() * 0.60, area.bottom() - 10);
+            painter->drawPath(prior);
+            QColor posterior = accent;
+            posterior.setAlphaF(0.34);
+            painter->setPen(QPen(posterior, 2.0, Qt::DashLine, Qt::RoundCap));
+            QPainterPath post;
+            post.moveTo(area.left() + area.width() * 0.35, area.bottom() - 10);
+            post.cubicTo(area.left() + area.width() * 0.54, area.top() + 5, area.left() + area.width() * 0.72, area.top() + 8, area.right() - 8, area.bottom() - 10);
+            painter->drawPath(post);
+            painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(area.right() - 26, area.top() + 10), QPointF(area.right() - 26, area.bottom() - 8));
+            return;
+        }
 
         if (accessLike) {
             painter->setPen(QPen(faint, 1.0, Qt::SolidLine, Qt::RoundCap));
@@ -1803,24 +2206,27 @@ private:
         const QString kind = index.data(PaperLibrarySectionedModel::KindRole).toString();
         const QString focus = index.data(PaperLibrarySectionedModel::FocusRole).toString();
         const QString seed = index.data(PaperLibrarySectionedModel::ThumbnailSeedRole).toString();
-        const QString title = index.data(Qt::DisplayRole).toString();
+        const QString fullTitle = index.data(Qt::DisplayRole).toString();
+        const QString citationTitle = corpusPaperCitationLabelForIndex(index);
         const QString detail = index.data(PaperLibraryModel::DetailRole).toString();
         const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
         const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
         const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
+        const QString title = corpusCardTitleForIndex(index, citationTitle, sections);
         const bool papersShelf = sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers;
         const bool missing = index.data(PaperLibraryModel::MissingRole).toBool();
         const QString visualKey = visualKeyForCorpusCard(index);
         const QString paperTopic = corpusPaperTopicLabelForKey(visualKey, !focus.isEmpty() && focus != kind ? focus : kind);
         const QString paperSummary = corpusPaperSummaryForKey(visualKey);
+        const QString paperThesis = corpusPaperThesisForIndex(index);
         const QString paperMetadata = corpusPaperMetadataLineForIndex(index);
 
         QPainterPath clip;
         clip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
         const bool darkMode = palette.color(QPalette::Base).lightness() < 128;
-        const QString accentSeed = joinCompact({title, detail, paperTopic, seed});
+        const QString accentSeed = joinCompact({fullTitle, detail, paperTopic, seed});
         QColor accent = CoverGenerator::accentColor(accentSeed.isEmpty() ? kind : accentSeed, darkMode);
         const QColor cardBase = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Text), darkMode ? 0.10 : 0.045);
         QLinearGradient field(coverRect.topLeft(), coverRect.bottomRight());
@@ -1852,7 +2258,8 @@ private:
         painter->drawEllipse(QRectF(coverRect.right() - 54, coverRect.top() + 20, 76, 76));
         painter->drawRoundedRect(QRectF(coverRect.left() + 11, coverRect.bottom() - 39, coverRect.width() - 22, 21), 4, 4);
 
-        const QRectF visualRect(coverRect.left() + 13, coverRect.top() + 31, coverRect.width() - 26, 60);
+        const qreal visualHeight = qMin<qreal>(76.0, qMax<qreal>(62.0, coverRect.height() * 0.34));
+        const QRectF visualRect(coverRect.left() + 13, coverRect.top() + 31, coverRect.width() - 26, visualHeight);
         QColor visualPanel = palette.color(QPalette::Base);
         visualPanel.setAlphaF(darkMode ? 0.36 : 0.48);
         painter->setBrush(visualPanel);
@@ -1875,8 +2282,8 @@ private:
         titleFont.setPointSizeF(qMax(8.0, titleFont.pointSizeF() * 0.92));
         painter->setFont(titleFont);
         painter->setPen(palette.color(QPalette::Text));
-        const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 2);
-        int y = coverRect.top() + 96;
+        const QStringList titleLines = wrapTitle(title, titleFont, coverRect.width() - 20, 3);
+        int y = qRound(visualRect.bottom()) + 7;
         const QFontMetrics titleMetrics(titleFont);
         for (const QString &line : titleLines) {
             painter->drawText(QRect(coverRect.left() + 10, y, coverRect.width() - 20, titleMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
@@ -1889,8 +2296,8 @@ private:
         metaColor.setAlphaF(missing ? 0.36 : 0.56);
         painter->setFont(metaFont);
         painter->setPen(metaColor);
-        const int metaTop = qMax(y + 4, coverRect.bottom() - 43);
-        QString meta = paperSummary.isEmpty() ? intent : paperSummary;
+        const int metaTop = y + 4;
+        QString meta = paperThesis.isEmpty() ? (paperSummary.isEmpty() ? intent : paperSummary) : paperThesis;
         if (!priority.isEmpty() && priority != intent && priority != detail) {
             const QString priorityTopic = corpusPaperTopicLabelForKey(priority.toCaseFolded());
             if (priorityTopic.isEmpty() && priority != topLabel) {
@@ -1904,7 +2311,16 @@ private:
             meta = joinCompact({meta, i18nc("@info on a corpus tile whose PDF is not local", "PDF not local")});
         }
         if (!meta.isEmpty()) {
-            painter->drawText(QRect(coverRect.left() + 10, metaTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, metaMetrics.elidedText(meta, Qt::ElideRight, coverRect.width() - 20));
+            const QStringList metaLines = wrapTitle(meta, metaFont, coverRect.width() - 20, 2);
+            int lineTop = metaTop;
+            const int bottomLimit = coverRect.bottom() - 28;
+            for (const QString &line : metaLines) {
+                if (lineTop + metaMetrics.height() > bottomLimit) {
+                    break;
+                }
+                painter->drawText(QRect(coverRect.left() + 10, lineTop, coverRect.width() - 20, metaMetrics.height()), Qt::AlignLeft | Qt::AlignTop, line);
+                lineTop += metaMetrics.height();
+            }
         }
 
         QString tagRow = paperMetadata;
@@ -2041,6 +2457,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_shelfSwitch->setFocusPolicy(Qt::NoFocus);
     addShelfTab(PdfShelf, i18nc("library shelf with recently opened documents", "Recent"));
     addShelfTab(BooksShelf, i18nc("library shelf with current long-form EPUB reading", "Books"));
+    addShelfTab(FinishedShelf, i18nc("library shelf with completed long-form reading", "Finished"));
     addShelfTab(FictionShelf, i18nc("library smart shelf for fiction books", "Fiction"));
     addShelfTab(NonfictionShelf, i18nc("library smart shelf for non-fiction books", "Non-fiction"));
     addShelfTab(WorkShelf, i18nc("library smart shelf for current work documents", "Work"));
@@ -2054,6 +2471,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
         const Shelf typedShelf = static_cast<Shelf>(shelf);
         m_paperSectionModes[shelf] = paperSectionModeFromName(partGeneralConfig().readEntry(paperSectionModeConfigKey(typedShelf), QString()), defaultPaperSectionModeForShelf(typedShelf));
     }
+    m_corpusSearchMode = corpusSearchModeFromName(partGeneralConfig().readEntry("CorpusSearchMode", QString()));
 
     // A quiet menu button next to the shelf switch chooses the arrangement
     m_viewModeButton = new QToolButton(this);
@@ -2101,6 +2519,38 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     }
     m_paperSectionButton->setMenu(paperSectionMenu);
 
+    m_corpusSearchButton = new QToolButton(this);
+    m_corpusSearchButton->setObjectName(QStringLiteral("corpusSearchModeButton"));
+    m_corpusSearchButton->setAutoRaise(true);
+    m_corpusSearchButton->setPopupMode(QToolButton::InstantPopup);
+    m_corpusSearchButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_corpusSearchButton->setFocusPolicy(Qt::NoFocus);
+    m_corpusSearchButton->setToolTip(i18nc("@info:tooltip on the corpus search mode button", "Choose whether search scans shelf metadata or the full-text index"));
+    m_corpusSearchButton->hide();
+    QMenu *corpusSearchMenu = new QMenu(m_corpusSearchButton);
+    QActionGroup *corpusSearchGroup = new QActionGroup(corpusSearchMenu);
+    const QString corpusSearchNames[] = {i18nc("@item:inmenu corpus search mode", "Shelf"), i18nc("@item:inmenu corpus search mode", "Full text")};
+    for (int mode = ShelfMetadataSearch; mode <= FullTextSearch; ++mode) {
+        QAction *action = corpusSearchMenu->addAction(corpusSearchNames[mode]);
+        action->setCheckable(true);
+        action->setActionGroup(corpusSearchGroup);
+        connect(action, &QAction::triggered, this, [this, mode]() {
+            setCorpusSearchMode(static_cast<CorpusSearchMode>(mode));
+        });
+        m_corpusSearchActions[mode] = action;
+    }
+    m_corpusSearchButton->setMenu(corpusSearchMenu);
+
+    m_corpusResultButton = new QToolButton(this);
+    m_corpusResultButton->setObjectName(QStringLiteral("corpusResultModeButton"));
+    m_corpusResultButton->setAutoRaise(true);
+    m_corpusResultButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_corpusResultButton->setFocusPolicy(Qt::NoFocus);
+    m_corpusResultButton->setMaximumWidth(260);
+    m_corpusResultButton->setToolTip(i18nc("@info:tooltip on corpus result mode chip", "Click to leave the current search result mode"));
+    m_corpusResultButton->hide();
+    connect(m_corpusResultButton, &QToolButton::clicked, this, &LibraryView::clearActiveCorpusResult);
+
     // A compact search field filters the active shelf as you type; ⌘F
     // focuses it while the library is showing (a widget-local shortcut, so
     // the part's find action keeps ⌘F while reading)
@@ -2138,6 +2588,8 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     headerLayout->addSpacing(12);
     headerLayout->addWidget(m_viewModeButton, 0, Qt::AlignBottom);
     headerLayout->addWidget(m_paperSectionButton, 0, Qt::AlignBottom);
+    headerLayout->addWidget(m_corpusSearchButton, 0, Qt::AlignBottom);
+    headerLayout->addWidget(m_corpusResultButton, 0, Qt::AlignBottom);
     headerLayout->addSpacing(12);
     headerLayout->addWidget(m_searchField, 0, Qt::AlignBottom);
     headerLayout->addStretch();
@@ -2153,8 +2605,10 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_fictionModel = new QStandardItemModel(this);
     m_nonfictionModel = new QStandardItemModel(this);
     m_starterPackModel = new QStandardItemModel(this);
+    m_finishedModel = new QStandardItemModel(this);
     m_booksModel->setProperty("booksShelf", true);
     m_starterPackModel->setProperty("booksShelf", true);
+    m_finishedModel->setProperty("booksShelf", true);
 
     m_grid = new QListView(this);
     m_grid->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -2203,6 +2657,10 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     connect(m_shelfSwitch, &QTabBar::currentChanged, this, &LibraryView::shelfChanged);
     connect(m_grid, &QListView::doubleClicked, this, &LibraryView::tileClicked);
     connect(m_grid, &QWidget::customContextMenuRequested, this, &LibraryView::showContextMenu);
+    connect(m_grid->verticalScrollBar(), &QScrollBar::valueChanged, this, &LibraryView::maybeFetchMoreRowsForActiveShelf);
+    connect(m_grid->verticalScrollBar(), &QScrollBar::rangeChanged, this, [this](int, int) {
+        maybeFetchMoreRowsForActiveShelf();
+    });
 
     auto addShortcut = [this](const QKeySequence &sequence, const auto &slot) {
         QShortcut *shortcut = new QShortcut(sequence, this);
@@ -2234,6 +2692,11 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     addGridOpenShortcut(QKeySequence(Qt::Key_Return));
     addGridOpenShortcut(QKeySequence(Qt::Key_Enter));
     addGridOpenShortcut(QKeySequence(Qt::Key_Space));
+    QShortcut *adjacentShortcut = new QShortcut(QKeySequence(Qt::Key_A), m_grid);
+    adjacentShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(adjacentShortcut, &QShortcut::activated, this, [this]() {
+        showAdjacentDocumentsForCurrentTile();
+    });
 
     applyChromePalette();
     syncViewModeButton();
@@ -2326,7 +2789,8 @@ void LibraryView::configureTileGrid()
     }
     m_configuredGridCorpus = corpusKey;
     const int coverHeight = corpus ? CorpusCoverHeight : CoverHeight;
-    const int tileHeight = TilePadding + coverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + smallMetrics.height() + TilePadding;
+    const int tileWidth = corpus ? CorpusTileWidth : TileWidth;
+    const int tileHeight = TilePadding + coverHeight + ProgressGap + smallMetrics.height() + TitleGap + TitleLines * titleMetrics.height() + TagGap + MetadataLines * smallMetrics.height() + TilePadding;
 
     m_grid->setViewMode(QListView::IconMode);
     m_grid->setLayoutMode(QListView::Batched);
@@ -2336,7 +2800,7 @@ void LibraryView::configureTileGrid()
     m_grid->setFlow(QListView::LeftToRight);
     m_grid->setWrapping(true);
     m_grid->setSpacing(GridSpacing);
-    m_grid->setGridSize(QSize(TileWidth + GridSpacing, tileHeight + GridSpacing));
+    m_grid->setGridSize(QSize(tileWidth + GridSpacing, tileHeight + GridSpacing));
     m_grid->setUniformItemSizes(true);
 }
 
@@ -2373,7 +2837,7 @@ void LibraryView::refresh()
     for (const LibraryStore::Entry &entry : pdfEntries) {
         // Title precedence: curated store title, else filename sans extension
         const QString title = cleanedLocalTitle(entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title, entry.url);
-        ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
+        ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.finishedReading, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
         enrichShelfEntryFromCorpus(shelfEntry);
         enrichShelfEntry(shelfEntry);
         persistCorrectedTags(entry, shelfEntry);
@@ -2396,6 +2860,7 @@ void LibraryView::refresh()
     }
 
     QList<ShelfEntry> books;
+    QList<ShelfEntry> finishedBooks;
     QSet<QString> knownPaths;
     const QString importedBooksPrefix = EpubImporter::importDir() + QLatin1Char('/');
     const QList<LibraryStore::Entry> epubEntries = m_store->entries({QStringLiteral("epub")});
@@ -2407,7 +2872,7 @@ void LibraryView::refresh()
             continue;
         }
         const QString canonical = entry.url.isLocalFile() ? QFileInfo(entry.url.toLocalFile()).canonicalFilePath() : QString();
-        if (mirrorAppleBooks && (canonical.isEmpty() || !progressByPath.contains(canonical))) {
+        if (mirrorAppleBooks && !entry.finishedReading && (canonical.isEmpty() || !progressByPath.contains(canonical))) {
             continue;
         }
         if (!canonical.isEmpty()) {
@@ -2424,11 +2889,15 @@ void LibraryView::refresh()
             metadata = &epubMetadataFor(entry.url.toLocalFile());
         }
         ShelfEntry shelfEntry{
-            entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB"), {}};
+            entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.finishedReading, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB"), {}};
         enrichShelfEntryFromCorpus(shelfEntry);
         enrichShelfEntry(shelfEntry, metadata);
         persistCorrectedTags(entry, shelfEntry);
-        books.append(shelfEntry);
+        if (shelfEntry.finishedReading) {
+            finishedBooks.append(shelfEntry);
+        } else {
+            books.append(shelfEntry);
+        }
     }
 
     QList<ShelfEntry> booksOnly;
@@ -2445,10 +2914,14 @@ void LibraryView::refresh()
         }
         title = cleanedLocalTitle(title, url);
         const EpubCover::Metadata metadata = EpubCover::metadata(book.path);
-        ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
+        ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.finishedReading, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
         enrichShelfEntry(shelfEntry, &metadata);
         persistCorrectedTags(stored, shelfEntry);
-        booksOnly.append(shelfEntry);
+        if (shelfEntry.finishedReading) {
+            finishedBooks.append(shelfEntry);
+        } else {
+            booksOnly.append(shelfEntry);
+        }
     }
     const auto entryLikelyBefore = [](const ShelfEntry &a, const ShelfEntry &b) {
         if (a.downranked != b.downranked) {
@@ -2481,7 +2954,9 @@ void LibraryView::refresh()
     std::sort(booksOnly.begin(), booksOnly.end(), bookLikelyBefore);
     books += booksOnly;
     std::stable_sort(books.begin(), books.end(), bookLikelyBefore);
+    std::stable_sort(finishedBooks.begin(), finishedBooks.end(), entryLikelyBefore);
     m_shelfEntries[BooksShelf] = books;
+    m_shelfEntries[FinishedShelf] = finishedBooks;
 
     const QList<ShelfEntry> allDocuments = pdfs + books;
     QList<ShelfEntry> recent = allDocuments;
@@ -2521,6 +2996,7 @@ void LibraryView::refresh()
     m_shelfEntries[FictionShelf] = fiction;
     m_shelfEntries[NonfictionShelf] = nonfiction;
     m_shelfEntries[StarterPackShelf] = loadStarterPackEntries();
+    m_finishedModel->setProperty("booksShelf", true);
     m_textbooksModel->setProperty("booksShelf", shelfHasReadingProgress(textbooks));
     m_medicineModel->setProperty("booksShelf", shelfHasReadingProgress(medicine));
     m_mndModel->setProperty("booksShelf", shelfHasReadingProgress(mnd));
@@ -2678,7 +3154,7 @@ QString LibraryView::publicationTypeTitle(const ShelfEntry &entry)
 
 bool LibraryView::isDocumentShelf(Shelf shelf)
 {
-    return shelf == PdfShelf || shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == StarterPackShelf;
+    return shelf == PdfShelf || shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == StarterPackShelf || shelf == FinishedShelf;
 }
 
 QString LibraryView::smartShelfHaystack(const ShelfEntry &entry)
@@ -2970,6 +3446,127 @@ QString LibraryView::focusTagFor(const ShelfEntry &entry)
         }
     }
     return publicationTypeTitle(entry);
+}
+
+QString LibraryView::displaySubjectForTile(const ShelfEntry &entry, const EpubCover::Metadata *epubMetadata)
+{
+    QStringList fields;
+    fields << entry.title << entry.description << entry.url.fileName();
+    if (entry.url.isLocalFile()) {
+        fields << entry.url.toLocalFile();
+    }
+    fields << entry.detailLines;
+    if (epubMetadata) {
+        fields << epubMetadata->title << epubMetadata->creators << epubMetadata->year << epubMetadata->description;
+    }
+    const QString haystack = fields.join(QLatin1Char(' ')).toCaseFolded();
+    ShelfEntry contentEntry = entry;
+    contentEntry.tags.clear();
+    contentEntry.keywords.clear();
+
+    if (containsAnyNeedle(haystack, {QStringLiteral("amyotrophic lateral sclerosis"), QStringLiteral("motor neurone"), QStringLiteral("motor neuron")})
+        || containsAnyWord(haystack, {QStringLiteral("mnd"), QStringLiteral("als")})) {
+        return QStringLiteral("MND / ALS");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("beyond bayes"), QStringLiteral("high-dimensional"), QStringLiteral("high dimensional"), QStringLiteral("information geometry")})) {
+        return QStringLiteral("Beyond Bayes");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("peer review"), QStringLiteral("referee report"), QStringLiteral("reviewer comments")})) {
+        return QStringLiteral("Peer review");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("psychiat"), QStringLiteral("mental health"), QStringLiteral("psychosis"), QStringLiteral("depressive disorder")})) {
+        return QStringLiteral("Psychiatry");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("paediatric"), QStringLiteral("pediatric"), QStringLiteral("neonat"), QStringLiteral("adolescent")})) {
+        return QStringLiteral("Paediatrics");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("obstetric"), QStringLiteral("gynecology"), QStringLiteral("gynaecology"), QStringLiteral("pregnancy")})) {
+        return QStringLiteral("OBGYN");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("medicine for mountaineer"), QStringLiteral("wilderness medicine"), QStringLiteral("wilderness activities")})) {
+        return QStringLiteral("Wilderness medicine");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("submarine"), QStringLiteral("war at sea"), QStringLiteral("naval warfare"), QStringLiteral("naval history")})) {
+        return QStringLiteral("Naval history");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("world war ii"), QStringLiteral("wwii"), QStringLiteral("world war 2"), QStringLiteral("america that went to war")})) {
+        return QStringLiteral("World War II");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("world war i"), QStringLiteral("world war 1"), QStringLiteral("wwi")})) {
+        return QStringLiteral("World War I");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("alexei yurchak"), QStringLiteral("late socialism"), QStringLiteral("post-soviet"), QStringLiteral("soviet")})) {
+        return QStringLiteral("Soviet anthropology");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("david graeber"), QStringLiteral("graeber"), QStringLiteral("anthropolog"), QStringLiteral("ethnograph"), QStringLiteral("archaeolog")})) {
+        return QStringLiteral("Anthropology");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("robert caro"), QStringLiteral("robert a. caro"), QStringLiteral("lyndon johnson"), QStringLiteral("lyndon b. johnson"), QStringLiteral("robert moses"), QStringLiteral("power broker")})) {
+        return QStringLiteral("Political biography");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("aldo leopold"), QStringLiteral("ecology"), QStringLiteral("conservation"), QStringLiteral("environment")})) {
+        return QStringLiteral("Ecology");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("game of thrones"), QStringLiteral("song of ice and fire"), QStringLiteral("george r. r. martin"), QStringLiteral("george rr martin"), QStringLiteral("fantasy")})) {
+        return QStringLiteral("Fantasy");
+    }
+    if (containsAnyNeedle(haystack, {QStringLiteral("kim stanley robinson"), QStringLiteral("octavia butler"), QStringLiteral("ursula k. le guin"), QStringLiteral("ursula le guin"), QStringLiteral("science fiction"), QStringLiteral("sci-fi")})) {
+        return QStringLiteral("Science fiction");
+    }
+    if (isMedicineEntry(contentEntry)) {
+        return QStringLiteral("Medicine");
+    }
+    if (isPoliticsEntry(contentEntry)) {
+        return QStringLiteral("Politics");
+    }
+    if (isAnthropologyEntry(contentEntry)) {
+        return QStringLiteral("Anthropology");
+    }
+    if (isFictionEntry(contentEntry)) {
+        return QStringLiteral("Fiction");
+    }
+    if (isNonfictionEntry(contentEntry)) {
+        return QStringLiteral("Non-fiction");
+    }
+    return QString();
+}
+
+QStringList LibraryView::displayTagsForTile(const ShelfEntry &entry, const EpubCover::Metadata *epubMetadata)
+{
+    QStringList displayTags;
+    auto appendUnique = [&displayTags](const QString &tag) {
+        const QString trimmed = tag.simplified();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        const QString key = compactPublicationTypeKey(trimmed);
+        for (const QString &existing : std::as_const(displayTags)) {
+            if (compactPublicationTypeKey(existing) == key) {
+                return;
+            }
+        }
+        displayTags.append(trimmed);
+    };
+
+    const QString firstCreator = epubMetadata ? firstCreatorForDisplay(epubMetadata->creators) : QString();
+    if (entry.format == QLatin1String("EPUB")) {
+        appendUnique(compactMetadataLine(firstCreator));
+        appendUnique(compactMetadataLine(displaySubjectForTile(entry, epubMetadata)));
+    }
+
+    for (const QString &tag : entry.tags) {
+        if (!isDisplayOnlyGenericTag(tag)) {
+            appendUnique(compactMetadataLine(tag));
+        }
+    }
+
+    if (displayTags.isEmpty()) {
+        const QString focus = focusTagFor(entry);
+        if (!isDisplayOnlyGenericTag(focus)) {
+            appendUnique(compactMetadataLine(focus));
+        }
+    }
+    return displayTags.mid(0, 2);
 }
 
 void LibraryView::enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata *epubMetadata)
@@ -3283,6 +3880,8 @@ QStandardItemModel *LibraryView::modelForShelf(Shelf shelf) const
         return m_nonfictionModel;
     case StarterPackShelf:
         return m_starterPackModel;
+    case FinishedShelf:
+        return m_finishedModel;
     case PdfShelf:
     case PapersShelf:
         break;
@@ -3306,18 +3905,138 @@ int LibraryView::tabIndexForShelf(Shelf shelf) const
 
 void LibraryView::populate(QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode)
 {
-    populateSections(model, arrangeSections(entries, mode));
+    populate(PdfShelf, model, entries, mode);
 }
 
-void LibraryView::populateSections(QStandardItemModel *model, const QList<Section> &sections)
+void LibraryView::populate(Shelf shelf, QStandardItemModel *model, const QList<ShelfEntry> &entries, ViewMode mode)
+{
+    populateSections(shelf, model, arrangeSections(entries, mode));
+}
+
+void LibraryView::populateSections(Shelf shelf, QStandardItemModel *model, const QList<Section> &sections)
 {
     model->clear();
 
+    QList<ShelfEntry> flatEntries;
     for (const Section &section : sections) {
         for (const ShelfEntry &entry : section.entries) {
-            model->appendRow(makeTileItem(entry));
+            flatEntries.append(entry);
         }
     }
+
+    int limit = flatEntries.size();
+    if (shelf >= PdfShelf && shelf < DocumentShelfCount) {
+        if (m_documentShelfRowLimit[shelf] <= 0) {
+            m_documentShelfRowLimit[shelf] = InitialDocumentShelfRows;
+        }
+        limit = qMin(flatEntries.size(), m_documentShelfRowLimit[shelf]);
+    }
+
+    for (int row = 0; row < limit; ++row) {
+        model->appendRow(makeTileItem(flatEntries.at(row)));
+    }
+
+    model->setProperty("paperlibraryShelf", static_cast<int>(shelf));
+    model->setProperty("paperlibraryTotalRows", flatEntries.size());
+    model->setProperty("paperlibraryRenderedRows", limit);
+    model->setProperty("paperlibraryHasMoreRows", limit < flatEntries.size());
+}
+
+QList<LibraryView::ShelfEntry> LibraryView::displayEntriesForShelf(Shelf shelf) const
+{
+    if (shelf < PdfShelf || shelf >= DocumentShelfCount) {
+        return {};
+    }
+
+    const QString query = searchQuery();
+    if (!query.isEmpty()) {
+        QList<ShelfEntry> matches;
+        for (const ShelfEntry &entry : std::as_const(m_shelfEntries[shelf])) {
+            if (matchesQuery(entry, query)) {
+                matches.append(entry);
+            }
+        }
+        return matches;
+    }
+
+    if (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode) {
+        return m_shelfEntries[shelf];
+    }
+
+    QList<ShelfEntry> entries;
+    const QList<Section> sections = arrangeSections(m_shelfEntries[shelf], m_viewModes[shelf]);
+    for (const Section &section : sections) {
+        entries.append(section.entries);
+    }
+    return entries;
+}
+
+void LibraryView::appendMoreDocumentShelfRows(Shelf shelf)
+{
+    if (shelf < PdfShelf || shelf >= DocumentShelfCount) {
+        return;
+    }
+
+    QStandardItemModel *const model = modelForShelf(shelf);
+    if (!model || m_grid->model() != model) {
+        return;
+    }
+
+    const int rendered = model->property("paperlibraryRenderedRows").toInt();
+    const int total = model->property("paperlibraryTotalRows").toInt();
+    if (rendered >= total) {
+        return;
+    }
+
+    const QList<ShelfEntry> entries = displayEntriesForShelf(shelf);
+    const int nextLimit = qMin(entries.size(), qMax(rendered + DocumentShelfFetchBatchRows, rendered + 1));
+    if (nextLimit <= rendered) {
+        return;
+    }
+
+    m_documentShelfRowLimit[shelf] = nextLimit;
+    for (int row = rendered; row < nextLimit; ++row) {
+        model->appendRow(makeTileItem(entries.at(row)));
+    }
+
+    model->setProperty("paperlibraryTotalRows", entries.size());
+    model->setProperty("paperlibraryRenderedRows", nextLimit);
+    model->setProperty("paperlibraryHasMoreRows", nextLimit < entries.size());
+}
+
+void LibraryView::maybeFetchMoreRowsForActiveShelf()
+{
+    if (!m_grid || m_fetchingMoreRows) {
+        return;
+    }
+
+    QScrollBar *const bar = m_grid->verticalScrollBar();
+    if (!bar) {
+        return;
+    }
+    const bool hasMoreRows = m_grid->model() && m_grid->model()->property("paperlibraryHasMoreRows").toBool();
+    if (bar->maximum() <= 0) {
+        if (!hasMoreRows) {
+            return;
+        }
+    } else {
+        const int remaining = bar->maximum() - bar->value();
+        if (remaining > qMax(bar->pageStep(), DocumentShelfFetchThresholdPx)) {
+            return;
+        }
+    }
+
+    m_fetchingMoreRows = true;
+    const Shelf shelf = activeShelf();
+    if (PaperLibrarySectionedModel *sections = activePaperSections(); sections && usesCorpusList(shelf)) {
+        if (sections->canFetchMore()) {
+            sections->fetchMore();
+            requestCorpusCovers();
+        }
+    } else if (isDocumentShelf(shelf)) {
+        appendMoreDocumentShelfRows(shelf);
+    }
+    m_fetchingMoreRows = false;
 }
 
 LibraryView::Shelf LibraryView::activeShelf() const
@@ -3339,6 +4058,29 @@ void LibraryView::setSearchQuery(const QString &query)
     m_searchField->setText(query); // textChanged applies the filter
 }
 
+bool LibraryView::showShelf(Shelf shelf)
+{
+    const int target = tabIndexForShelf(shelf);
+    if (!m_shelfSwitch || target < 0) {
+        return false;
+    }
+    m_shelfSwitch->setCurrentIndex(target);
+    return true;
+}
+
+static QString compactModeText(const QString &label, const QString &detail)
+{
+    const QString cleanLabel = label.trimmed();
+    const QString cleanDetail = detail.trimmed();
+    if (cleanDetail.isEmpty()) {
+        return cleanLabel;
+    }
+    if (cleanLabel.isEmpty()) {
+        return cleanDetail;
+    }
+    return cleanLabel + QStringLiteral(": ") + cleanDetail;
+}
+
 bool LibraryView::matchesQuery(const ShelfEntry &entry, const QString &query)
 {
     const auto contains = [&query](const QString &text) { return text.contains(query, Qt::CaseInsensitive); };
@@ -3349,29 +4091,71 @@ void LibraryView::applySearch()
 {
     cancelContentSearch(); // whatever was in flight answers a stale query
     rebuildShelves();
+    const QString query = searchQuery();
+    const bool activeCorpus = usesCorpusList(activeShelf());
+    const bool fullTextCorpusSearch = activeCorpus && corpusSearchMode() == FullTextSearch && !query.isEmpty();
+    if (!fullTextCorpusSearch && !query.isEmpty()) {
+        clearCorpusResultMode();
+    }
+
     for (PaperLibrarySectionedModel *sections : m_paperSections) {
         if (!sections) {
             continue;
         }
-        // The corpus's instant layer: one substring filter over ~18k
-        // precomputed haystacks per keystroke
-        sections->setQuery(searchQuery());
+        if (sections->hasExplicitSourceRows()) {
+            sections->clearExplicitSourceRows();
+        }
+        sections->setQuery(fullTextCorpusSearch ? QString() : query);
     }
-    if (!searchQuery().isEmpty()) {
+
+    if (fullTextCorpusSearch) {
+        PaperLibrarySectionedModel *sections = activePaperSections();
+        if (!sections || !m_paperModel || !m_paperModel->isLoaded()) {
+            return;
+        }
+        if (!m_paperModel->hasFullTextSearchIndex()) {
+            showPaperNotice(i18nc("@info when full-text search is selected but not built", "Full-text index missing — run the PaperLibrary search indexer"), true);
+            return;
+        }
+        const QList<int> resultRows = m_paperModel->fullTextSearchRows(query, 720);
+        sections->setExplicitSourceRows(resultRows,
+                                        i18nc("@label corpus search result group", "Full-text search"),
+                                        i18nc("@title empty full-text corpus search tile", "No full-text matches"));
+        setCorpusResultMode(i18nc("@label compact corpus result mode chip", "Full text"), query);
+        if (resultRows.isEmpty()) {
+            showPaperNotice(i18nc("@info empty full-text corpus search", "No full-text matches for: %1", query), true);
+        } else if (m_paperNotice) {
+            m_paperNotice->hide();
+        }
+        requestCorpusCovers();
+        selectFirstTile();
+        return;
+    }
+
+    if (!query.isEmpty()) {
         m_searchDebounce->start();
+    } else if (m_paperNotice && usesCorpusList(activeShelf())) {
+        clearCorpusResultMode();
+        m_paperNotice->hide();
     }
 }
 
 void LibraryView::rebuildShelves()
 {
     const QString query = searchQuery();
+    if (query != m_documentShelfQuery) {
+        m_documentShelfQuery = query;
+        for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
+            m_documentShelfRowLimit[shelf] = InitialDocumentShelfRows;
+        }
+    }
     for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
         QStandardItemModel *const model = modelForShelf(static_cast<Shelf>(shelf));
         if (query.isEmpty()) {
             if (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode) {
-                populateSections(model, {{QString(), m_shelfEntries[shelf]}});
+                populateSections(static_cast<Shelf>(shelf), model, {{QString(), m_shelfEntries[shelf]}});
             } else {
-                populate(model, m_shelfEntries[shelf], m_viewModes[shelf]);
+                populate(static_cast<Shelf>(shelf), model, m_shelfEntries[shelf], m_viewModes[shelf]);
             }
             continue;
         }
@@ -3383,7 +4167,7 @@ void LibraryView::rebuildShelves()
                 matches.append(entry);
             }
         }
-        populateSections(model, {{QString(), matches}});
+        populateSections(static_cast<Shelf>(shelf), model, {{QString(), matches}});
     }
     if (!usesCorpusList(activeShelf())) {
         selectFirstTile();
@@ -3504,14 +4288,21 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
     ShelfEntry displayEntry = entry;
     displayEntry.title = cleanedLocalTitle(displayEntry.title, displayEntry.url);
     enrichShelfEntry(displayEntry);
+    const bool paperish = isPaperishEntryData(displayEntry.format, displayEntry.title, displayEntry.description, displayEntry.tags, displayEntry.keywords, displayEntry.detailLines);
+    const QString paperCitationTitle = paperish ? citationLabelForEntryData(displayEntry.description, displayEntry.detailLines) : QString();
+    const QString paperThesis = paperish ? thesisLineForPaper(displayEntry.title, displaySubjectForTile(displayEntry)) : QString();
 
     QStandardItem *item = new QStandardItem(displayEntry.title);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     item->setData(displayEntry.url, UrlRole);
     item->setData(displayEntry.pinned, PinnedRole);
     item->setData(displayEntry.downranked, DownrankedRole);
+    item->setData(displayEntry.finishedReading, FinishedReadingRole);
     item->setData(displayEntry.progress, ProgressRole);
     item->setData(displayEntry.format, FormatRole);
+    if (!paperCitationTitle.isEmpty()) {
+        item->setData(paperCitationTitle, DisplayTitleRole);
+    }
     QStringList shownTags = displayEntry.tags;
     if (shownTags.isEmpty()) {
         const QString inferred = focusTagFor(displayEntry);
@@ -3523,20 +4314,29 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
     item->setData(displayEntry.description, DescriptionRole);
     item->setAccessibleText(displayEntry.title);
     QString tooltipDescription = displayEntry.description;
+    const EpubCover::Metadata *epubMetadata = nullptr;
     if (displayEntry.url.isLocalFile()) {
         const QString filePath = displayEntry.url.toLocalFile();
+        if (displayEntry.format == QLatin1String("EPUB")) {
+            epubMetadata = &epubMetadataFor(filePath);
+            if (displayEntry.description.isEmpty() && !epubMetadata->description.isEmpty()) {
+                item->setData(epubMetadata->description, DescriptionRole);
+                tooltipDescription = epubMetadata->description;
+                displayEntry.description = epubMetadata->description;
+            }
+        }
+        QStringList displayTags = displayTagsForTile(displayEntry, epubMetadata);
+        if (paperish && !paperThesis.isEmpty()) {
+            displayTags = {paperThesis};
+        }
+        item->setData(displayTags, DisplayTagsRole);
         // What a typographic card would say for this entry. Books get
         // their byline, foot and fallback description from the EPUB's own
         // OPF metadata — curated store metadata, when present, wins
-        CoverGenerator::CoverSpec spec {displayEntry.title, QString(), QString(), shownTags.value(0)};
-        if (displayEntry.format == QLatin1String("EPUB")) {
-            const EpubCover::Metadata &metadata = epubMetadataFor(filePath);
-            spec.authors = metadata.creators;
-            spec.yearJournal = metadata.year;
-            if (displayEntry.description.isEmpty()) {
-                item->setData(metadata.description, DescriptionRole);
-                tooltipDescription = metadata.description;
-            }
+        CoverGenerator::CoverSpec spec {paperCitationTitle.isEmpty() ? displayEntry.title : paperCitationTitle, QString(), QString(), displayTags.value(1, displayTags.value(0, shownTags.value(0)))};
+        if (epubMetadata) {
+            spec.authors = epubMetadata->creators;
+            spec.yearJournal = epubMetadata->year;
         }
         const QString cached = m_coverLoader->cachedCoverPath(filePath, spec);
         if (!cached.isEmpty()) {
@@ -3545,8 +4345,31 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
         } else {
             m_coverLoader->requestCover(filePath, spec);
         }
+    } else {
+        QStringList displayTags = displayTagsForTile(displayEntry, nullptr);
+        if (paperish && !paperThesis.isEmpty()) {
+            displayTags = {paperThesis};
+        }
+        item->setData(displayTags, DisplayTagsRole);
     }
-    QStringList tooltipLines = {joinCompact({displayEntry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))}), progressTooltipLine(displayEntry.progress), tooltipDescription};
+    const QStringList displayTags = item->data(DisplayTagsRole).toStringList();
+    QStringList tooltipLines;
+    if (epubMetadata) {
+        tooltipLines << joinCompact({epubMetadata->creators, epubMetadata->year});
+        tooltipLines << displaySubjectForTile(displayEntry, epubMetadata);
+    } else {
+        tooltipLines << joinCompact({displayEntry.format, displayTags.mid(0, 2).join(QStringLiteral(" · "))});
+    }
+    if (!paperCitationTitle.isEmpty()) {
+        tooltipLines << paperCitationTitle;
+    }
+    if (paperish && !paperThesis.isEmpty()) {
+        tooltipLines << paperThesis;
+    }
+    if (tooltipLines.isEmpty() && !shownTags.isEmpty()) {
+        tooltipLines << joinCompact({displayEntry.format, shownTags.mid(0, 2).join(QStringLiteral(" · "))});
+    }
+    tooltipLines << progressTooltipLine(displayEntry.progress) << tooltipDescription;
     tooltipLines.append(displayEntry.detailLines);
     item->setToolTip(libraryTileTooltip(displayEntry.title, tooltipLines));
     return item;
@@ -3561,11 +4384,14 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
             return {index.data(Qt::DisplayRole).toString(), false};
         }
         const auto *sections = qobject_cast<const PaperLibrarySectionedModel *>(index.model());
+        const QString metadata = corpusPaperMetadataLineForIndex(index);
+        const QString paperThesis = corpusPaperThesisForIndex(index);
+        const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
+        const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
+        const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         if (sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers) {
             const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
-            const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
-            const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
-            const QString rationale = joinCompact({paperSummary, relation});
+            const QString rationale = joinCompact({paperThesis, paperSummary == paperThesis ? QString() : paperSummary, relation});
             if (!rationale.isEmpty()) {
                 return {rationale, true};
             }
@@ -3574,19 +4400,28 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
             }
         }
         const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
+        if (!metadata.isEmpty()) {
+            QString context = paperThesis.isEmpty() ? paperSummary : paperThesis;
+            if (context.isEmpty() || context == metadata) {
+                context = relation;
+            }
+            if (context.isEmpty() || context == metadata) {
+                context = intent;
+            }
+            if (context.isEmpty() || context == metadata) {
+                context = priority;
+            }
+            return {joinCompact({metadata, context}), true};
+        }
         if (!paperSummary.isEmpty()) {
-            const QString metadata = corpusPaperMetadataLineForIndex(index);
             return {metadata.isEmpty() ? paperSummary : joinCompact({paperSummary, metadata}), true};
         }
-        const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString();
         if (!relation.isEmpty()) {
             return {relation, true};
         }
-        const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
         if (!intent.isEmpty()) {
             return {intent, true};
         }
-        const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         if (!priority.isEmpty()) {
             return {priority, true};
         }
@@ -3596,13 +4431,16 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
     // caption — the card displays the title as the artwork already
     const bool generatedCardShowing = index.data(GeneratedCoverRole).toBool() && !index.data(CoverRole).value<QPixmap>().isNull();
     if (!generatedCardShowing) {
-        return {index.data(Qt::DisplayRole).toString(), false};
+        const QString displayTitle = index.data(DisplayTitleRole).toString().trimmed();
+        return {displayTitle.isEmpty() ? index.data(Qt::DisplayRole).toString() : displayTitle, false};
     }
     const QString description = index.data(DescriptionRole).toString();
     if (!description.isEmpty()) {
         return {description, true};
     }
-    return {QStringList(index.data(TagsRole).toStringList().mid(0, 2)).join(QStringLiteral(" · ")), true};
+    const QStringList displayTags = index.data(DisplayTagsRole).toStringList();
+    const QStringList tags = displayTags.isEmpty() ? index.data(TagsRole).toStringList() : displayTags;
+    return {QStringList(tags.mid(0, 2)).join(QStringLiteral(" · ")), true};
 }
 
 void LibraryView::enrichShelfEntryFromCorpus(ShelfEntry &entry) const
@@ -3685,6 +4523,7 @@ void LibraryView::setupPapersShelf()
         });
     }
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
+        syncCorpusSearchButton();
         refresh();
         prebuildCorpusShelves();
         showShelfGuide();
@@ -3715,6 +4554,8 @@ void LibraryView::shelfChanged(int index)
     const bool corpus = usesCorpusList(shelf);
     m_viewModeButton->setVisible(!corpus);
     m_paperSectionButton->setVisible(corpus);
+    syncCorpusSearchButton();
+    syncCorpusResultButton();
     m_grid->setVisible(true);
     if (corpus) {
         syncPaperSectionButton();
@@ -3727,7 +4568,7 @@ void LibraryView::shelfChanged(int index)
     if (m_corpusCoverWarmupTimer) {
         m_corpusCoverWarmupTimer->stop();
     }
-    if (m_shelfRenderTimer) {
+    if (corpus && m_shelfRenderTimer) {
         m_shelfRenderTimer->start();
     } else {
         renderPendingShelf();
@@ -3832,6 +4673,8 @@ void LibraryView::configureCorpusShelf(Shelf shelf)
 {
     attachCorpusShelf(shelf);
     syncPaperSectionButton();
+    syncCorpusSearchButton();
+    syncCorpusResultButton();
 }
 
 void LibraryView::setPaperSectionMode(Shelf shelf, int mode)
@@ -3875,21 +4718,127 @@ void LibraryView::syncPaperSectionButton()
     }
 }
 
-void LibraryView::showShelfGuide()
+LibraryView::CorpusSearchMode LibraryView::corpusSearchMode() const
 {
-    const Shelf shelf = activeShelf();
-    if (!usesCorpusList(shelf) || !m_paperNotice) {
-        if (m_paperNotice) {
-            m_paperNotice->hide();
-        }
+    return m_corpusSearchMode;
+}
+
+void LibraryView::setCorpusSearchMode(CorpusSearchMode mode)
+{
+    if (mode < ShelfMetadataSearch || mode > FullTextSearch) {
         return;
     }
-    const QString guide = corpusShelfGuide(shelf, paperSectionMode(shelf));
-    if (guide.isEmpty()) {
+    if (mode == FullTextSearch && m_paperModel && m_paperModel->isLoaded() && !m_paperModel->hasFullTextSearchIndex()) {
+        showPaperNotice(i18nc("@info when the full-text search index is unavailable", "Full-text index missing — run the PaperLibrary search indexer"), true);
+        mode = ShelfMetadataSearch;
+    }
+    if (m_corpusSearchMode == mode) {
+        syncCorpusSearchButton();
+        return;
+    }
+    m_corpusSearchMode = mode;
+    KConfigGroup config = partGeneralConfig();
+    config.writeEntry("CorpusSearchMode", corpusSearchModeName(mode));
+    config.sync();
+    syncCorpusSearchButton();
+    applySearch();
+}
+
+void LibraryView::syncCorpusSearchButton()
+{
+    if (!m_corpusSearchButton) {
+        return;
+    }
+    const bool corpus = usesCorpusList(activeShelf());
+    m_corpusSearchButton->setVisible(corpus);
+    if (!corpus) {
+        return;
+    }
+    const bool ftsAvailable = m_paperModel && m_paperModel->isLoaded() && m_paperModel->hasFullTextSearchIndex();
+    if (m_corpusSearchActions[FullTextSearch]) {
+        m_corpusSearchActions[FullTextSearch]->setEnabled(ftsAvailable);
+    }
+    if (m_corpusSearchMode == FullTextSearch && !ftsAvailable) {
+        m_corpusSearchMode = ShelfMetadataSearch;
+    }
+    if (m_corpusSearchActions[m_corpusSearchMode]) {
+        m_corpusSearchActions[m_corpusSearchMode]->setChecked(true);
+        m_corpusSearchButton->setText(m_corpusSearchActions[m_corpusSearchMode]->text());
+    }
+}
+
+void LibraryView::setCorpusResultMode(const QString &label, const QString &detail)
+{
+    m_corpusResultLabel = label.trimmed();
+    m_corpusResultDetail = detail.trimmed();
+    syncCorpusResultButton();
+}
+
+void LibraryView::clearCorpusResultMode()
+{
+    if (m_corpusResultLabel.isEmpty() && m_corpusResultDetail.isEmpty()) {
+        return;
+    }
+    m_corpusResultLabel.clear();
+    m_corpusResultDetail.clear();
+    syncCorpusResultButton();
+}
+
+void LibraryView::syncCorpusResultButton()
+{
+    if (!m_corpusResultButton) {
+        return;
+    }
+    const bool visible = usesCorpusList(activeShelf()) && (!m_corpusResultLabel.isEmpty() || !m_corpusResultDetail.isEmpty());
+    m_corpusResultButton->setVisible(visible);
+    if (!visible) {
+        return;
+    }
+    const QString fullText = compactModeText(m_corpusResultLabel, m_corpusResultDetail);
+    const int textWidth = qMax(120, m_corpusResultButton->maximumWidth() - 24);
+    m_corpusResultButton->setText(QFontMetrics(m_corpusResultButton->font()).elidedText(fullText, Qt::ElideRight, textWidth));
+    m_corpusResultButton->setToolTip(i18nc("@info:tooltip on corpus result mode chip", "%1\nClick to clear this result mode.", fullText));
+}
+
+bool LibraryView::clearActiveCorpusResult()
+{
+    bool cleared = false;
+    for (PaperLibrarySectionedModel *sections : m_paperSections) {
+        if (sections && sections->hasExplicitSourceRows()) {
+            sections->clearExplicitSourceRows();
+            cleared = true;
+        }
+    }
+    if (!m_searchField->text().isEmpty()) {
+        m_searchField->clear();
+        cleared = true;
+    }
+    clearCorpusResultMode();
+    if (m_paperNotice) {
+        m_paperNotice->hide();
+    }
+    if (cleared) {
+        requestCorpusCovers();
+        selectFirstTile();
+    }
+    return cleared;
+}
+
+void LibraryView::showShelfGuide()
+{
+    if (!m_paperNotice) {
+        return;
+    }
+    if (!usesCorpusList(activeShelf())) {
         m_paperNotice->hide();
         return;
     }
-    showPaperNotice(guide, false);
+    if (m_paperModel && !m_paperModel->isLoaded()) {
+        return; // leave the loading notice alone
+    }
+    // Normal shelf orientation belongs in the tiles and the grouping control,
+    // not in a persistent banner that steals browsing space.
+    m_paperNotice->hide();
 }
 
 void LibraryView::requestCorpusCovers()
@@ -3913,9 +4862,8 @@ void LibraryView::requestNextCorpusCoverBatch()
         return;
     }
 
-    // Keep each pass bounded. Generated corpus cards are immediately useful,
-    // while real local PDF covers are warmed opportunistically after the
-    // highest-ranked first screens.
+    // Keep each pass bounded. Local PDFs are rendered from the actual file;
+    // manifest thumbnails are only a fallback for rows without a local file.
     static constexpr int MaxCorpusCoverRequests = 16;
     const int rows = sections->rowCount();
     m_nextCorpusCoverRow = requestCorpusCoversForSections(sections, m_nextCorpusCoverRow, MaxCorpusCoverRequests);
@@ -3941,18 +4889,30 @@ int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sect
         if (!index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>().isNull()) {
             continue;
         }
-        const QString pdfPath = index.data(PaperLibrarySectionedModel::PdfPathRole).toString();
-        if (pdfPath.isEmpty()) {
+        const QString coverKey = index.data(PaperLibrarySectionedModel::PdfPathRole).toString();
+        if (coverKey.isEmpty()) {
             continue;
         }
-        const CoverGenerator::CoverSpec spec = corpusCoverSpecForIndex(index);
-        const QString cached = m_coverLoader->cachedCoverPath(pdfPath, spec);
-        if (!cached.isEmpty()) {
-            sections->setCoverForPath(pdfPath, QVariant::fromValue(QPixmap(cached)), CoverLoader::isGeneratedCoverPath(cached));
-        } else {
-            m_coverLoader->requestCover(pdfPath, spec);
+        const QString pdfPath = sections->resolvePath(index);
+        if (!pdfPath.isEmpty()) {
+            const CoverGenerator::CoverSpec spec = corpusCoverSpecForIndex(index);
+            const QString cached = m_coverLoader->cachedCoverPath(pdfPath, spec);
+            if (!cached.isEmpty()) {
+                sections->setCoverForPath(coverKey, QVariant::fromValue(QPixmap(cached)), CoverLoader::isGeneratedCoverPath(cached));
+            } else {
+                m_coverLoader->requestCover(pdfPath, spec);
+            }
+            ++requested;
+            continue;
         }
-        ++requested;
+        const QString thumbnailPath = index.data(PaperLibrarySectionedModel::ThumbnailPathRole).toString();
+        if (!thumbnailPath.isEmpty()) {
+            const QPixmap thumbnail(thumbnailPath);
+            if (!thumbnail.isNull()) {
+                sections->setCoverForPath(coverKey, QVariant::fromValue(thumbnail), false);
+                ++requested;
+            }
+        }
     }
     return row;
 }
@@ -4069,9 +5029,12 @@ void LibraryView::showPaperNotice(const QString &text, bool autoHide)
     // A quiet palette-derived strip, styled at show time so it follows
     // light/dark appearance changes
     QPalette chip = palette();
-    chip.setColor(QPalette::Window, blendColors(palette().color(QPalette::Base), palette().color(QPalette::Highlight), 0.10));
+    const QColor base = palette().color(QPalette::Base);
+    const QColor textColor = palette().color(QPalette::Text);
+    const bool dark = base.lightnessF() < 0.5;
+    chip.setColor(QPalette::Window, blendColors(base, textColor, dark ? 0.12 : 0.045));
     QColor noticeColor = palette().color(QPalette::Text);
-    noticeColor.setAlphaF(0.75);
+    noticeColor.setAlphaF(0.72);
     chip.setColor(QPalette::WindowText, noticeColor);
     m_paperNotice->setPalette(chip);
     m_paperNotice->setAutoFillBackground(true);
@@ -4170,35 +5133,11 @@ void LibraryView::updateSelectedTileContext(const QModelIndex &index)
         }
         return;
     }
-    if (!index.isValid() || isLibraryHeaderIndex(index) || !index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
-        showShelfGuide();
+    if (m_paperModel && !m_paperModel->isLoaded()) {
         return;
     }
-
-    const QString title = index.data(Qt::DisplayRole).toString().trimmed();
-    const QString metadata = index.data(PaperLibraryModel::DetailRole).toString().trimmed();
-    const QString visualSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
-    const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString().trimmed();
-    const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString().trimmed();
-    const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
-
-    const QString why = joinCompact({visualSummary, relation});
-    QStringList parts;
-    if (!title.isEmpty()) {
-        parts.append(title);
-    }
-    if (!metadata.isEmpty()) {
-        parts.append(metadata);
-    }
-    if (!why.isEmpty()) {
-        parts.append(i18nc("@info selected corpus tile rationale", "Why: %1", why));
-    }
-    const QString queue = joinCompact({intent, priority});
-    if (!queue.isEmpty()) {
-        parts.append(i18nc("@info selected corpus tile queue context", "Queue: %1", queue));
-    }
-
-    showPaperNotice(parts.join(QStringLiteral("  |  ")), false);
+    Q_UNUSED(index);
+    m_paperNotice->hide();
 }
 
 bool LibraryView::downrankTile(const QModelIndex &index)
@@ -4271,6 +5210,73 @@ void LibraryView::activate(const QUrl &url, double booksProgress)
     }
 }
 
+bool LibraryView::showAdjacentDocumentsForIndex(const QModelIndex &index)
+{
+    if (!index.isValid() || isLibraryHeaderIndex(index) || !index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
+        return false;
+    }
+
+    const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+    const QString metadata = corpusPaperMetadataLineForIndex(index);
+    const QString slug = index.data(PaperLibraryModel::SlugRole).toString().trimmed();
+    if (m_paperModel && m_paperModel->isLoaded() && !slug.isEmpty()) {
+        const QList<int> relatedRows = m_paperModel->relatedRowsForSlug(slug, 160);
+        if (!relatedRows.isEmpty()) {
+            PaperLibrarySectionedModel *sections = paperSectionsForShelf(PapersShelf);
+            if (sections) {
+                attachCorpusShelf(PapersShelf);
+                sections->setExplicitSourceRows(relatedRows,
+                                                i18nc("@label adjacent corpus result group", "Adjacent documents"),
+                                                i18nc("@title empty adjacent corpus search tile", "No adjacent documents"));
+                {
+                    const QSignalBlocker blocker(m_searchField);
+                    m_searchField->clear();
+                }
+                showShelf(PapersShelf);
+                const QString target = title.isEmpty() ? slug : title;
+                setCorpusResultMode(i18nc("@label compact corpus result mode chip", "Adjacent"), target);
+                showPaperNotice(metadata.isEmpty() ? i18nc("@info after entering graph-adjacent mode", "Adjacent documents for %1", target)
+                                                   : i18nc("@info after entering graph-adjacent mode", "Adjacent documents for %1 — %2", target, metadata),
+                                false);
+                requestCorpusCovers();
+                selectFirstTile();
+                return true;
+            }
+        }
+    }
+
+    QString relatedQuery = index.data(PaperLibrarySectionedModel::RelatedQueryRole).toString().trimmed();
+    if (relatedQuery.isEmpty()) {
+        const QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
+        for (const QString &tag : tags) {
+            if (!tag.trimmed().isEmpty()) {
+                relatedQuery = tag.trimmed();
+                break;
+            }
+        }
+    }
+    if (relatedQuery.isEmpty()) {
+        relatedQuery = index.data(Qt::DisplayRole).toString().trimmed();
+    }
+    if (relatedQuery.isEmpty()) {
+        return false;
+    }
+
+    setSearchQuery(relatedQuery);
+    const QString target = title.isEmpty() ? relatedQuery : title;
+    setCorpusResultMode(i18nc("@label compact corpus result mode chip", "Related"), target);
+    const QString detail = joinCompact({metadata, relatedQuery});
+    showPaperNotice(detail.isEmpty() ? i18nc("@info after entering adjacent-documents mode", "Adjacent documents: %1", target)
+                                     : i18nc("@info after entering adjacent-documents mode", "Adjacent documents for %1 — %2", target, detail),
+                    false);
+    return true;
+}
+
+bool LibraryView::showAdjacentDocumentsForCurrentTile()
+{
+    return m_grid && showAdjacentDocumentsForIndex(m_grid->currentIndex());
+}
+
 void LibraryView::tileClicked(const QModelIndex &index)
 {
     if (!index.isValid() || isLibraryHeaderIndex(index)) {
@@ -4289,6 +5295,7 @@ void LibraryView::tileClicked(const QModelIndex &index)
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
         const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString().trimmed();
         const QString relation = index.data(PaperLibrarySectionedModel::RelationHintRole).toString().trimmed();
+        const QString relatedQuery = index.data(PaperLibrarySectionedModel::RelatedQueryRole).toString().trimmed();
         QStringList tags = index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList();
         tags.removeAll(QString());
         if (!title.isEmpty()) {
@@ -4297,7 +5304,8 @@ void LibraryView::tileClicked(const QModelIndex &index)
         if (!tags.isEmpty()) {
             m_store->setTags(url, tags);
         }
-        const QString description = joinCompact({detail, priority, intent, relation});
+        const QString adjacentHint = relatedQuery.isEmpty() ? QString() : i18nc("@info stored metadata hint for finding nearby papers", "Adjacent: %1", relatedQuery);
+        const QString description = joinCompact({detail, priority, intent, relation, adjacentHint});
         if (!description.isEmpty()) {
             m_store->setDescription(url, description);
         }
@@ -4358,12 +5366,11 @@ void LibraryView::showContextMenu(const QPoint &pos)
         if (relatedLabel.isEmpty()) {
             relatedLabel = relatedQuery;
         }
-        QAction *relatedAction = menu.addAction(relatedQuery.isEmpty() ? i18nc("@action:inmenu on a corpus tile", "Find Related")
-                                                                       : i18nc("@action:inmenu on a corpus tile", "Find Related: %1", relatedLabel));
-        relatedAction->setEnabled(!relatedQuery.isEmpty());
+        QAction *relatedAction = menu.addAction(relatedQuery.isEmpty() ? i18nc("@action:inmenu on a corpus tile", "Show Adjacent Documents")
+                                                                       : i18nc("@action:inmenu on a corpus tile", "Show Adjacent Documents: %1", relatedLabel));
         QAction *downrankAction = menu.addAction(downranked ? i18nc("@action:inmenu on a corpus tile", "Undo Thumbs Down") : i18nc("@action:inmenu on a corpus tile", "Thumbs Down"));
         QAction *clearSearchAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Clear Search"));
-        clearSearchAction->setEnabled(!searchQuery().isEmpty());
+        clearSearchAction->setEnabled(!searchQuery().isEmpty() || !m_corpusResultLabel.isEmpty() || !m_corpusResultDetail.isEmpty() || (sections && sections->hasExplicitSourceRows()));
         menu.addSeparator();
 #if defined(Q_OS_MACOS)
         QAction *revealAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Show in Finder"));
@@ -4374,14 +5381,14 @@ void LibraryView::showContextMenu(const QPoint &pos)
 
         const QAction *chosen = menu.exec(m_grid->viewport()->mapToGlobal(pos));
         if (chosen == relatedAction) {
-            setSearchQuery(relatedQuery);
+            showAdjacentDocumentsForIndex(index);
         } else if (chosen == downrankAction) {
             if (sections) {
                 sections->setDownranked(index, !downranked);
                 QTimer::singleShot(0, this, &LibraryView::requestCorpusCovers);
             }
         } else if (chosen == clearSearchAction) {
-            setSearchQuery(QString());
+            clearActiveCorpusResult();
         } else if (chosen == revealAction) {
 #if defined(Q_OS_MACOS)
             QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), pdfPath});
@@ -4397,10 +5404,16 @@ void LibraryView::showContextMenu(const QPoint &pos)
     }
     const bool pinned = index.data(PinnedRole).toBool();
     const bool downranked = index.data(DownrankedRole).toBool();
+    const bool finished = index.data(FinishedReadingRole).toBool();
+    const bool canFinish = index.data(FormatRole).toString() == QLatin1String("EPUB") || url.fileName().endsWith(QStringLiteral(".epub"), Qt::CaseInsensitive);
 
     QMenu menu(this);
     QAction *pinAction = menu.addAction(pinned ? i18nc("@action:inmenu on a library tile", "Unpin") : i18nc("@action:inmenu on a library tile", "Pin"));
     QAction *downrankAction = menu.addAction(downranked ? i18nc("@action:inmenu on a library tile", "Undo Thumbs Down") : i18nc("@action:inmenu on a library tile", "Thumbs Down"));
+    QAction *finishedAction = nullptr;
+    if (canFinish) {
+        finishedAction = menu.addAction(finished ? i18nc("@action:inmenu on a library tile", "Mark as Reading") : i18nc("@action:inmenu on a library tile", "Finished Reading"));
+    }
     QAction *editAction = menu.addAction(i18nc("@action:inmenu on a library tile", "Edit Title && Tags…"));
     QAction *removeAction = menu.addAction(i18nc("@action:inmenu on a library tile", "Remove from Library"));
     menu.addSeparator();
@@ -4418,6 +5431,13 @@ void LibraryView::showContextMenu(const QPoint &pos)
     } else if (chosen == downrankAction) {
         m_store->setDownranked(url, !downranked);
         refresh();
+    } else if (chosen == finishedAction) {
+        m_store->setFinishedReading(url, !finished);
+        refresh();
+        const int target = tabIndexForShelf(!finished ? FinishedShelf : BooksShelf);
+        if (target >= 0) {
+            m_shelfSwitch->setCurrentIndex(target);
+        }
     } else if (chosen == editAction) {
         editMetadata(url);
     } else if (chosen == removeAction) {
@@ -4544,6 +5564,8 @@ void LibraryView::keyPressEvent(QKeyEvent *event)
         // hands the library back to the document
         if (!m_searchField->text().isEmpty()) {
             m_searchField->clear(); // textChanged restores the shelf's arrangement
+            m_grid->setFocus();
+        } else if (clearActiveCorpusResult()) {
             m_grid->setFocus();
         } else {
             Q_EMIT closeRequested();

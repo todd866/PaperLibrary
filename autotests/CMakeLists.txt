@@ -32,7 +32,7 @@ ecm_add_test(libraryviewtest.cpp
     ../shell/epubimporter.cpp
     ../shell/applebooksprogress.cpp
     TEST_NAME "libraryviewtest"
-    LINK_LIBRARIES Qt6::Test Qt6::Widgets Qt6::Sql KF6::Archive KF6::ConfigCore KF6::I18n
+    LINK_LIBRARIES Qt6::Test Qt6::Widgets Qt6::Pdf Qt6::Sql KF6::Archive KF6::ConfigCore KF6::I18n
 )
 
 ecm_add_test(coverheuristictest.cpp ../shell/coverheuristic.cpp

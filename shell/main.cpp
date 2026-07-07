@@ -58,8 +58,10 @@ protected:
                 if (Shell *shell = qobject_cast<Shell *>(widget)) {
                     QString serializedOptions = ShellUtils::serializeOptions(false, false, false, false, false, QString(), QString(), QString());
                     shell->openDocument(foe->url(), serializedOptions);
-                    shell->raise();
-                    shell->activateWindow();
+                    if (!shell->isActiveWindow()) {
+                        shell->raise();
+                        shell->activateWindow();
+                    }
                     return true;
                 }
             }

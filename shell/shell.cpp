@@ -467,13 +467,12 @@ Shell::Shell(const QString &serializedOptions)
             m_libraryStore->importUrls(m_recent->urls());
         }
 
-        // Work through the backlog of untitled entries gradually, one
-        // document at a time (the tagger skips everything else)
+        // Work through the backlog gradually, one document at a time. The
+        // tagger itself decides whether metadata is missing/generic enough to
+        // repair, and skips corpus and non-PDF entries.
         const QList<LibraryStore::Entry> libraryEntries = m_libraryStore->entries();
         for (const LibraryStore::Entry &libraryEntry : libraryEntries) {
-            if (libraryEntry.title.isEmpty()) {
-                m_libraryAutoTagger->enqueue(libraryEntry.url);
-            }
+            m_libraryAutoTagger->enqueue(libraryEntry.url);
         }
 
         m_unique = ShellUtils::unique(serializedOptions);
@@ -544,6 +543,101 @@ QString Shell::tabTitleForUrl(const QUrl &url) const
 {
     const QString title = curatedTitleForUrl(url);
     return title.isEmpty() ? url.fileName() : title;
+}
+
+static QString adjacentQueryFromDescription(const QString &description)
+{
+    const QStringList segments = description.split(QStringLiteral(" · "), Qt::SkipEmptyParts);
+    for (QString segment : segments) {
+        segment = segment.trimmed();
+        if (segment.startsWith(QStringLiteral("Adjacent:"), Qt::CaseInsensitive)) {
+            return segment.mid(QStringLiteral("Adjacent:").size()).trimmed();
+        }
+    }
+    for (QString segment : segments) {
+        segment = segment.trimmed();
+        if (segment.startsWith(QStringLiteral("Related:"), Qt::CaseInsensitive)) {
+            return segment.mid(QStringLiteral("Related:").size()).trimmed();
+        }
+    }
+    return QString();
+}
+
+static bool usefulRelatedTag(const QString &tag)
+{
+    const QString value = tag.trimmed();
+    const QString lower = value.toCaseFolded();
+    if (value.size() < 3) {
+        return false;
+    }
+    const QStringList generic = {
+        QStringLiteral("book"),
+        QStringLiteral("books"),
+        QStringLiteral("pdf"),
+        QStringLiteral("paper"),
+        QStringLiteral("papers"),
+        QStringLiteral("epub"),
+        QStringLiteral("current"),
+        QStringLiteral("continue reading"),
+        QStringLiteral("opened before"),
+        QStringLiteral("read next"),
+    };
+    return !generic.contains(lower);
+}
+
+QString Shell::relatedPapersQueryForUrl(const QUrl &url) const
+{
+    if (!m_libraryStore) {
+        return QString();
+    }
+    const LibraryStore::Entry entry = m_libraryStore->metadata(url);
+    QString query = adjacentQueryFromDescription(entry.description);
+    if (!query.isEmpty()) {
+        return query;
+    }
+    for (const QString &tag : entry.tags) {
+        if (usefulRelatedTag(tag)) {
+            return tag.trimmed();
+        }
+    }
+    return QString();
+}
+
+QString Shell::relatedPapersLabelForUrl(const QUrl &url) const
+{
+    const QString title = curatedTitleForUrl(url);
+    return title.isEmpty() ? url.fileName() : title;
+}
+
+void Shell::openRelatedPapersFromReader(const QString &query, const QString &label)
+{
+    const QString trimmedQuery = query.trimmed();
+    if (trimmedQuery.isEmpty()) {
+        return;
+    }
+
+    LibraryView *view = nullptr;
+    int tabIndex = -1;
+    for (int i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i].libraryView) {
+            view = m_tabs[i].libraryView;
+            tabIndex = i;
+            break;
+        }
+    }
+    if (!view) {
+        if (m_tabs.size() == 1) {
+            m_nextTabAction->setEnabled(true);
+            m_prevTabAction->setEnabled(true);
+        }
+        view = createLibraryView(true);
+        m_tabs.append(TabState(view));
+        tabIndex = m_tabWidget->addTab(view, label.isEmpty() ? i18n("Related Papers") : i18n("Related: %1", label));
+    }
+
+    setActiveTab(tabIndex);
+    view->showShelf(LibraryView::PapersShelf);
+    view->setSearchQuery(trimmedQuery);
 }
 
 void Shell::connectEpubWebReader(EpubWebReader *reader)
@@ -620,6 +714,7 @@ void Shell::connectPdfView(PdfView *reader)
             m_sidebar->setAnimatedVisible(true, PdfView::readerMotionEnabled());
         }
     });
+    connect(reader, &PdfView::relatedPapersRequested, this, &Shell::openRelatedPapersFromReader);
 }
 
 bool Shell::openEpubWebReaderInTab(int tab, const QUrl &url)
@@ -655,6 +750,7 @@ bool Shell::openPdfViewInTab(int tab, const QUrl &url)
         reader->deleteLater();
         return false;
     }
+    reader->setRelatedPapersContext(relatedPapersQueryForUrl(url), relatedPapersLabelForUrl(url));
     applyTitlebarSafeAreaOptOut(reader);
 
     m_tabs[tab] = TabState(reader);
@@ -1465,9 +1561,7 @@ void Shell::setupActions()
         }
         const QList<LibraryStore::Entry> entries = m_libraryStore ? m_libraryStore->entries() : QList<LibraryStore::Entry>();
         for (const LibraryStore::Entry &entry : entries) {
-            if (entry.title.isEmpty()) {
-                m_libraryAutoTagger->enqueue(entry.url);
-            }
+            m_libraryAutoTagger->enqueue(entry.url);
         }
     });
 
@@ -1718,6 +1812,10 @@ void Shell::fileOpen()
 
 void Shell::tryRaise(const QString &startupId)
 {
+    if (isActiveWindow()) {
+        return;
+    }
+
 #if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS) && !defined(Q_OS_HAIKU)
     if (KWindowSystem::isPlatformWayland()) {
         KWindowSystem::setCurrentXdgActivationToken(startupId);

@@ -42,9 +42,8 @@ static KConfigGroup paperLibraryConfigGroup(const QString &name)
 }
 
 static const char DOWNRANKED_SLUGS_KEY[] = "DownrankedSlugs";
-static constexpr int MaxCorpusFeedRows = 360;
-static constexpr int MaxCorpusSearchRows = 720;
-static constexpr int MaxCorpusRowsPerSection = 90;
+static constexpr int InitialCorpusRows = 360;
+static constexpr int CorpusFetchBatchRows = 240;
 
 static QString curatedDisplayTitleFor(const QString &text)
 {
@@ -76,11 +75,44 @@ static QString curatedDisplayTitleFor(const QString &text)
     if (lower.contains(QLatin1String("new york 2140")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")) || simplified.startsWith(QLatin1String("new york 2140")))) {
         return QStringLiteral("New York 2140");
     }
+    if (lower.contains(QLatin1String("years of rice and salt")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")))) {
+        return QStringLiteral("The Years of Rice and Salt");
+    }
+    if (lower.contains(QLatin1String("green mars")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")) || simplified.startsWith(QLatin1String("green mars")))) {
+        return QStringLiteral("Green Mars");
+    }
+    if (lower.contains(QLatin1String("blue mars")) && (bookish || lower.contains(QLatin1String("kim stanley robinson")) || simplified.startsWith(QLatin1String("blue mars")))) {
+        return QStringLiteral("Blue Mars");
+    }
     if (lower.contains(QLatin1String("antarctica")) && (lower.contains(QLatin1String("novel")) || lower.contains(QLatin1String("kim stanley robinson")))) {
         return QStringLiteral("Antarctica");
     }
+    if (lower.contains(QLatin1String("best of kim stanley robinson"))) {
+        return QStringLiteral("The Best of Kim Stanley Robinson");
+    }
     if (lower.contains(QLatin1String("game of thrones")) && (bookish || simplified.startsWith(QLatin1String("a game of thrones")))) {
         return QStringLiteral("A Game of Thrones");
+    }
+    if (lower.contains(QLatin1String("one day in the life of ivan denisovich"))) {
+        return QStringLiteral("One Day in the Life of Ivan Denisovich");
+    }
+    if (lower.contains(QLatin1String("ones who walk away from omelas"))) {
+        return QStringLiteral("The Ones Who Walk Away from Omelas");
+    }
+    if (lower.contains(QLatin1String("dune, dune messiah")) || (lower.contains(QLatin1String("dune messiah")) && lower.contains(QLatin1String("children of dune")))) {
+        return QStringLiteral("Dune / Dune Messiah / Children of Dune");
+    }
+    if (lower.contains(QLatin1String("water knife"))) {
+        return QStringLiteral("The Water Knife");
+    }
+    if (lower.contains(QLatin1String("windup girl"))) {
+        return QStringLiteral("The Windup Girl");
+    }
+    if (lower.contains(QLatin1String("carpentaria"))) {
+        return QStringLiteral("Carpentaria");
+    }
+    if (lower.contains(QLatin1String("books of earthsea"))) {
+        return QStringLiteral("The Books of Earthsea");
     }
     if ((lower.contains(QLatin1String("everything was forever until it was no more")) || lower.contains(QLatin1String("everything was forever, until it was no more")))
         && (bookish || simplified.startsWith(QLatin1String("everything was forever")))) {
@@ -581,6 +613,50 @@ static QString readOnlyImmutableUri(const QString &dbPath)
     return QUrl::fromLocalFile(dbPath).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro&immutable=1");
 }
 
+static QString nextPaperLibraryDbConnectionName(const QString &prefix)
+{
+    static QAtomicInt connectionCounter;
+    return QStringLiteral("%1_%2").arg(prefix).arg(connectionCounter.fetchAndAddRelaxed(1));
+}
+
+static bool catalogDbHasTable(const QString &dbPath, const QString &tableName)
+{
+    if (!QFileInfo::exists(dbPath) || !QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
+        return false;
+    }
+
+    const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary_probe"));
+    bool found = false;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(readOnlyImmutableUri(dbPath));
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
+        if (db.open()) {
+            QSqlQuery query(db);
+            query.prepare(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"));
+            query.addBindValue(tableName);
+            found = query.exec() && query.next();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return found;
+}
+
+static QString ftsMatchQuery(const QString &raw)
+{
+    QStringList tokens;
+    QRegularExpression tokenExpression(QStringLiteral("[A-Za-z0-9]+"));
+    QRegularExpressionMatchIterator matches = tokenExpression.globalMatch(raw);
+    while (matches.hasNext()) {
+        QString token = matches.next().captured(0).toLower();
+        if (token.size() > 1) {
+            tokens.append(token + QLatin1Char('*'));
+        }
+    }
+    return tokens.join(QStringLiteral(" AND "));
+}
+
 static QString normalizedFocusLookupKey(const QString &value)
 {
     return value.trimmed().toCaseFolded();
@@ -848,29 +924,72 @@ static bool recordMatchesGameOfThrones(const QString &text)
     return containsAnyNeedle(text, {QStringLiteral("game of thrones"), QStringLiteral("song of ice and fire"), QStringLiteral("george r. r. martin"), QStringLiteral("george rr martin")});
 }
 
+static bool recordLooksBookishFromText(const QString &text)
+{
+    return containsAnyNeedle(text,
+                             {QStringLiteral("book:"),
+                              QStringLiteral("aa_book"),
+                              QStringLiteral("(book)"),
+                              QStringLiteral(".epub"),
+                              QStringLiteral(".azw3"),
+                              QStringLiteral(".mobi"),
+                              QStringLiteral("annas archive"),
+                              QStringLiteral("anna's archive"),
+                              QStringLiteral("isbn"),
+                              QStringLiteral("bantam books"),
+                              QStringLiteral("bantam spectra"),
+                              QStringLiteral("penguin random house")});
+}
+
 static bool recordMatchesFiction(const QString &text)
 {
+    if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
+        return false;
+    }
     if (recordMatchesGameOfThrones(text)) {
         return true;
     }
     if (containsAnyNeedle(text,
                           {QStringLiteral("octavia butler"),
                            QStringLiteral("parable of the sower"),
+                           QStringLiteral("frank herbert"),
+                           QStringLiteral("dune messiah"),
+                           QStringLiteral("children of dune"),
+                           QStringLiteral("god emperor of dune"),
                            QStringLiteral("kim stanley robinson"),
+                           QStringLiteral("years of rice and salt"),
+                           QStringLiteral("green mars"),
+                           QStringLiteral("blue mars"),
                            QStringLiteral("red mars"),
                            QStringLiteral("new york 2140"),
+                           QStringLiteral("the best of kim stanley robinson"),
                            QStringLiteral("mars trilogy"),
                            QStringLiteral("ursula k. le guin"),
+                           QStringLiteral("ursula k le guin"),
+                           QStringLiteral("earthsea"),
+                           QStringLiteral("the dispossessed"),
+                           QStringLiteral("omelas"),
+                           QStringLiteral("alexis wright"),
+                           QStringLiteral("carpentaria"),
+                           QStringLiteral("praiseworthy"),
+                           QStringLiteral("the hobbit"),
+                           QStringLiteral("lord of the rings"),
+                           QStringLiteral("the silmarillion"),
+                           QStringLiteral("unfinished tales"),
+                           QStringLiteral("one day in the life of ivan denisovich"),
+                           QStringLiteral("the water knife"),
+                           QStringLiteral("the windup girl"),
                            QStringLiteral("song of ice and fire")})) {
         return true;
     }
-    if (containsAnyWholeWord(text, {QStringLiteral("dune")})) {
+    if (containsWholeWord(text, QStringLiteral("dune")) && recordLooksBookishFromText(text)) {
         return true;
     }
-    if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
+    if (!recordLooksBookishFromText(text)) {
         return false;
     }
-    return containsAnyWholeWord(text, {QStringLiteral("novel"), QStringLiteral("fiction"), QStringLiteral("fantasy")});
+    return containsAnyWholeWord(text, {QStringLiteral("fiction"), QStringLiteral("fantasy"), QStringLiteral("novel")})
+        || text.contains(QStringLiteral("speculative fiction")) || text.contains(QStringLiteral("science fiction"));
 }
 
 static bool recordMatchesCaroLbj(const QString &text)
@@ -1216,32 +1335,6 @@ static QString papersReadNextSectionFor(const QModelIndex &index, const QString 
     return QStringLiteral("Other Papers");
 }
 
-static int papersReadNextSectionLimit(const QString &section)
-{
-    if (section == QLatin1String("Pinned")) {
-        return 7;
-    }
-    if (section == QLatin1String("Continue Reading")) {
-        return 4;
-    }
-    if (section == QLatin1String("Active Work")) {
-        return 5;
-    }
-    if (section == QLatin1String("MND Project")) {
-        return 6;
-    }
-    if (section == QLatin1String("Clinical Rotations") || section == QLatin1String("Methods & Statistics") || section == QLatin1String("Novelty / Adjacent Ideas")) {
-        return 5;
-    }
-    if (section == QLatin1String("Reviews & Guidelines") || section == QLatin1String("Highly Cited") || section == QLatin1String("Recent Additions")) {
-        return 4;
-    }
-    if (section == QLatin1String("Other Papers")) {
-        return 2;
-    }
-    return 6;
-}
-
 static int sectionRank(const QString &section)
 {
     const QStringList order = {
@@ -1443,6 +1536,8 @@ QVariant PaperLibraryModel::data(const QModelIndex &index, int role) const
         return record.pinned;
     case CitedByCountRole:
         return record.citedByCount;
+    case RelatedCountRole:
+        return record.relatedCount;
     case HaystackRole:
         return record.haystack;
     case MissingRole:
@@ -1484,6 +1579,100 @@ int PaperLibraryModel::rowForLookupPath(const QString &path) const
 {
     const QString key = normalizedFocusPathLookupKey(path);
     return key.isEmpty() ? -1 : m_rowsByLookupPath.value(key, -1);
+}
+
+bool PaperLibraryModel::hasFullTextSearchIndex() const
+{
+    const QString dbPath = m_corpusDir + QStringLiteral("/catalog.db");
+    return catalogDbHasTable(dbPath, QStringLiteral("paper_fts")) && catalogDbHasTable(dbPath, QStringLiteral("paper_search_rows"));
+}
+
+bool PaperLibraryModel::hasSemanticGraph() const
+{
+    return catalogDbHasTable(m_corpusDir + QStringLiteral("/catalog.db"), QStringLiteral("related_edges"));
+}
+
+QList<int> PaperLibraryModel::fullTextSearchRows(const QString &queryText, int limit) const
+{
+    QList<int> rows;
+    const QString match = ftsMatchQuery(queryText);
+    if (match.isEmpty() || limit <= 0 || !hasFullTextSearchIndex()) {
+        return rows;
+    }
+
+    const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary_fts"));
+    QSet<int> seenRows;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(readOnlyImmutableUri(m_corpusDir + QStringLiteral("/catalog.db")));
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
+        if (db.open()) {
+            QSqlQuery query(db);
+            query.prepare(QStringLiteral(
+                "SELECT sr.slug, bm25(paper_fts, 8.0, 5.0, 1.5, 3.0, 9.0, 1.0, 1.0) AS rank "
+                "FROM paper_fts "
+                "JOIN paper_search_rows sr ON sr.rowid = paper_fts.rowid "
+                "WHERE paper_fts MATCH ? "
+                "ORDER BY rank "
+                "LIMIT ?"));
+            query.addBindValue(match);
+            query.addBindValue(qMax(1, limit * 2));
+            if (query.exec()) {
+                while (query.next() && rows.size() < limit) {
+                    const int row = rowForLookupSlug(query.value(0).toString());
+                    if (row < 0 || seenRows.contains(row)) {
+                        continue;
+                    }
+                    seenRows.insert(row);
+                    rows.append(row);
+                }
+            }
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return rows;
+}
+
+QList<int> PaperLibraryModel::relatedRowsForSlug(const QString &slug, int limit) const
+{
+    QList<int> rows;
+    const QString normalizedSlug = slug.trimmed();
+    if (normalizedSlug.isEmpty() || limit <= 0 || !hasSemanticGraph()) {
+        return rows;
+    }
+
+    const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary_graph"));
+    QSet<int> seenRows;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(readOnlyImmutableUri(m_corpusDir + QStringLiteral("/catalog.db")));
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
+        if (db.open()) {
+            QSqlQuery query(db);
+            query.prepare(QStringLiteral(
+                "SELECT target_slug "
+                "FROM related_edges "
+                "WHERE kind='semantic' AND source_slug=? "
+                "ORDER BY rank "
+                "LIMIT ?"));
+            query.addBindValue(normalizedSlug);
+            query.addBindValue(qMax(1, limit * 2));
+            if (query.exec()) {
+                while (query.next() && rows.size() < limit) {
+                    const int row = rowForLookupSlug(query.value(0).toString());
+                    if (row < 0 || seenRows.contains(row)) {
+                        continue;
+                    }
+                    seenRows.insert(row);
+                    rows.append(row);
+                }
+            }
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return rows;
 }
 
 void PaperLibraryModel::rebuildLookupRows()
@@ -1594,8 +1783,7 @@ static QHash<QString, CatalogDbRow> readCatalogDb(const QString &dbPath, bool *o
         return rows;
     }
 
-    static QAtomicInt connectionCounter;
-    const QString connectionName = QStringLiteral("paperlibrary_%1").arg(connectionCounter.fetchAndAddRelaxed(1));
+    const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary"));
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
         db.setDatabaseName(readOnlyImmutableUri(dbPath));
@@ -1622,12 +1810,46 @@ static QHash<QString, CatalogDbRow> readCatalogDb(const QString &dbPath, bool *o
     return rows;
 }
 
+static QHash<QString, int> readRelatedCountsFromCatalogDb(const QString &dbPath, bool *ok)
+{
+    *ok = false;
+    QHash<QString, int> counts;
+    if (!QFileInfo::exists(dbPath) || !QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
+        return counts;
+    }
+
+    const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary_graph_counts"));
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        db.setDatabaseName(readOnlyImmutableUri(dbPath));
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
+        if (db.open()) {
+            QSqlQuery query(db);
+            if (query.exec(QStringLiteral("SELECT source_slug, COUNT(*) FROM related_edges WHERE kind='semantic' GROUP BY source_slug"))) {
+                *ok = true;
+                while (query.next()) {
+                    counts.insert(query.value(0).toString(), query.value(1).toInt());
+                }
+            }
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return counts;
+}
+
 void PaperLibraryModel::enrichRecords(QList<Record> &records, const QString &corpusDir)
 {
+    const QString dbPath = corpusDir + QStringLiteral("/catalog.db");
     bool dbOk = false;
-    const QHash<QString, CatalogDbRow> dbRows = readCatalogDb(corpusDir + QStringLiteral("/catalog.db"), &dbOk);
+    const QHash<QString, CatalogDbRow> dbRows = readCatalogDb(dbPath, &dbOk);
+    bool graphOk = false;
+    const QHash<QString, int> relatedCounts = readRelatedCountsFromCatalogDb(dbPath, &graphOk);
 
     for (Record &record : records) {
+        if (graphOk) {
+            record.relatedCount = relatedCounts.value(record.slug, 0);
+        }
         if (dbOk) {
             const CatalogDbRow dbRow = dbRows.value(record.slug);
             record.lastAccessed = dbRow.lastAccessed;
@@ -1849,6 +2071,9 @@ static QString topicBucketFor(const QString &text, const QString &source, const 
     if (recordMatchesPsychiatry(text)) {
         return psychiatryTopicSectionFor(text);
     }
+    if (recordMatchesFiction(text)) {
+        return QStringLiteral("Fiction");
+    }
     if (recordMatchesPaediatrics(text)) {
         return QStringLiteral("Paediatrics");
     }
@@ -1860,9 +2085,6 @@ static QString topicBucketFor(const QString &text, const QString &source, const 
     }
     if (recordMatchesPeerReview(text, source)) {
         return QStringLiteral("Peer Reviews");
-    }
-    if (recordMatchesFiction(text)) {
-        return QStringLiteral("Fiction");
     }
     if (recordMatchesPolitics(text)) {
         return QStringLiteral("Politics");
@@ -2013,6 +2235,106 @@ static QString corpusMetadataHint(const QModelIndex &index)
         journal.clear();
     }
     return joinNonEmpty({year == QLatin1String("None") ? QString() : year, journal});
+}
+
+static bool isBookPresentationShelf(PaperLibrarySectionedModel::SmartFilter filter)
+{
+    return filter == PaperLibrarySectionedModel::Books || filter == PaperLibrarySectionedModel::Fiction || filter == PaperLibrarySectionedModel::Nonfiction;
+}
+
+static QStringList splitCorpusCreators(QString creators)
+{
+    creators = creators.trimmed();
+    creators.replace(QRegularExpression(QStringLiteral("\\s+&\\s+")), QStringLiteral("; "));
+    creators.replace(QRegularExpression(QStringLiteral("\\s+and\\s+"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("; "));
+    QStringList parts = creators.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    if (parts.size() == 1 && creators.count(QLatin1Char(',')) >= 2) {
+        parts = creators.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    }
+    for (QString &part : parts) {
+        part = part.simplified();
+    }
+    parts.removeAll(QString());
+    return parts;
+}
+
+static QString corpusCreatorTagForBookShelf(const QModelIndex &index)
+{
+    const QStringList creators = splitCorpusCreators(index.data(PaperLibraryModel::AuthorsRole).toString());
+    if (creators.isEmpty()) {
+        return QString();
+    }
+    if (creators.size() == 1) {
+        return creators.constFirst();
+    }
+    if (creators.size() == 2) {
+        return creators.at(0) + QStringLiteral(" & ") + creators.at(1);
+    }
+    return creators.constFirst() + QStringLiteral(" et al.");
+}
+
+static QString bookShelfSubjectTagFor(PaperLibrarySectionedModel::SmartFilter filter, const QString &text, const QString &source, const QString &journal)
+{
+    if (recordMatchesGameOfThrones(text)) {
+        return QStringLiteral("Fantasy");
+    }
+    if (filter == PaperLibrarySectionedModel::Fiction || recordMatchesFiction(text)) {
+        if (containsAnyNeedle(text, {QStringLiteral("kim stanley robinson"), QStringLiteral("octavia butler"), QStringLiteral("red mars"), QStringLiteral("new york 2140")})) {
+            return QStringLiteral("Science fiction");
+        }
+        return QStringLiteral("Fiction");
+    }
+    if (recordMatchesCaroLbj(text)) {
+        return QStringLiteral("Political biography");
+    }
+    if (recordMatchesAnthropology(text)) {
+        return QStringLiteral("Anthropology / social theory");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("world war"), QStringLiteral("went to war"), QStringLiteral("submarine warfare"), QStringLiteral("total war"), QStringLiteral("military history")})) {
+        return QStringLiteral("Military history");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("sand county"), QStringLiteral("aldo leopold"), QStringLiteral("ecology"), QStringLiteral("conservation")})) {
+        return QStringLiteral("Ecology / conservation");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("mountaineering"), QStringLiteral("wilderness medicine"), QStringLiteral("remote travel")})) {
+        return QStringLiteral("Wilderness medicine");
+    }
+    if (containsAnyNeedle(text, {QStringLiteral("galen"), QStringLiteral("roman empire")})) {
+        return QStringLiteral("History of medicine");
+    }
+    if (recordMatchesPolitics(text)) {
+        return QStringLiteral("Politics and history");
+    }
+    if (recordMatchesMedicine(text)) {
+        return QStringLiteral("Medicine");
+    }
+    const QString topic = bookTopicSectionFor(text);
+    if (topic != QLatin1String("Other Books") && topic != QLatin1String("Textbooks")) {
+        return topic;
+    }
+    const QString bucket = topicBucketFor(text, source, journal);
+    if (bucket != QLatin1String("General Research") && bucket != QLatin1String("MND / ALS")) {
+        return bucket;
+    }
+    return filter == PaperLibrarySectionedModel::Nonfiction ? QStringLiteral("Non-fiction") : QStringLiteral("Book");
+}
+
+static QStringList bookShelfTopicTagsFor(PaperLibrarySectionedModel::SmartFilter filter, const QModelIndex &index, const QString &text, const QString &source, const QString &journal)
+{
+    QStringList tags;
+    const QString creator = corpusCreatorTagForBookShelf(index);
+    if (!creator.isEmpty()) {
+        tags.append(creator);
+    }
+    const QString subject = bookShelfSubjectTagFor(filter, text, source, journal);
+    if (!subject.isEmpty() && !tags.contains(subject)) {
+        tags.append(subject);
+    }
+    const QString year = index.data(PaperLibraryModel::YearRole).toString().trimmed();
+    if (tags.size() < 2 && !year.isEmpty() && year != QLatin1String("None") && !tags.contains(year)) {
+        tags.append(year);
+    }
+    return tags;
 }
 
 static QString corpusTileTooltip(const QString &title, const QStringList &lines)
@@ -2314,13 +2636,9 @@ static QString corpusRelationHintFor(PaperLibrarySectionedModel::SmartFilter fil
     if (filter == PaperLibrarySectionedModel::Fiction && recordMatchesGameOfThrones(text)) {
         return QStringLiteral("Continue the series");
     }
-    if ((filter == PaperLibrarySectionedModel::Nonfiction || filter == PaperLibrarySectionedModel::Books) && recordMatchesCaroLbj(text)) {
-        return QStringLiteral("Linked to LBJ / US power");
+    if (isBookPresentationShelf(filter)) {
+        return bookShelfSubjectTagFor(filter, text, source, journal);
     }
-    if ((filter == PaperLibrarySectionedModel::Nonfiction || filter == PaperLibrarySectionedModel::Books) && recordMatchesAnthropology(text)) {
-        return QStringLiteral("Adjacent: anthropology");
-    }
-
     const QString related = relatedQueryFor(text, source, journal);
     if (!related.isEmpty() && related != QLatin1String("General Research")) {
         return QStringLiteral("Related: %1").arg(related);
@@ -2481,6 +2799,7 @@ struct FocusManifestEntry {
     QString section;
     QString sectionLabel;
     QString focusLink;
+    QString thumbnailPath;
     int order = -1;
     double score = 0.0;
 };
@@ -2570,6 +2889,130 @@ static QString focusFallbackTitle(const QString &path, const QString &id)
 static QString focusDetail(const QString &authors, const QString &year, const QString &journal)
 {
     return joinNonEmpty({authors, year, journal});
+}
+
+static QString focusThumbnailFileName(QString id)
+{
+    id = id.trimmed();
+    id.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")), QStringLiteral("_"));
+    id.replace(QRegularExpression(QStringLiteral("_+")), QStringLiteral("_"));
+    id = id.trimmed();
+    while (id.startsWith(QLatin1Char('_'))) {
+        id.remove(0, 1);
+    }
+    while (id.endsWith(QLatin1Char('_'))) {
+        id.chop(1);
+    }
+    return id;
+}
+
+static QString resolveFocusThumbnailPath(const QString &corpusDir, const QString &shelfName, const QString &rawPath)
+{
+    const QString trimmed = rawPath.trimmed();
+    if (trimmed.isEmpty()) {
+        return QString();
+    }
+
+    const QFileInfo directInfo(trimmed);
+    if (directInfo.isAbsolute()) {
+        return directInfo.exists() ? directInfo.absoluteFilePath() : QString();
+    }
+
+    const QStringList bases = {
+        corpusDir + QStringLiteral("/focus/") + shelfName,
+        corpusDir,
+    };
+    for (const QString &base : bases) {
+        const QFileInfo candidate(QDir(base).filePath(trimmed));
+        if (candidate.exists() && candidate.isFile()) {
+            return candidate.absoluteFilePath();
+        }
+    }
+    return QString();
+}
+
+static QString objectThumbnailPath(const QJsonObject &object)
+{
+    const QStringList keys = {
+        QStringLiteral("thumbnail_path"),
+        QStringLiteral("thumbnail"),
+        QStringLiteral("image_path"),
+        QStringLiteral("image"),
+    };
+    for (const QString &key : keys) {
+        const QJsonValue value = object.value(key);
+        if (value.isString()) {
+            const QString path = value.toString().trimmed();
+            if (!path.isEmpty()) {
+                return path;
+            }
+        } else if (value.isObject()) {
+            const QString path = value.toObject().value(QStringLiteral("path")).toString().trimmed();
+            if (!path.isEmpty()) {
+                return path;
+            }
+        }
+    }
+    return QString();
+}
+
+static QString inferredFocusThumbnailPath(const QString &corpusDir, const QString &shelfName, const QString &id)
+{
+    const QString fileName = focusThumbnailFileName(id);
+    if (fileName.isEmpty()) {
+        return QString();
+    }
+    const QStringList extensions = {
+        QStringLiteral(".png"),
+        QStringLiteral(".jpg"),
+        QStringLiteral(".jpeg"),
+        QStringLiteral(".webp"),
+    };
+    const QDir thumbnailDir(corpusDir + QStringLiteral("/focus/") + shelfName + QStringLiteral("/thumbnails"));
+    for (const QString &extension : extensions) {
+        const QFileInfo candidate(thumbnailDir.filePath(fileName + extension));
+        if (candidate.exists() && candidate.isFile()) {
+            return candidate.absoluteFilePath();
+        }
+    }
+    return QString();
+}
+
+static QString inferredCorpusThumbnailPath(const QString &corpusDir, const QString &id)
+{
+    const QString fileName = focusThumbnailFileName(id);
+    if (fileName.isEmpty() || corpusDir.isEmpty()) {
+        return QString();
+    }
+    const QStringList extensions = {
+        QStringLiteral(".png"),
+        QStringLiteral(".jpg"),
+        QStringLiteral(".jpeg"),
+        QStringLiteral(".webp"),
+    };
+    const QStringList directories = {
+        corpusDir + QStringLiteral("/thumbnails"),
+        corpusDir + QStringLiteral("/assets/thumbnails"),
+    };
+    for (const QString &directory : directories) {
+        const QDir thumbnailDir(directory);
+        for (const QString &extension : extensions) {
+            const QFileInfo candidate(thumbnailDir.filePath(fileName + extension));
+            if (candidate.exists() && candidate.isFile()) {
+                return candidate.absoluteFilePath();
+            }
+        }
+    }
+    return QString();
+}
+
+static QString focusManifestThumbnailPath(const QString &corpusDir, const QString &shelfName, const QJsonObject &object, const QString &id)
+{
+    const QString explicitPath = resolveFocusThumbnailPath(corpusDir, shelfName, objectThumbnailPath(object));
+    if (!explicitPath.isEmpty()) {
+        return explicitPath;
+    }
+    return inferredFocusThumbnailPath(corpusDir, shelfName, id);
 }
 
 static QString focusReasonPrimary(const QString &reason)
@@ -2668,6 +3111,7 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
         entry.section = object.value(QLatin1String("section")).toString().trimmed();
         entry.sectionLabel = focusSectionLabel(entry.section);
         entry.focusLink = object.value(QLatin1String("focus_link")).toString().trimmed();
+        entry.thumbnailPath = focusManifestThumbnailPath(corpusDir, shelfName, object, entry.id);
         entry.score = object.value(QLatin1String("score")).toDouble();
         entry.order = order++;
         if (entry.title.isEmpty()) {
@@ -2779,9 +3223,59 @@ void PaperLibrarySectionedModel::setQuery(const QString &query)
     rebuild();
 }
 
+void PaperLibrarySectionedModel::setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText)
+{
+    if (m_explicitRowsActive && m_explicitSourceRows == sourceRows && m_explicitRowsLabel == label && m_explicitRowsEmptyText == emptyText) {
+        return;
+    }
+    m_explicitRowsActive = true;
+    m_explicitSourceRows = sourceRows;
+    m_explicitRowsLabel = label.trimmed();
+    m_explicitRowsEmptyText = emptyText.trimmed();
+    rebuild();
+}
+
+void PaperLibrarySectionedModel::clearExplicitSourceRows()
+{
+    if (!m_explicitRowsActive) {
+        return;
+    }
+    m_explicitRowsActive = false;
+    m_explicitSourceRows.clear();
+    m_explicitRowsLabel.clear();
+    m_explicitRowsEmptyText.clear();
+    rebuild();
+}
+
+bool PaperLibrarySectionedModel::hasExplicitSourceRows() const
+{
+    return m_explicitRowsActive;
+}
+
 int PaperLibrarySectionedModel::rowCount(const QModelIndex &parent) const
 {
     return parent.isValid() ? 0 : m_rows.count();
+}
+
+bool PaperLibrarySectionedModel::canFetchMore(const QModelIndex &parent) const
+{
+    return !parent.isValid() && m_rows.count() < m_allRows.count();
+}
+
+void PaperLibrarySectionedModel::fetchMore(const QModelIndex &parent)
+{
+    if (!canFetchMore(parent)) {
+        return;
+    }
+
+    const int first = m_rows.count();
+    const int count = qMin(CorpusFetchBatchRows, m_allRows.count() - first);
+    beginInsertRows(QModelIndex(), first, first + count - 1);
+    for (int offset = 0; offset < count; ++offset) {
+        m_rows.append(m_allRows.at(first + offset));
+    }
+    endInsertRows();
+    rebuildPathIndex();
 }
 
 QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) const
@@ -2819,6 +3313,16 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == GeneratedCoverRole) {
         return m_generatedCoverPaths.contains(focusPath);
     }
+    if (role == ThumbnailPathRole) {
+        if (!row.focusThumbnailPath.isEmpty()) {
+            return row.focusThumbnailPath;
+        }
+        if (row.sourceRow >= 0 && m_source) {
+            const QString slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
+            return inferredCorpusThumbnailPath(m_source->corpusDir(), slug);
+        }
+        return QString();
+    }
     if (row.sourceRow < 0) {
         switch (role) {
         case Qt::DisplayRole:
@@ -2843,6 +3347,8 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
             return row.focusPath.isEmpty() || !QFileInfo::exists(row.focusPath);
         case PaperLibraryModel::ResolvedPathRole:
             return row.focusPath;
+        case PaperLibraryModel::RelatedCountRole:
+            return m_source && m_source->hasSemanticGraph() ? 0 : -1;
         case KindRole:
             return row.focusKind.isEmpty() ? QStringLiteral("PDF") : row.focusKind.toUpper();
         case TopicTagsRole:
@@ -2939,6 +3445,9 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
             return tags;
         }
         const QString year = sourceIndex.data(PaperLibraryModel::YearRole).toString();
+        if (isBookPresentationShelf(m_smartFilter)) {
+            return bookShelfTopicTagsFor(m_smartFilter, sourceIndex, text, source, journal);
+        }
         const QString focus = focusBucketFor(sourceIndex, text, source, journal);
         const QString topic = topicBucketFor(text, source, journal);
         QStringList tags;
@@ -3025,6 +3534,44 @@ QString PaperLibrarySectionedModel::storedPathForSourceRow(int sourceRow) const
     return m_source->index(sourceRow).data(PaperLibraryModel::ResolvedPathRole).toString();
 }
 
+bool PaperLibrarySectionedModel::acceptsSourceRow(int sourceRow) const
+{
+    if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {
+        return false;
+    }
+    const QModelIndex index = m_source->index(sourceRow);
+    const QString haystack = index.data(PaperLibraryModel::HaystackRole).toString();
+    const QString source = index.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
+    const QString journal = index.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
+    const QString text = haystack + QLatin1Char('\n') + source;
+    const bool isBook = recordMatchesBook(text, source, journal);
+    switch (m_smartFilter) {
+    case Papers:
+        return !isBook;
+    case Books:
+        return isBook;
+    case Textbooks:
+        return recordMatchesTextbook(text, source);
+    case Medicine:
+        return recordMatchesMedicine(text) && recordMatchesTextbook(text, source);
+    case Psychiatry:
+        return recordMatchesPsychiatry(text);
+    case Mnd:
+        return recordMatchesMnd(text);
+    case Work:
+        return recordMatchesBeyondBayes(text, source, journal) || recordMatchesPeerReview(text, source);
+    case Anthropology:
+        return recordMatchesAnthropology(text);
+    case Politics:
+        return recordMatchesPolitics(text);
+    case Fiction:
+        return recordMatchesFiction(text);
+    case Nonfiction:
+        return recordMatchesNonfiction(text, source, journal);
+    }
+    return false;
+}
+
 bool PaperLibrarySectionedModel::sourceRowDownranked(int sourceRow) const
 {
     if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {
@@ -3100,30 +3647,85 @@ void PaperLibrarySectionedModel::rebuildPathIndex()
     }
 }
 
+void PaperLibrarySectionedModel::resetVisibleRows()
+{
+    const int visibleCount = qMin(InitialCorpusRows, m_allRows.count());
+    m_rows = m_allRows.mid(0, visibleCount);
+}
+
 void PaperLibrarySectionedModel::rebuild()
 {
     const QString key = cacheKey();
     beginResetModel();
-    const auto cached = m_rowCache.constFind(key);
-    if (cached != m_rowCache.cend()) {
-        m_rows = cached.value();
-        rebuildPathIndex();
-        endResetModel();
-        return;
+    if (!m_explicitRowsActive) {
+        const auto cached = m_rowCache.constFind(key);
+        if (cached != m_rowCache.cend()) {
+            m_allRows = cached.value();
+            resetVisibleRows();
+            rebuildPathIndex();
+            endResetModel();
+            return;
+        }
     }
 
     m_rows.clear();
+    m_allRows.clear();
     if (!m_source) {
         m_rowsByPath.clear();
         endResetModel();
         return;
     }
 
+    QSet<int> emittedSourceRows;
+    QSet<QString> emittedManifestPaths;
+    QSet<QString> emittedWorkKeys;
+    QSet<QString> emittedBookTitleKeys;
+    const auto duplicateBookTitleKey = [this](const QString &title) {
+        if (!isBookPresentationShelf(m_smartFilter)) {
+            return QString();
+        }
+        const QString key = normalizedDuplicateWorkText(title);
+        return key.size() >= 16 ? key : QString();
+    };
+
+    if (m_explicitRowsActive) {
+        for (const int sourceRow : std::as_const(m_explicitSourceRows)) {
+            if (emittedSourceRows.contains(sourceRow) || !acceptsSourceRow(sourceRow)) {
+                continue;
+            }
+            const QString workKey = sourceRowDuplicateWorkKey(m_source, sourceRow);
+            if (!workKey.isEmpty()) {
+                if (emittedWorkKeys.contains(workKey)) {
+                    continue;
+                }
+                emittedWorkKeys.insert(workKey);
+            }
+            Row row;
+            row.sourceRow = sourceRow;
+            m_rows.append(row);
+            emittedSourceRows.insert(sourceRow);
+        }
+
+        if (m_rows.isEmpty()) {
+            Row row;
+            row.sourceRow = -1;
+            row.title = m_explicitRowsEmptyText.isEmpty() ? QStringLiteral("No matching documents") : m_explicitRowsEmptyText;
+            row.focusKind = QStringLiteral("search");
+            row.focusSection = m_explicitRowsLabel.isEmpty() ? QStringLiteral("Search") : m_explicitRowsLabel;
+            row.focusReason = QStringLiteral("No indexed corpus records match this search in the current shelf.");
+            row.focusOrder = 0;
+            m_rows.append(row);
+        }
+
+        m_allRows = m_rows;
+        resetVisibleRows();
+        rebuildPathIndex();
+        endResetModel();
+        return;
+    }
+
     const FocusManifest focusManifest = loadFocusManifest(m_smartFilter, m_source->corpusDir());
     if (focusManifest.found) {
-        QSet<int> emittedSourceRows;
-        QSet<QString> emittedManifestPaths;
-        QSet<QString> emittedWorkKeys;
         for (const FocusManifestEntry &entry : focusManifest.entries) {
             int sourceRow = -1;
             const QString idKey = focusLookupKey(entry.id);
@@ -3192,28 +3794,19 @@ void PaperLibrarySectionedModel::rebuild()
             row.focusKind = entry.kind;
             row.focusSection = entry.sectionLabel;
             row.focusReason = entry.reason;
+            row.focusThumbnailPath = entry.thumbnailPath;
             row.focusPath = entry.path;
             row.focusOrder = entry.order;
             row.focusScore = entry.score;
+            const QString bookTitleKey = duplicateBookTitleKey(row.title);
+            if (!bookTitleKey.isEmpty()) {
+                if (emittedBookTitleKeys.contains(bookTitleKey)) {
+                    continue;
+                }
+                emittedBookTitleKeys.insert(bookTitleKey);
+            }
             m_rows.append(row);
         }
-
-        if (m_rows.isEmpty()) {
-            Row row;
-            row.sourceRow = -1;
-            row.title = m_query.isEmpty() ? QStringLiteral("No local documents yet") : QStringLiteral("No matching documents");
-            row.focusKind = QStringLiteral("setup");
-            row.focusSection = focusManifestShelfName(m_smartFilter);
-            row.focusReason = m_query.isEmpty() ? QStringLiteral("This focus shelf has no matching local files yet; add records or restore files into the PaperLibrary corpus.")
-                                                : QStringLiteral("No manifest records match the current search.");
-            row.focusOrder = 0;
-            m_rows.append(row);
-        }
-
-        m_rowCache.insert(key, m_rows);
-        rebuildPathIndex();
-        endResetModel();
-        return;
     }
 
     struct SortKey {
@@ -3421,13 +4014,7 @@ void PaperLibrarySectionedModel::rebuild()
         return a.localeAwareCompare(b) < 0;
     });
 
-    const int maxRows = m_query.isEmpty() ? MaxCorpusFeedRows : MaxCorpusSearchRows;
-    const int defaultMaxRowsPerSection = m_query.isEmpty() ? MaxCorpusRowsPerSection : MaxCorpusSearchRows;
-    QSet<QString> emittedWorkKeys;
     for (const QString &section : std::as_const(sectionOrder)) {
-        if (m_rows.size() >= maxRows) {
-            break;
-        }
         QList<int> sourceRowsForSection = rowsBySection.value(section);
         std::stable_sort(sourceRowsForSection.begin(), sourceRowsForSection.end(), [&sortKeysBySourceRow](int leftRow, int rightRow) {
             const auto leftIt = sortKeysBySourceRow.constFind(leftRow);
@@ -3470,11 +4057,13 @@ void PaperLibrarySectionedModel::rebuild()
             }
             return leftRow < rightRow;
         });
-        const int maxRowsPerSection = (m_query.isEmpty() && m_smartFilter == Papers && m_sectionMode == ReadNext) ? papersReadNextSectionLimit(section) : defaultMaxRowsPerSection;
-        int rowsFromSection = 0;
         for (const int sourceRow : sourceRowsForSection) {
-            if (m_rows.size() >= maxRows || rowsFromSection >= maxRowsPerSection) {
-                break;
+            if (emittedSourceRows.contains(sourceRow)) {
+                continue;
+            }
+            const QString bookTitleKey = duplicateBookTitleKey(m_source->index(sourceRow).data(Qt::DisplayRole).toString());
+            if (!bookTitleKey.isEmpty() && emittedBookTitleKeys.contains(bookTitleKey)) {
+                continue;
             }
             const QString workKey = sourceRowDuplicateWorkKey(m_source, sourceRow);
             if (!workKey.isEmpty()) {
@@ -3483,13 +4072,31 @@ void PaperLibrarySectionedModel::rebuild()
                 }
                 emittedWorkKeys.insert(workKey);
             }
+            if (!bookTitleKey.isEmpty()) {
+                emittedBookTitleKeys.insert(bookTitleKey);
+            }
             Row row;
             row.sourceRow = sourceRow;
             m_rows.append(row);
-            ++rowsFromSection;
+            emittedSourceRows.insert(sourceRow);
         }
     }
-    m_rowCache.insert(key, m_rows);
+
+    if (m_rows.isEmpty() && focusManifest.found) {
+        Row row;
+        row.sourceRow = -1;
+        row.title = m_query.isEmpty() ? QStringLiteral("No local documents yet") : QStringLiteral("No matching documents");
+        row.focusKind = QStringLiteral("setup");
+        row.focusSection = focusManifestShelfName(m_smartFilter);
+        row.focusReason = m_query.isEmpty() ? QStringLiteral("This focus shelf has no matching local files yet; add records or restore files into the PaperLibrary corpus.")
+                                            : QStringLiteral("No manifest records match the current search.");
+        row.focusOrder = 0;
+        m_rows.append(row);
+    }
+
+    m_allRows = m_rows;
+    m_rowCache.insert(key, m_allRows);
+    resetVisibleRows();
     rebuildPathIndex();
     endResetModel();
 }

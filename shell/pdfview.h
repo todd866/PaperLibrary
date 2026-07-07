@@ -67,6 +67,10 @@ public:
     bool fitWidthMode() const;
     QAction *findAction() const;
     QAction *aiNavigationAction() const;
+    QAction *relatedPapersAction() const;
+
+    /** Enable the reader's adjacent-paper affordance for this document. */
+    void setRelatedPapersContext(const QString &query, const QString &label);
 
     void jumpToApproximateProgress(double progress);
 
@@ -91,6 +95,7 @@ Q_SIGNALS:
     void pageStateChanged(int currentPage, int pageCount);
     void zoomStateChanged(qreal zoomFactor, bool fitWidthMode);
     void outlineAvailableChanged(bool available);
+    void relatedPapersRequested(const QString &query, const QString &label);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -144,6 +149,7 @@ private:
     QLabel *m_outlineTitle = nullptr;
     QTreeView *m_outlineView = nullptr;
     QAction *m_aiNavigationAction = nullptr;
+    QAction *m_relatedPapersAction = nullptr;
     QLabel *m_aiNavigationStatusLabel = nullptr;
     QProgressBar *m_aiNavigationProgress = nullptr;
     QToolButton *m_aiNavigationButton = nullptr;
@@ -156,6 +162,8 @@ private:
     QString m_aiNavigationFingerprintHash;
     QStringList m_aiNavigationExtractedPages;
     QList<AiNavigationEntry> m_aiNavigationEntries;
+    QString m_relatedPapersQuery;
+    QString m_relatedPapersLabel;
 
     int m_currentSearchIndex = -1;
     int m_pendingRestorePage = 0;

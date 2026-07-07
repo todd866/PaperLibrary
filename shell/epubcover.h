@@ -12,9 +12,8 @@
 
 /**
  * Pulls the real cover image and the Dublin Core metadata straight out
- * of an EPUB, so the library never has to hand EPUBs to QuickLook —
- * which hangs forever on them on this machine (see the dev notes'
- * qlmanage watchdog saga). Both shapes of EPUB are read: the usual zip
+ * of an EPUB, so the library never has to route EPUB covers through the
+ * PDF thumbnail renderer. Both shapes of EPUB are read: the usual zip
  * archive, and the unpacked *directory* bundles Apple Books keeps.
  */
 namespace EpubCover

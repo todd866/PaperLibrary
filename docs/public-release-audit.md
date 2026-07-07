@@ -138,7 +138,7 @@ filesystem work.
 7. Audit subprocess and file handling.
    Current subprocess calls use explicit arguments and timeouts in the key AI
    paths, but the release needs a documented pass over `claude`, `pdftotext`,
-   `mdfind`, `qlmanage`, and Finder reveal behavior.
+   `mdfind`, in-process PDF cover rendering, and Finder reveal behavior.
 
 8. Document navigation-map artifacts.
    PDF and EPUB navigation generation is central to the product idea, but the

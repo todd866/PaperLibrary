@@ -32,7 +32,7 @@ set(paperlibrary_SRCS
 
 if(APPLE)
     # PaperLibrary bundle icon; icons/paperlibrary.svg is the design source
-    # (rendered via qlmanage, compiled with iconutil — see the SVG header).
+    # (rendered offline, compiled with iconutil — see the SVG header).
     set(PAPERLIBRARY_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/icons/PaperLibrary.icns")
     set_source_files_properties(${PAPERLIBRARY_ICNS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     list(APPEND paperlibrary_SRCS ${PAPERLIBRARY_ICNS})

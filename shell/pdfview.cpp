@@ -1662,6 +1662,18 @@ PdfView::PdfView(QWidget *parent)
     m_aiNavigationAction->setIcon(QIcon(QStringLiteral(":/shell/icons/chrome-ai-navigation.svg")));
     connect(m_aiNavigationAction, &QAction::triggered, this, &PdfView::generateAiNavigation);
 
+    m_relatedPapersAction = new QAction(i18n("Related Papers"), this);
+    m_relatedPapersAction->setIcon(QIcon::fromTheme(QStringLiteral("view-filter")));
+    m_relatedPapersAction->setEnabled(false);
+    m_relatedPapersAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    m_relatedPapersAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(m_relatedPapersAction, &QAction::triggered, this, [this]() {
+        if (!m_relatedPapersQuery.trimmed().isEmpty()) {
+            Q_EMIT relatedPapersRequested(m_relatedPapersQuery.trimmed(), m_relatedPapersLabel.trimmed());
+        }
+    });
+    addAction(m_relatedPapersAction);
+
     m_aiNavigationButton = new QToolButton(aiNavigationHeader);
     m_aiNavigationButton->setObjectName(QStringLiteral("paperlibrary_pdf_ai_navigation_button"));
     m_aiNavigationButton->setAutoRaise(true);
@@ -1874,6 +1886,28 @@ QAction *PdfView::findAction() const
 QAction *PdfView::aiNavigationAction() const
 {
     return m_aiNavigationAction;
+}
+
+QAction *PdfView::relatedPapersAction() const
+{
+    return m_relatedPapersAction;
+}
+
+void PdfView::setRelatedPapersContext(const QString &query, const QString &label)
+{
+    m_relatedPapersQuery = query.trimmed();
+    m_relatedPapersLabel = label.trimmed();
+    if (!m_relatedPapersAction) {
+        return;
+    }
+    const bool enabled = !m_relatedPapersQuery.isEmpty();
+    m_relatedPapersAction->setEnabled(enabled);
+    if (!enabled) {
+        m_relatedPapersAction->setToolTip(i18n("No related-paper index is available for this document yet."));
+        return;
+    }
+    const QString target = m_relatedPapersLabel.isEmpty() ? m_relatedPapersQuery : m_relatedPapersLabel;
+    m_relatedPapersAction->setToolTip(i18n("Show papers related to %1.", target));
 }
 
 void PdfView::jumpToApproximateProgress(double progress)

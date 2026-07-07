@@ -77,8 +77,10 @@ private Q_SLOTS:
     void testParseReplyValidEnvelope();
     void testParseReplyFencedResult();
     void testParseReplyRejectsBadInput();
+    void testMetadataAuditMeasuresSuitability();
     void testEnqueueSkipsWhenDisabled();
     void testEnqueueSkipsExistingTitle();
+    void testEnqueueRepairsGenericMetadata();
     void testEnqueueSkipsWithoutCli();
     void testEnqueueSkipsDuplicatesAndFailures();
     void testEnqueueSkipsCorpusDocuments();
@@ -184,6 +186,37 @@ void LibraryAutoTaggerTest::testParseReplyRejectsBadInput()
     QVERIFY(!LibraryAutoTagger::parseReply(makeEnvelope(QStringLiteral("{\"tags\": [\"Alpha\"]}"))).valid);
 }
 
+void LibraryAutoTaggerTest::testMetadataAuditMeasuresSuitability()
+{
+    const QUrl goodUrl = QUrl::fromLocalFile(m_dir->filePath(QStringLiteral("papers/useful.pdf")));
+    LibraryStore::Entry good;
+    good.url = goodUrl;
+    good.title = QStringLiteral("Clinical Factors Predicting Cognitive Error in ALS");
+    good.tags = {QStringLiteral("Paper"), QStringLiteral("MND / ALS")};
+    good.description = QStringLiteral("A clinical neurology paper with a specific disease-focused question.");
+    good.keywords = {QStringLiteral("ALS"), QStringLiteral("cognition"), QStringLiteral("neurology")};
+    const LibraryAutoTagger::MetadataAudit goodAudit = LibraryAutoTagger::auditMetadata(goodUrl, good);
+    QVERIFY(goodAudit.suitable);
+    QVERIFY(goodAudit.issues.isEmpty());
+
+    const QUrl badUrl = QUrl::fromLocalFile(m_dir->filePath(QStringLiteral("papers/10-1212-wnl-92-15-supplement-p4-4-027.pdf")));
+    LibraryStore::Entry bad;
+    bad.url = badUrl;
+    bad.title = QStringLiteral("10-1212-wnl-92-15-supplement-p4-4-027");
+    bad.tags = {QStringLiteral("Paper")};
+    const LibraryAutoTagger::MetadataAudit badAudit = LibraryAutoTagger::auditMetadata(badUrl, bad);
+    QVERIFY(!badAudit.suitable);
+    QVERIFY(badAudit.issues.contains(QStringLiteral("generated-title")));
+    QVERIFY(badAudit.issues.contains(QStringLiteral("missing-specific-topic")));
+    QVERIFY(badAudit.issues.contains(QStringLiteral("missing-description")));
+
+    LibraryStore::Entry longTag = good;
+    longTag.tags = {QStringLiteral("Paper"), QStringLiteral("Very Long Classification Phrase That Will Not Fit On A Tile")};
+    const LibraryAutoTagger::MetadataAudit longAudit = LibraryAutoTagger::auditMetadata(goodUrl, longTag);
+    QVERIFY(!longAudit.suitable);
+    QVERIFY(longAudit.issues.contains(QStringLiteral("overlong-display-tag")));
+}
+
 void LibraryAutoTaggerTest::testEnqueueSkipsWhenDisabled()
 {
     KConfigGroup group = partGeneralGroup();
@@ -210,6 +243,9 @@ void LibraryAutoTaggerTest::testEnqueueSkipsExistingTitle()
     LibraryStore store(storePath());
     store.recordOpen(url, QDateTime(QDate(2026, 1, 1), QTime(10, 0)));
     store.setTitle(url, QStringLiteral("Already Curated"));
+    store.setTags(url, {QStringLiteral("Paper"), QStringLiteral("MND Project")});
+    store.setDescription(url, QStringLiteral("A curated clinical paper with enough metadata for the library tile."));
+    store.setKeywords(url, {QStringLiteral("MND"), QStringLiteral("clinical")});
 
     LibraryAutoTagger tagger(&store);
     tagger.setPdfToTextExecutable(writeScript(QStringLiteral("pdftotext"), QStringLiteral("echo text")));
@@ -219,6 +255,25 @@ void LibraryAutoTaggerTest::testEnqueueSkipsExistingTitle()
     QVERIFY(tagger.m_queue.isEmpty());
     QVERIFY(!tagger.m_busy);
     QCOMPARE(store.metadata(url).title, QStringLiteral("Already Curated"));
+}
+
+void LibraryAutoTaggerTest::testEnqueueRepairsGenericMetadata()
+{
+    const QUrl url = touchPdf(QStringLiteral("10-1212-wnl-92-15-supplement-p4-4-027.pdf"));
+    LibraryStore store(storePath());
+    store.recordOpen(url, QDateTime(QDate(2026, 1, 1), QTime(10, 0)));
+    store.setTitle(url, QStringLiteral("10-1212-wnl-92-15-supplement-p4-4-027"));
+    store.setTags(url, {QStringLiteral("Paper")});
+
+    LibraryAutoTagger tagger(&store);
+    tagger.setPdfToTextExecutable(writeScript(QStringLiteral("pdftotext"), QStringLiteral("echo \"WriteClick editor choice about ALS diagnostic criteria.\"")));
+    tagger.setClaudeExecutable(writeScript(QStringLiteral("claude"), QStringLiteral("printf '%s\\n' '%1'").arg(QString::fromUtf8(makeEnvelope(fixtureSuggestion())))));
+
+    QSignalSpy taggedSpy(&tagger, &LibraryAutoTagger::tagged);
+    tagger.enqueue(url);
+    QVERIFY(taggedSpy.wait(10000));
+    QCOMPARE(store.metadata(url).title, QStringLiteral("Fixture Title"));
+    QCOMPARE(store.metadata(url).tags, QStringList({QStringLiteral("Alpha"), QStringLiteral("Beta")}));
 }
 
 void LibraryAutoTaggerTest::testEnqueueSkipsWithoutCli()

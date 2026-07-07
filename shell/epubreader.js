@@ -16,11 +16,15 @@
     const wheelGestureQuietMs = 180;
     const continuousBoundaryPx = 6;
     const spineSlideWindowNamePrefix = "__paperlibrary_epub_slide__:";
+    const positionTitlePrefix = "__paperlibrary_epub_position__|";
 
     let fontScaleStep = clampFontScaleStep(initialFontScaleStep);
     let lastScrollTarget = Number.NaN;
     let lastScrollTargetTimer = 0;
     let resizeTimer = 0;
+    let positionReportTimer = 0;
+    let positionReportSequence = 0;
+    let positionListenersInstalled = false;
     let lastBoundaryNavigation = 0;
     let wheelAccumulator = 0;
     let wheelLocked = false;
@@ -177,6 +181,18 @@
         return Number.isFinite(lastScrollTarget) ? clamp(lastScrollTarget, 0, maxScrollLeft()) : scrollOffset();
     }
 
+    function reportPosition(offset) {
+        positionReportSequence += 1;
+        document.title = positionTitlePrefix + positionReportSequence + "|" + Math.round(clamp(finiteNumber(offset), 0, maxScrollLeft()));
+    }
+
+    function schedulePositionReport(delay) {
+        window.clearTimeout(positionReportTimer);
+        positionReportTimer = window.setTimeout(function () {
+            reportPosition(scrollOffset());
+        }, Math.max(0, finiteNumber(delay)));
+    }
+
     function clearLastScrollTargetSoon() {
         window.clearTimeout(lastScrollTargetTimer);
         lastScrollTargetTimer = window.setTimeout(function () {
@@ -208,6 +224,8 @@
                     element.scrollTop = target;
                 }
             }
+            reportPosition(target);
+            schedulePositionReport(smoothScrollMs + 40);
         } else {
             window.clearTimeout(lastScrollTargetTimer);
             lastScrollTarget = Number.NaN;
@@ -225,6 +243,7 @@
                     document.body.scrollTop = target;
                 }
             }
+            reportPosition(target);
         }
 
         return target;
@@ -346,6 +365,22 @@
         return readerMotion;
     }
 
+    function installPositionListeners() {
+        if (positionListenersInstalled) {
+            return;
+        }
+        positionListenersInstalled = true;
+        const listener = function () {
+            schedulePositionReport(140);
+        };
+        window.addEventListener("scroll", listener, { passive: true, capture: true });
+        document.addEventListener("scroll", listener, { passive: true, capture: true });
+        const element = scroller();
+        if (element && typeof element.addEventListener === "function") {
+            element.addEventListener("scroll", listener, { passive: true });
+        }
+    }
+
     function handleKey(event) {
         if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
             return;
@@ -444,6 +479,7 @@
 
     function initialize() {
         installStyle();
+        installPositionListeners();
         playSpineEntryAnimation();
         setScrollOffset(scrollOffset(), { smooth: false });
     }

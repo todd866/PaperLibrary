@@ -30,6 +30,7 @@ private Q_SLOTS:
     void testRecordOpenBumpsCountAndRecency();
     void testPinning();
     void testDownranking();
+    void testFinishedReading();
     void testRemove();
     void testRankingOrder();
     void testSuffixFilter();
@@ -152,6 +153,37 @@ void LibraryStoreTest::testDownranking()
     entries = store.entries();
     QCOMPARE(entries.at(0).url, downranked); // high open count returns once no longer downranked
     QCOMPARE(entries.at(0).downranked, false);
+}
+
+void LibraryStoreTest::testFinishedReading()
+{
+    const QUrl finished = touchFile(QStringLiteral("finished.epub"));
+    const QUrl active = touchFile(QStringLiteral("active.epub"));
+    LibraryStore store(storePath());
+    store.recordOpen(finished, QDateTime(QDate(2026, 1, 3), QTime(10, 0)));
+    store.recordOpen(finished, QDateTime(QDate(2026, 1, 4), QTime(10, 0)));
+    store.recordOpen(active, QDateTime(QDate(2026, 1, 1), QTime(10, 0)));
+
+    store.setPinned(finished, true);
+    store.setDownranked(finished, true);
+    QCOMPARE(store.isDownranked(finished), true);
+
+    store.setFinishedReading(finished, true);
+    QCOMPARE(store.isFinishedReading(finished), true);
+    QCOMPARE(store.isPinned(finished), false);
+    QCOMPARE(store.isDownranked(finished), false);
+
+    QList<LibraryStore::Entry> entries = store.entries({QStringLiteral("epub")});
+    QCOMPARE(entries.size(), 2);
+    QCOMPARE(entries.at(0).url, active);
+    QCOMPARE(entries.at(0).finishedReading, false);
+    QCOMPARE(entries.at(1).url, finished);
+    QCOMPARE(entries.at(1).finishedReading, true);
+
+    LibraryStore reopened(storePath());
+    QCOMPARE(reopened.isFinishedReading(finished), true);
+    reopened.setFinishedReading(finished, false);
+    QCOMPARE(reopened.isFinishedReading(finished), false);
 }
 
 void LibraryStoreTest::testRemove()
@@ -350,6 +382,7 @@ void LibraryStoreTest::testMetadataDefaultsEmpty()
     QCOMPARE(entry.tags, QStringList());
     QCOMPARE(entry.description, QString());
     QCOMPARE(entry.keywords, QStringList());
+    QCOMPARE(entry.finishedReading, false);
 
     // ... as does a url the store has never seen at all
     const LibraryStore::Entry unknown = store.metadata(QUrl::fromLocalFile(QStringLiteral("/nowhere/unknown.pdf")));
@@ -378,6 +411,7 @@ void LibraryStoreTest::testEntriesCarryMetadata()
     QCOMPARE(entries.at(0).tags, QStringList({QStringLiteral("Aviation"), QStringLiteral("Reference")}));
     QCOMPARE(entries.at(0).description, QStringLiteral("Aircraft type rating notes"));
     QCOMPARE(entries.at(0).keywords, QStringList({QStringLiteral("ATPL")}));
+    QCOMPARE(entries.at(0).finishedReading, false);
     QCOMPARE(entries.at(1).url, plain);
     QCOMPARE(entries.at(1).title, QString());
     QCOMPARE(entries.at(1).tags, QStringList());

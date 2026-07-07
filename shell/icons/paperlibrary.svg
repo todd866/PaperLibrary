@@ -5,8 +5,8 @@
   A stack of papers whose top sheet carries a generated typographic cover
   (tag chip, title block, byline) — the library's own cover style.
 
-  PaperLibrary.icns (all 10 macOS sizes) is rendered from this file via
-  qlmanage -t (SVG -> PNG at each size) and compiled with iconutil.
+  PaperLibrary.icns (all 10 macOS sizes) is rendered from this SVG source
+  offline and compiled with iconutil.
 
   SPDX-FileCopyrightText: 2026 Ian Todd <todd.ian@gmail.com>
   SPDX-License-Identifier: GPL-2.0-or-later

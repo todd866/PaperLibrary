@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -60,6 +61,122 @@ static QString findPdfToText()
     }
     const QString homebrew = QStringLiteral("/opt/homebrew/bin/pdftotext");
     return QFileInfo(homebrew).isExecutable() ? homebrew : QString();
+}
+
+static QString compactMetadataKey(QString label)
+{
+    label = label.trimmed().toCaseFolded();
+    label.remove(QLatin1Char(' '));
+    label.remove(QLatin1Char('-'));
+    label.remove(QLatin1Char('_'));
+    return label;
+}
+
+static bool titleLooksGenerated(const QUrl &url, const QString &title)
+{
+    const QString simplified = title.simplified();
+    if (simplified.isEmpty()) {
+        return true;
+    }
+    const QString baseName = QFileInfo(url.isLocalFile() ? url.toLocalFile() : url.fileName()).completeBaseName().simplified();
+    if (!baseName.isEmpty() && simplified.compare(baseName, Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    return simplified.contains(QRegularExpression(QStringLiteral("\\b[0-9a-fA-F]{24,}\\b")))
+        || simplified.contains(QRegularExpression(QStringLiteral("\\b10[-.][0-9]{4,}[-._/A-Za-z0-9]+"), QRegularExpression::CaseInsensitiveOption));
+}
+
+static bool tagsAreGenericOnly(const QStringList &tags)
+{
+    if (tags.isEmpty()) {
+        return true;
+    }
+    for (const QString &tag : tags) {
+        const QString key = compactMetadataKey(tag);
+        const bool generic = key == QLatin1String("pdf") || key == QLatin1String("paper") || key == QLatin1String("papers") || key == QLatin1String("book")
+            || key == QLatin1String("books") || key == QLatin1String("document") || key == QLatin1String("documents") || key == QLatin1String("other")
+            || key == QLatin1String("misc") || key == QLatin1String("miscellaneous") || key == QLatin1String("unknown") || key == QLatin1String("unidentified")
+            || key == QLatin1String("uncategorized") || key == QLatin1String("untagged");
+        if (!generic && !key.isEmpty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool isPublicationTypeTag(const QString &tag)
+{
+    const QString key = compactMetadataKey(tag);
+    return key == QLatin1String("paper") || key == QLatin1String("review") || key == QLatin1String("textbook") || key == QLatin1String("book")
+        || key == QLatin1String("manuscript") || key == QLatin1String("guidelines");
+}
+
+static bool isGenericMetadataTag(const QString &tag)
+{
+    const QString key = compactMetadataKey(tag);
+    return key == QLatin1String("pdf") || key == QLatin1String("paper") || key == QLatin1String("papers") || key == QLatin1String("book")
+        || key == QLatin1String("books") || key == QLatin1String("document") || key == QLatin1String("documents") || key == QLatin1String("other")
+        || key == QLatin1String("misc") || key == QLatin1String("miscellaneous") || key == QLatin1String("unknown") || key == QLatin1String("unidentified")
+        || key == QLatin1String("uncategorized") || key == QLatin1String("untagged");
+}
+
+LibraryAutoTagger::MetadataAudit LibraryAutoTagger::auditMetadata(const QUrl &url, const LibraryStore::Entry &entry)
+{
+    MetadataAudit audit;
+    if (!url.isLocalFile()) {
+        audit.issues.append(QStringLiteral("not-local"));
+        return audit;
+    }
+    if (QFileInfo(url.fileName()).suffix().compare(QLatin1String("pdf"), Qt::CaseInsensitive) != 0) {
+        audit.issues.append(QStringLiteral("unsupported-type"));
+        return audit;
+    }
+
+    if (titleLooksGenerated(url, entry.title)) {
+        audit.issues.append(QStringLiteral("generated-title"));
+    }
+
+    bool hasPublicationType = false;
+    bool hasSpecificTopic = false;
+    bool hasOverlongDisplayTag = false;
+    for (const QString &tag : entry.tags) {
+        const QString trimmed = tag.simplified();
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+        hasPublicationType = hasPublicationType || isPublicationTypeTag(trimmed);
+        hasSpecificTopic = hasSpecificTopic || !isGenericMetadataTag(trimmed);
+        hasOverlongDisplayTag = hasOverlongDisplayTag || trimmed.size() > 32;
+    }
+
+    if (!hasPublicationType) {
+        audit.issues.append(QStringLiteral("missing-publication-type"));
+    }
+    if (!hasSpecificTopic) {
+        audit.issues.append(QStringLiteral("missing-specific-topic"));
+    }
+    if (hasOverlongDisplayTag) {
+        audit.issues.append(QStringLiteral("overlong-display-tag"));
+    }
+    const QString description = entry.description.simplified();
+    if (description.size() < 24 || description.compare(entry.title.simplified(), Qt::CaseInsensitive) == 0) {
+        audit.issues.append(QStringLiteral("missing-description"));
+    }
+    if (entry.keywords.size() < 2) {
+        audit.issues.append(QStringLiteral("thin-keywords"));
+    }
+    if (tagsAreGenericOnly(entry.tags)) {
+        audit.issues.append(QStringLiteral("generic-only-tags"));
+    }
+    audit.issues.removeDuplicates();
+    audit.suitable = audit.issues.isEmpty();
+    return audit;
+}
+
+static bool metadataNeedsTagging(const QUrl &url, const LibraryStore::Entry &entry)
+{
+    const LibraryAutoTagger::MetadataAudit audit = LibraryAutoTagger::auditMetadata(url, entry);
+    return !audit.suitable && !audit.issues.contains(QStringLiteral("not-local")) && !audit.issues.contains(QStringLiteral("unsupported-type"));
 }
 
 LibraryAutoTagger::LibraryAutoTagger(LibraryStore *store, QObject *parent)
@@ -113,8 +230,8 @@ void LibraryAutoTagger::enqueue(const QUrl &url)
     if (m_seen.contains(key)) {
         return; // queued, tagged or failed this session already
     }
-    if (!m_store->metadata(url).title.isEmpty()) {
-        return; // curated (or previously tagged): nothing to do
+    if (!metadataNeedsTagging(url, m_store->metadata(url))) {
+        return; // curated or already useful enough: nothing to do
     }
     m_seen.insert(key);
     m_queue.append(url);
@@ -125,8 +242,8 @@ void LibraryAutoTagger::startNext()
 {
     while (!m_busy && !m_queue.isEmpty()) {
         const QUrl url = m_queue.takeFirst();
-        if (!m_store->metadata(url).title.isEmpty()) {
-            continue; // titled while it waited (e.g. edited by hand)
+        if (!metadataNeedsTagging(url, m_store->metadata(url))) {
+            continue; // curated while it waited (e.g. edited by hand)
         }
         m_busy = true;
         extractFirstPageText(url);
@@ -190,7 +307,7 @@ void LibraryAutoTagger::askClaude(const QUrl &url, const QString &firstPageText)
                                "{\"title\": string, \"tags\": [2-4 short category tags], \"description\": \"one sentence\", "
                                "\"keywords\": [3-6 search terms that are not already in the title or tags]}. "
                                "Make the first tag the publication type when possible, using one of: Paper, Review, Textbook, Book, Manuscript, Guidelines, Other. "
-                               "Use later tags for high-signal topics or projects, e.g. Neuroscience, Statistics, Clinical Trial, Methods. "
+                               "Use later tags for high-signal topics or projects, e.g. Neuroscience, Statistics, Clinical Trial, Methods. Keep each tag 32 characters or shorter so it fits on a tile. "
                                "Prefer concise stable tags over clever prose.\n\n"
                                "First-page text:\n%1")
                                .arg(firstPageText);

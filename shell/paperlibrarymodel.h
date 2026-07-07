@@ -49,6 +49,7 @@ public:
         AccessCountRole,
         PinnedRole,
         CitedByCountRole,
+        RelatedCountRole,
         HaystackRole, /**< case-folded searchable text for the filter */
         MissingRole,  /**< true when the catalog knows the PDF is not local */
         ResolvedPathRole, /**< load-time local PDF path, no fresh filesystem check */
@@ -78,6 +79,7 @@ public:
         int accessCount = 0;
         bool pinned = false;
         int citedByCount = -1;
+        int relatedCount = -1;
         Availability availability = Unknown;
         QString haystack;
     };
@@ -111,6 +113,10 @@ public:
     int rowForLookupSlug(const QString &slug) const;
     int rowForLookupDoi(const QString &doi) const;
     int rowForLookupPath(const QString &path) const;
+    bool hasFullTextSearchIndex() const;
+    bool hasSemanticGraph() const;
+    QList<int> fullTextSearchRows(const QString &query, int limit = 600) const;
+    QList<int> relatedRowsForSlug(const QString &slug, int limit = 120) const;
 
     // The pure pieces, unit-testable without a corpus directory
     /** One JSON object per line; malformed or blank lines are skipped. */
@@ -218,6 +224,7 @@ public:
         RelatedQueryRole,
         FocusRole,
         ThumbnailSeedRole,
+        ThumbnailPathRole,
         ShelfIntentRole,
         RelationHintRole,
         PriorityHintRole,
@@ -234,6 +241,9 @@ public:
     void setSmartFilter(SmartFilter filter);
     void setSectionMode(SectionMode mode);
     void setQuery(const QString &query);
+    void setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText = QString());
+    void clearExplicitSourceRows();
+    bool hasExplicitSourceRows() const;
     void setCoverForPath(const QString &path, const QVariant &cover, bool generated);
     void setDownranked(const QModelIndex &index, bool downranked);
 
@@ -242,6 +252,8 @@ public:
     QString resolvePath(const QModelIndex &index) const;
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    bool canFetchMore(const QModelIndex &parent = QModelIndex()) const override;
+    void fetchMore(const QModelIndex &parent = QModelIndex()) override;
     QVariant data(const QModelIndex &index, int role) const override;
 
 private:
@@ -258,6 +270,7 @@ private:
         QString focusKind;
         QString focusSection;
         QString focusReason;
+        QString focusThumbnailPath;
         QString focusPath;
         int focusOrder = -1;
         double focusScore = 0.0;
@@ -265,10 +278,12 @@ private:
 
     void rebuild();
     void rebuildPathIndex();
+    void resetVisibleRows();
     QString cacheKey() const;
     void clearRowCache();
     QString pathForRow(const Row &row) const;
     QString storedPathForSourceRow(int sourceRow) const;
+    bool acceptsSourceRow(int sourceRow) const;
     bool sourceRowDownranked(int sourceRow) const;
     void saveDownrankedSlugs() const;
 
@@ -276,7 +291,12 @@ private:
     SmartFilter m_smartFilter = Papers;
     SectionMode m_sectionMode = ReadNext;
     QString m_query;
+    bool m_explicitRowsActive = false;
+    QList<int> m_explicitSourceRows;
+    QString m_explicitRowsLabel;
+    QString m_explicitRowsEmptyText;
     QList<Row> m_rows;
+    QList<Row> m_allRows;
     QHash<QString, QList<Row>> m_rowCache;
     QHash<QString, QList<int>> m_rowsByPath;
     QHash<QString, QVariant> m_coverPixmaps;

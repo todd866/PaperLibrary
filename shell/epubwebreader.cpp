@@ -76,6 +76,7 @@ namespace EpubWebReaderCore
 constexpr double MaxStoredScrollOffset = 1000000000.0;
 constexpr int MinFontScaleStep = -5;
 constexpr int MaxFontScaleStep = 7;
+constexpr QLatin1StringView ReportedReaderPositionTitlePrefix("__paperlibrary_epub_position__|");
 
 QString cleanArchivePath(const QString &path)
 {
@@ -1011,6 +1012,38 @@ StoredPosition restoreStoredPosition(const QStringList &saved, int spineCount)
     return restored;
 }
 
+QString reportedReaderPositionTitle(double scrollOffset, int sequence)
+{
+    return QString::fromLatin1(ReportedReaderPositionTitlePrefix) + QString::number(qMax(0, sequence)) + QLatin1Char('|')
+        + QString::number(cleanReportedScrollOffset(scrollOffset), 'f', 0);
+}
+
+ReportedReaderPosition parseReportedReaderPositionTitle(const QString &title)
+{
+    ReportedReaderPosition reported;
+    if (!title.startsWith(ReportedReaderPositionTitlePrefix)) {
+        return reported;
+    }
+
+    const QString payload = title.mid(ReportedReaderPositionTitlePrefix.size());
+    const QStringList parts = payload.split(QLatin1Char('|'));
+    if (parts.size() != 2) {
+        return reported;
+    }
+
+    bool sequenceOk = false;
+    bool offsetOk = false;
+    parts.at(0).toInt(&sequenceOk);
+    const double offset = parts.at(1).toDouble(&offsetOk);
+    if (!sequenceOk || !offsetOk || !isRestorableScrollOffset(offset)) {
+        return reported;
+    }
+
+    reported.scrollOffset = cleanReportedScrollOffset(offset);
+    reported.valid = true;
+    return reported;
+}
+
 }
 
 #ifndef PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY
@@ -1036,6 +1069,9 @@ constexpr double ReaderHistoryDuplicateTolerance = 48.0;
 constexpr double ContinuousScrollHistoryStep = 1600.0;
 constexpr qint64 ProgressLogIntervalMs = 2000;
 constexpr double ProgressLogDistance = 600.0;
+constexpr int PendingScrollRestoreMaxAttempts = 24;
+constexpr int PendingScrollRestoreDelayMs = 50;
+constexpr qint64 RestoredScrollProtectionMs = 1500;
 
 void epubReaderLog(const QString &message)
 {
@@ -1565,6 +1601,7 @@ bool EpubWebReader::open(const QUrl &url)
     m_pendingScrollOffset = 0.0;
     m_havePendingScrollOffset = false;
     m_pendingScrollToEnd = false;
+    m_protectRestoredScrollUntilMs = 0;
     m_backStack.clear();
     m_forwardStack.clear();
     m_haveHistoryAnchor = false;
@@ -1663,6 +1700,11 @@ bool EpubWebReader::open(const QUrl &url)
     installReaderScripts();
 
     connect(m_page, &QWebEnginePage::titleChanged, this, [this](const QString &pageTitle) {
+        const ReportedReaderPosition reported = parseReportedReaderPositionTitle(pageTitle);
+        if (reported.valid) {
+            handleReportedReaderPosition(reported.scrollOffset);
+            return;
+        }
         epubReaderLog(QStringLiteral("pageTitleChanged ignored-tab-title=%1 book-title=%2").arg(pageTitle, m_bookTitle));
     });
     connect(m_page, &QWebEnginePage::loadingChanged, this, [](const QWebEngineLoadingInfo &info) {
@@ -1705,10 +1747,7 @@ bool EpubWebReader::open(const QUrl &url)
             return;
         }
         const double offset = m_scrollMode == ScrollMode::Continuous ? position.y() : position.x();
-        captureScrollHistoryIfNeeded(offset);
-        saveScrollOffset(offset);
-        saveReadingPosition();
-        logProgressIfNeeded(offset);
+        handleReportedReaderPosition(offset);
     });
     connect(m_page, &QWebEnginePage::renderProcessTerminated, this, [this](QWebEnginePage::RenderProcessTerminationStatus status, int exitCode) {
         epubReaderLog(QStringLiteral("renderProcessTerminated status=%1 exit-code=%2").arg(static_cast<int>(status)).arg(exitCode));
@@ -2287,37 +2326,64 @@ void EpubWebReader::applyScrollMode()
     m_page->runJavaScript(script, QWebEngineScript::ApplicationWorld);
 }
 
-void EpubWebReader::applyPendingScrollOffset()
+void EpubWebReader::applyPendingScrollOffset(int attempt)
 {
     if (!m_page || !m_havePendingScrollOffset) {
         return;
     }
 
     const bool scrollToEnd = m_pendingScrollToEnd;
-    const double offset = cleanRestoredScrollOffset(m_pendingScrollOffset);
-    QTimer::singleShot(0, this, [this, scrollToEnd, offset]() {
+    const double requestedOffset = cleanRestoredScrollOffset(m_pendingScrollOffset);
+    QTimer::singleShot(attempt == 0 ? 0 : PendingScrollRestoreDelayMs, this, [this, scrollToEnd, requestedOffset, attempt]() {
         if (!m_page) {
             return;
         }
-        const QString script =
-            scrollToEnd
-            ? QStringLiteral("(function(){ if (!window.__paperLibraryEpub) return 0; window.__paperLibraryEpub.setScrollOffsetToEnd(); return window.__paperLibraryEpub.scrollOffset(); })();")
-            : offset > 0.0
-            ? QStringLiteral("(function(){ if (!window.__paperLibraryEpub) return 0; window.__paperLibraryEpub.setScrollOffset(%1); return window.__paperLibraryEpub.scrollOffset(); })();")
-                  .arg(QString::number(offset, 'g', 17))
-            : QStringLiteral("(function(){ if (!window.__paperLibraryEpub) return 0; window.__paperLibraryEpub.setScrollOffset(0); return window.__paperLibraryEpub.scrollOffset(); })();");
+        const QString metricsScript = QStringLiteral(
+            "(function(){"
+            " if (!window.__paperLibraryEpub) return JSON.stringify({ready:false,offset:0,max:0});"
+            " const max = Number(window.__paperLibraryEpub.maxScrollOffset());"
+            " const before = Number(window.__paperLibraryEpub.scrollOffset());"
+            " if (%1 && max <= 0) return JSON.stringify({ready:false,offset:before,max:max});"
+            " const applied = %2;"
+            " return JSON.stringify({ready:true,offset:Number(applied),max:Number(window.__paperLibraryEpub.maxScrollOffset())});"
+            "})();")
+                                          .arg((!scrollToEnd && requestedOffset > 0.0) ? QStringLiteral("true") : QStringLiteral("false"),
+                                               scrollToEnd
+                                                   ? QStringLiteral("window.__paperLibraryEpub.setScrollOffsetToEnd()")
+                                               : requestedOffset > 0.0
+                                                   ? QStringLiteral("window.__paperLibraryEpub.setScrollOffset(%1)").arg(QString::number(requestedOffset, 'g', 17))
+                                                   : QStringLiteral("window.__paperLibraryEpub.setScrollOffset(0)"));
         QPointer<EpubWebReader> guard(this);
-        m_page->runJavaScript(script, QWebEngineScript::ApplicationWorld, [guard](const QVariant &value) {
+        m_page->runJavaScript(metricsScript, QWebEngineScript::ApplicationWorld, [guard, scrollToEnd, requestedOffset, attempt](const QVariant &value) {
             if (!guard) {
                 return;
             }
-            guard->saveScrollOffset(value.toDouble());
+            const QJsonObject result = QJsonDocument::fromJson(value.toString().toUtf8()).object();
+            const bool ready = result.value(QStringLiteral("ready")).toBool(false);
+            const double appliedOffset = result.value(QStringLiteral("offset")).toDouble(0.0);
+            const double maxOffset = result.value(QStringLiteral("max")).toDouble(0.0);
+            if (!ready && attempt < PendingScrollRestoreMaxAttempts) {
+                epubReaderLog(QStringLiteral("retryPendingScrollRestore attempt=%1 requested=%2 max=%3")
+                                  .arg(QString::number(attempt + 1), QString::number(requestedOffset, 'f', 0), QString::number(maxOffset, 'f', 0)));
+                guard->applyPendingScrollOffset(attempt + 1);
+                return;
+            }
+
+            const bool preserveStoredOffset = !scrollToEnd && requestedOffset > 0.0 && appliedOffset <= 0.5 && maxOffset <= 0.5;
+            if (preserveStoredOffset) {
+                guard->m_pendingScrollOffset = requestedOffset;
+                epubReaderLog(QStringLiteral("preservePendingScrollAfterFailedRestore requested=%1 attempts=%2")
+                                  .arg(QString::number(requestedOffset, 'f', 0), QString::number(attempt)));
+            } else {
+                guard->saveScrollOffset(appliedOffset);
+            }
             guard->saveReadingPosition();
             guard->m_historyAnchor = guard->currentLocation();
             guard->m_haveHistoryAnchor = true;
             guard->m_havePendingScrollOffset = false;
             guard->m_pendingScrollToEnd = false;
             guard->m_suppressHistoryCapture = false;
+            guard->m_protectRestoredScrollUntilMs = guard->m_pendingScrollOffset > 0.5 ? QDateTime::currentMSecsSinceEpoch() + RestoredScrollProtectionMs : 0;
         });
     });
 }
@@ -2325,6 +2391,25 @@ void EpubWebReader::applyPendingScrollOffset()
 void EpubWebReader::saveScrollOffset(double scrollOffset)
 {
     m_pendingScrollOffset = cleanReportedScrollOffset(scrollOffset);
+}
+
+void EpubWebReader::handleReportedReaderPosition(double scrollOffset)
+{
+    if (m_havePendingScrollOffset) {
+        return;
+    }
+
+    const double offset = cleanReportedScrollOffset(scrollOffset);
+    if (offset <= 0.5 && m_pendingScrollOffset > 0.5 && QDateTime::currentMSecsSinceEpoch() < m_protectRestoredScrollUntilMs) {
+        epubReaderLog(QStringLiteral("ignoreTransientZeroScroll saved-offset=%1").arg(QString::number(m_pendingScrollOffset, 'f', 0)));
+        return;
+    }
+
+    m_protectRestoredScrollUntilMs = 0;
+    captureScrollHistoryIfNeeded(offset);
+    saveScrollOffset(offset);
+    saveReadingPosition();
+    logProgressIfNeeded(offset);
 }
 
 QUrl EpubWebReader::urlForSpineItem(int spineIndex) const

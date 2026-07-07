@@ -14,13 +14,14 @@
 #include <QStringList>
 #include <QUrl>
 
-class LibraryStore;
+#include "librarystore.h"
+
 class QProcess;
 
 /**
  * Fills in library metadata (title, tags, description, keywords) for
- * documents that have none by asking the local `claude` CLI to read the
- * first page. Documents queue up and are processed one at a time in the
+ * local PDFs with missing, filename-like, or generic-only metadata by
+ * asking the local `claude` CLI to read the first page. Documents queue up and are processed one at a time in the
  * background: the first page's text is extracted with pdftotext
  * (documents without extractable text — e.g. scans — are skipped
  * silently), truncated, and sent to `claude -p --output-format json`; a
@@ -44,8 +45,8 @@ public:
 
     /**
      * Queue @p url for tagging. A no-op when auto-tagging is disabled,
-     * the entry already has a title, the claude CLI is not installed, or
-     * the url was already queued or failed this session.
+     * the entry already has usable metadata, the claude CLI is not installed,
+     * or the url was already queued or failed this session.
      */
     void enqueue(const QUrl &url);
 
@@ -58,6 +59,12 @@ public:
         bool valid = false; /**< false on any parse trouble or a missing title */
     };
 
+    /** Deterministic quality check run before spending model tokens. */
+    struct MetadataAudit {
+        bool suitable = false;
+        QStringList issues;
+    };
+
     /**
      * Parses a `claude -p --output-format json` reply: the CLI wraps the
      * model's text in an envelope ({"type":"result","is_error":false,…,
@@ -66,6 +73,9 @@ public:
      * yields an invalid Suggestion.
      */
     static Suggestion parseReply(const QByteArray &reply);
+
+    /** Measure whether stored metadata is good enough to show without AI repair. */
+    static MetadataAudit auditMetadata(const QUrl &url, const LibraryStore::Entry &entry);
 
     /** Test seams: override the executables resolved at construction. */
     void setClaudeExecutable(const QString &path);

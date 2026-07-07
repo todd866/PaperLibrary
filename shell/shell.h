@@ -155,6 +155,9 @@ private:
     void connectPdfView(PdfView *reader);
     QString curatedTitleForUrl(const QUrl &url) const;
     QString tabTitleForUrl(const QUrl &url) const;
+    QString relatedPapersQueryForUrl(const QUrl &url) const;
+    QString relatedPapersLabelForUrl(const QUrl &url) const;
+    void openRelatedPapersFromReader(const QString &query, const QString &label);
     void removePdfSideContainer(PdfView *reader);
     void hideXmlGuiToolbars();
     void applyChromeSeparatorStyle();

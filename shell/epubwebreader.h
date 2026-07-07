@@ -73,6 +73,11 @@ struct StoredPosition {
     QString status;
 };
 
+struct ReportedReaderPosition {
+    double scrollOffset = 0.0;
+    bool valid = false;
+};
+
 QString cleanArchivePath(const QString &path);
 QString resolvePackageHref(const QString &opfDir, const QString &href);
 QStringList resolvePackageHrefCandidates(const QString &opfDir, const QString &href);
@@ -86,6 +91,8 @@ bool isRestorableScrollOffset(double scrollOffset);
 double cleanReportedScrollOffset(double scrollOffset);
 int cleanFontScaleStep(int step);
 StoredPosition restoreStoredPosition(const QStringList &saved, int spineCount);
+QString reportedReaderPositionTitle(double scrollOffset, int sequence);
+ReportedReaderPosition parseReportedReaderPositionTitle(const QString &title);
 }
 
 #ifndef PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY
@@ -157,9 +164,10 @@ private:
 
     bool loadSpineItem(int spineIndex, double scrollOffset, bool scrollToEnd = false, const QString &fragment = QString(), bool recordHistory = true);
     void installReaderScripts();
-    void applyPendingScrollOffset();
+    void applyPendingScrollOffset(int attempt = 0);
     void applyScrollMode();
     void saveScrollOffset(double scrollOffset);
+    void handleReportedReaderPosition(double scrollOffset);
     void captureLocationForHistory();
     void captureScrollHistoryIfNeeded(double scrollOffset);
     void pushHistoryLocation(const Location &location, bool clearForward = true);
@@ -186,6 +194,7 @@ private:
     double m_pendingScrollOffset = 0.0;
     bool m_havePendingScrollOffset = false;
     bool m_pendingScrollToEnd = false;
+    qint64 m_protectRestoredScrollUntilMs = 0;
     int m_fontScaleStep = 0;
     ScrollMode m_scrollMode = ScrollMode::Paginated;
     bool m_hasBookScrollModeOverride = false;

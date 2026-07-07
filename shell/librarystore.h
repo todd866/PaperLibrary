@@ -35,6 +35,7 @@ public:
         QDateTime lastOpened;
         bool pinned = false;
         bool downranked = false; /**< thumbs-down: keep searchable, but push below normal feed items */
+        bool finishedReading = false; /**< completed long-form reading; keep searchable, remove from active feeds */
         QString title;        /**< display title override; empty = unset */
         QStringList tags;     /**< genre/topic tags, most significant first */
         QString description;  /**< one-line summary */
@@ -54,6 +55,8 @@ public:
     bool isPinned(const QUrl &url) const;
     void setDownranked(const QUrl &url, bool downranked);
     bool isDownranked(const QUrl &url) const;
+    void setFinishedReading(const QUrl &url, bool finished);
+    bool isFinishedReading(const QUrl &url) const;
 
     /** Metadata setters; an empty value clears the field. Creates the entry if new. */
     void setTitle(const QUrl &url, const QString &title);
