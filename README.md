@@ -55,7 +55,7 @@ because LaunchServices does not preserve the shell environment.
 ## Tests
 
 ```bash
-ctest --test-dir build --output-on-failure -R '^(shelltest|librarystoretest|libraryautotaggertest|paperlibrarymodeltest|libraryviewtest|coverheuristictest|covergeneratortest|epubcovertest|epubimportertest|epubreadercorpustest|chromestriptest)$'
+ctest --test-dir build --output-on-failure -R '^(shelltest|librarystoretest|libraryautotaggertest|paperlibrarymodeltest|coverheuristictest|covergeneratortest|epubcovertest|epubimportertest|epubreadercorpustest|chromestriptest)$'
 ```
 
 ## Public Domain Starter Pack
