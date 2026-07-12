@@ -12,7 +12,7 @@
 #include <QWidget>
 
 class ChromeToolButton;
-class PdfView;
+#include "pdfview.h" // ChapterProgress is a nested type used by value in a slot signature
 class QAction;
 class QHBoxLayout;
 class QLabel;
@@ -56,6 +56,7 @@ private:
     void clearButtonActions();
     void clearPdfMode();
     void updatePdfPageControls(int currentPage, int pageCount);
+    void updatePdfChapter(const PdfView::ChapterProgress &chapter);
     void updatePdfZoomText(qreal zoomFactor, bool fitWidthMode);
     void refreshIcons();
 
@@ -74,6 +75,7 @@ private:
     QWidget *m_pdfPageWidget = nullptr;
     QSpinBox *m_pdfPageSpinBox = nullptr;
     QLabel *m_pdfPageCountLabel = nullptr;
+    QLabel *m_pdfChapterLabel = nullptr;
     int m_pageWidgetSlot = 0;
     QHBoxLayout *m_layout = nullptr;
 };

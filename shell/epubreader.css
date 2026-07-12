@@ -161,3 +161,28 @@ a {
     color: #315f87;
     text-decoration-thickness: 0.08em;
 }
+
+/* An unobtrusive "page X of Y within this chapter" readout. Fixed to the viewport (a child of
+   <html>, so the body's spine-turn transform never drags it), non-interactive, and out of the text
+   flow so it is never selected, copied, or laid into a column. Hidden in scroll mode / single-page
+   chapters by the script. */
+#paperlibrary-page-indicator {
+    position: fixed;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    z-index: 2147483647;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    color: rgba(32, 34, 36, 0.5);
+    background: rgba(247, 247, 244, 0.78);
+    padding: 4px 10px;
+    border-radius: 10px;
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+}

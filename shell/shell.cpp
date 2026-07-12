@@ -17,6 +17,7 @@
 */
 
 #include "shell.h"
+#include "telemetry.h"
 
 // qt/kde includes
 #include <KActionCollection>
@@ -56,10 +57,15 @@
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QProxyStyle>
+#include <QHideEvent>
 #include <QScreen>
+#include <QShowEvent>
+#include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStyleOption>
 #include <QTabBar>
+#include <QVBoxLayout>
 #include <QTabWidget>
 #include <QTimer>
 
@@ -77,11 +83,15 @@
 #if defined(Q_OS_MACOS)
 #include "macostitlebar.h"
 #endif
+#include "claudeprocesshelper.h"
 #include "epubwebreader.h"
+
+#include <QProcess>
 #include "epubimporter.h"
 #include "libraryautotagger.h"
 #include "librarystore.h"
 #include "libraryview.h"
+#include "paperlibrarymodel.h"
 #include "pdfview.h"
 #include "shellutils.h"
 
@@ -211,51 +221,45 @@ static inline QString GeneralGroupKey()
  * the user to dock it to the left and right sides of the window,
  * or detach it from the window altogether.
  */
-class Sidebar : public QDockWidget
+// The reader sidebar (Contents / AI Navigation / library filters). It is a plain QWidget hosted
+// as the left pane of the tab widget's reader split — NOT a QDockWidget. It used to be a dock, but
+// QMainWindow relentlessly reclaims any QDockWidget child: setupGUI(...Save) restoreState() re-docks
+// it into the left dock area (undoing the splitter placement — the "navbar infringes on the tabs"
+// regression), and resizeDocks() sizes it as a dock. As a splitter pane the width belongs to the
+// splitter (drag to resize), visibility is a plain show/hide, and no dock machinery touches it.
+class Sidebar : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit Sidebar(QWidget *parent = nullptr)
-        : QDockWidget(parent)
+        : QWidget(parent)
     {
-        setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-        setFeatures(defaultFeatures());
-
-        // Chrome-flat: the dock never shows a title bar, locked or not
-        m_dumbTitleWidget = new QWidget;
-        setTitleBarWidget(m_dumbTitleWidget);
-
-        m_stackedWidget = new QStackedWidget;
+        m_stackedWidget = new QStackedWidget(this);
         m_stackedWidget->setAutoFillBackground(true);
         m_stackedWidget->setBackgroundRole(QPalette::Window);
-        setWidget(m_stackedWidget);
-        // It seems that without requesting a specific minimum size, Qt
-        // somehow calculates a (0,-1) minimum size, and then Qt gets angry
-        // that negative sizes is not possible.
-        setMinimumSize(10, 10);
-        m_widthAnimation = new QPropertyAnimation(this, "maximumWidth", this);
-        m_widthAnimation->setDuration(180);
-        m_widthAnimation->setEasingCurve(QEasingCurve::OutCubic);
-        connect(m_widthAnimation, &QPropertyAnimation::finished, this, [this]() {
-            const bool hide = m_hideAfterAnimation;
-            m_hideAfterAnimation = false;
-            if (hide) {
-                QDockWidget::setVisible(false);
-            }
-            setMinimumSize(10, 10);
-            setMaximumWidth(QWIDGETSIZE_MAX);
-        });
+        auto *const layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        layout->addWidget(m_stackedWidget);
+        setMinimumWidth(10);
     }
 
+Q_SIGNALS:
+    // Mirrors the QDockWidget signal the shell relied on; emitted on the pane's own show/hide.
+    void visibilityChanged(bool visible);
+
+public:
+    // Vestigial: there is nothing to lock on a splitter pane, but the toggle action and its
+    // persisted state still call these, so keep them as a stored flag rather than churn call sites.
     bool isLocked() const
     {
-        return features().testFlag(NoDockWidgetFeatures);
+        return m_locked;
     }
 
     void setLocked(bool locked)
     {
-        setFeatures(locked ? NoDockWidgetFeatures : defaultFeatures());
+        m_locked = locked;
     }
 
     int indexOf(QWidget *widget) const
@@ -278,80 +282,34 @@ public:
         m_stackedWidget->setCurrentWidget(widget);
     }
 
-    void setAnimatedVisible(bool visible, bool animated)
+    // The splitter owns the width; showing/hiding the pane is all that is needed. The former
+    // maximumWidth slide animation fought the splitter's own sizing, so it is gone.
+    void setAnimatedVisible(bool visible, bool /*animated*/)
     {
-        if (!animated || isFloating()) {
-            if (m_widthAnimation) {
-                m_widthAnimation->stop();
-            }
-            m_hideAfterAnimation = false;
-            setMinimumSize(10, 10);
-            setMaximumWidth(QWIDGETSIZE_MAX);
-            QDockWidget::setVisible(visible);
-            return;
-        }
-
-        if (m_widthAnimation) {
-            m_widthAnimation->stop();
-        }
-        const int targetWidth = qBound(220, qMax(width(), m_lastDockWidth), 360);
-        if (visible) {
-            m_hideAfterAnimation = false;
-            m_lastDockWidth = targetWidth;
-            setMinimumWidth(1);
-            setMaximumWidth(1);
-            QDockWidget::setVisible(true);
-            if (m_widthAnimation) {
-                m_widthAnimation->setStartValue(1);
-                m_widthAnimation->setEndValue(targetWidth);
-                m_widthAnimation->start();
-            }
-            return;
-        }
-
-        if (!isVisible()) {
-            return;
-        }
-        m_lastDockWidth = qMax(width(), m_lastDockWidth);
-        m_hideAfterAnimation = true;
-        setMinimumWidth(1);
-        if (m_widthAnimation) {
-            m_widthAnimation->setStartValue(qMax(1, width()));
-            m_widthAnimation->setEndValue(1);
-            m_widthAnimation->start();
-        } else {
-            QDockWidget::setVisible(false);
-        }
+        setVisible(visible);
     }
 
-    /**
-     * Reserve @p height at the top of the dock so its content clears the
-     * macOS traffic lights when the strip lives in the titlebar (the left
-     * dock otherwise rises to y=0 under the buttons). The empty dock title
-     * widget doubles as that spacer; 0 restores the flush layout.
-     */
-    void setTitlebarClearance(int height)
+    // No-op: the pane sits below the tab strip and can never reach the traffic lights.
+    void setTitlebarClearance(int /*height*/)
     {
-        m_dumbTitleWidget->setFixedHeight(0);
-        m_stackedWidget->setContentsMargins(0, qMax(0, height), 0, 0);
+    }
+
+protected:
+    void showEvent(QShowEvent *event) override
+    {
+        QWidget::showEvent(event);
+        Q_EMIT visibilityChanged(true);
+    }
+
+    void hideEvent(QHideEvent *event) override
+    {
+        QWidget::hideEvent(event);
+        Q_EMIT visibilityChanged(false);
     }
 
 private:
-    static DockWidgetFeatures defaultFeatures()
-    {
-        DockWidgetFeatures dockFeatures = DockWidgetClosable | DockWidgetMovable;
-        if (!KWindowSystem::isPlatformWayland()) { // TODO : Remove this check when QTBUG-87332 is fixed
-            dockFeatures |= DockWidgetFloatable;
-        }
-
-        return dockFeatures;
-    }
-
     QStackedWidget *m_stackedWidget = nullptr;
-    QWidget *m_dumbTitleWidget = nullptr;
-    QPropertyAnimation *m_widthAnimation = nullptr;
-    int m_lastDockWidth = 260;
-    bool m_hideAfterAnimation = false;
+    bool m_locked = true;
 };
 
 Shell::Shell(const QString &serializedOptions)
@@ -401,22 +359,28 @@ Shell::Shell(const QString &serializedOptions)
         m_sidebar->setObjectName(QStringLiteral("paperlibrary_sidebar"));
         m_sidebar->setContextMenuPolicy(Qt::ActionsContextMenu);
         m_sidebar->setWindowTitle(i18n("Sidebar"));
-        connect(m_sidebar, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        connect(m_sidebar, &Sidebar::visibilityChanged, this, [this](bool visible) {
             if (currentTabIsLibrary()) {
                 // MainWindow tries hard to make its child dockwidgets shown,
                 // but on a library tab we don't want to see the sidebar, so
                 // try a bit more to actually hide it.
                 m_sidebar->hide();
-            } else if (isVisible()) {
-                // Remember the user's choice for document tabs; window-level
-                // hides (minimize, close) are not choices
-                m_sidebarVisibleOnDocTabs = visible;
-                if (m_showSidebarAction) {
-                    m_showSidebarAction->setChecked(visible);
-                }
+            } else if (isVisible() && m_showSidebarAction) {
+                // Reflect actual visibility on the toolbar toggle, but do NOT treat a
+                // programmatic auto-hide (a no-outline doc, a window minimize) as the user's
+                // choice — the preference is recorded only from the explicit toggle action,
+                // otherwise a no-TOC document silently turns the sidebar off for good.
+                m_showSidebarAction->setChecked(visible);
             }
         });
-        addDockWidget(Qt::LeftDockWidgetArea, m_sidebar);
+        // Host the sidebar as the left pane of the tab widget's reader split, strictly BELOW the
+        // tab strip — NOT as a QMainWindow dock. A left dock sits beside the central widget, which
+        // pushes the whole tab strip inward so it no longer spans the window (the "navbar infringes
+        // on the tabs" problem). As a splitter pane it can never rise into the tab/titlebar band.
+        // It stays a QDockWidget (its show/hide animation and visibilityChanged drive the toggle),
+        // but locked so it has no drag-to-float handle in its new home.
+        m_sidebar->setLocked(true);
+        m_tabWidget->setLeftPanel(m_sidebar);
         applyChromeSeparatorStyle();
 
         // then, setup our actions
@@ -431,7 +395,11 @@ Shell::Shell(const QString &serializedOptions)
         // titlebar). When on, MacTitlebar manages the native window on show
         // and Qt must not also drive a unified toolbar; when off, keep the
         // classic macOS unified titlebar blend.
-        m_titlebarTabs = chromeTitlebarTabsEnabled(KSharedConfig::openConfig()->group(GeneralGroupKey()));
+        // The native-titlebar adoption drives cocoa NSWindow APIs on show; under the
+        // offscreen platform (the headless self-test rig) there is no NSWindow, so it would
+        // block show() forever. Force it off there — the rig tests behaviour, not chrome.
+        const bool offscreen = QGuiApplication::platformName() == QLatin1String("offscreen");
+        m_titlebarTabs = !offscreen && chromeTitlebarTabsEnabled(KSharedConfig::openConfig()->group(GeneralGroupKey()));
         if (m_titlebarTabs) {
             // MacTitlebar gives the window a full-size content view, so its
             // NSView already spans the titlebar band. But Qt reports that band
@@ -451,8 +419,9 @@ Shell::Shell(const QString &serializedOptions)
         }
 #endif
 
-        // NOTE : apply default sidebar width only after calling setupGUI(...)
-        resizeDocks({m_sidebar}, {200}, Qt::Horizontal);
+        // Give the sidebar pane a sensible default width in the reader split; the pages take the
+        // rest and grow with the window. The user can drag the divider from here.
+        m_tabWidget->contentSplitter()->setSizes({260, 1000});
 
         // The strip always has at least one tab; launch lands on the
         // Library — Chrome's new-tab page — until a document navigates it
@@ -503,7 +472,13 @@ Shell::Shell(const QString &serializedOptions)
 
 LibraryView *Shell::createLibraryView(bool deferInitialRefresh)
 {
-    LibraryView *const view = new LibraryView(m_libraryStore, this, deferInitialRefresh);
+    // One corpus model for the whole window, created on first use and outliving individual tabs, so
+    // opening a new library tab attaches to an already-parsed, already-classified model instead of
+    // rebuilding 21k rows on the main thread (the burst-of-tabs freeze telemetry recorded).
+    if (!m_sharedPaperModel) {
+        m_sharedPaperModel = new PaperLibraryModel(this);
+    }
+    LibraryView *const view = new LibraryView(m_libraryStore, this, deferInitialRefresh, m_sharedPaperModel);
     connect(view, &LibraryView::openClicked, this, &Shell::fileOpen);
     connect(view, &LibraryView::itemActivated, this, &Shell::openFromLibrary);
     connect(view, &LibraryView::closeRequested, this, [this, view]() {
@@ -836,6 +811,7 @@ void Shell::setEpubScrollModeActionsEnabled(bool enabled)
         m_epubBookUseGlobalAction,
         m_epubBookPaginatedAction,
         m_epubBookContinuousAction,
+        m_epubToggleScrollAction,
     };
     for (QAction *action : actions) {
         if (action) {
@@ -1482,6 +1458,23 @@ void Shell::setupActions()
         syncEpubScrollModeActions();
     });
 
+    // One discoverable toggle: flip the current book between paginated pages and continuous scroll.
+    // (The five actions above set global vs per-book explicitly; this is the everyday control.)
+    m_epubToggleScrollAction = actionCollection()->addAction(QStringLiteral("epub-scroll-toggle"));
+    m_epubToggleScrollAction->setText(i18n("Toggle Page / Continuous Scroll"));
+    m_epubToggleScrollAction->setIcon(QIcon::fromTheme(QStringLiteral("view-pages-continuous")));
+    m_epubToggleScrollAction->setEnabled(false);
+    actionCollection()->setDefaultShortcut(m_epubToggleScrollAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    connect(m_epubToggleScrollAction, &QAction::triggered, this, [this, currentEpubReader]() {
+        if (EpubWebReader *const reader = currentEpubReader()) {
+            const EpubWebReader::ScrollMode next = reader->scrollMode() == EpubWebReader::ScrollMode::Continuous
+                ? EpubWebReader::ScrollMode::Paginated
+                : EpubWebReader::ScrollMode::Continuous;
+            reader->setBookScrollModeOverride(next);
+        }
+        syncEpubScrollModeActions();
+    });
+
     m_epubBackAction = actionCollection()->addAction(QStringLiteral("epub-history-back"));
     m_epubBackAction->setText(i18n("Back in EPUB"));
     QList<QKeySequence> epubBackShortcuts;
@@ -1668,6 +1661,26 @@ void Shell::setupActions()
     m_lockSidebarAction->setText(i18n("Lock Sidebar"));
     connect(m_lockSidebarAction, &QAction::triggered, m_sidebar, &Sidebar::setLocked);
     m_sidebar->addAction(m_lockSidebarAction);
+
+    // A QAction reaches the keyboard only through a widget it has been added to.
+    // Normally KXMLGUIFactory::addClient() does that wholesale -- it calls
+    // KXMLGUIClient::beginXMLPlug(window), which calls addAssociatedWidget() -- but
+    // that runs from createGUI(), and this menuless shell never calls it (setupGUI()
+    // is passed Keys|ToolBar|Save, without Create). So the collection holds the
+    // actions, nothing owns their shortcuts, and they are silently dead. ⌘T worked
+    // only because the tab strip's button takes it via setDefaultAction().
+    //
+    // The PDF/EPUB view actions stay out of this list on purpose: the toolbar buttons
+    // own them, and ⌘0 and ⌘- are each claimed by both the EPUB and PDF sets, so
+    // hoisting them to the window would make those sequences ambiguous -- Qt then
+    // fires neither.
+    QList<QAction *> windowScoped{m_closeAction, m_printAction,   m_undoCloseTab, m_nextTabAction,
+                                  m_prevTabAction, m_fullScreenAction, newTabAction};
+    for (int i = 1; i <= 9; ++i) {
+        windowScoped << actionCollection()->action(QStringLiteral("tab-switch-%1").arg(i));
+    }
+    windowScoped.removeAll(nullptr);
+    addActions(windowScoped);
 }
 
 void Shell::saveProperties(KConfigGroup &group)
@@ -2013,11 +2026,10 @@ void Shell::updateTitlebarLayout(bool adoptNativeWindow)
     // windowed titlebar (fullscreen has no titlebar to move or zoom).
     m_tabWidget->setWindowDragEnabled(!fullscreen);
 
-    // Keep the left dock's content out from under the traffic lights; needed
-    // only when it actually sits under them (left dock, windowed).
+    // The sidebar is now the left pane of the tab widget's reader split, so it always sits below
+    // the strip and can never reach the traffic lights — no titlebar clearance is ever needed.
     if (m_sidebar) {
-        const bool underButtons = !fullscreen && dockWidgetArea(m_sidebar) == Qt::LeftDockWidgetArea;
-        m_sidebar->setTitlebarClearance(underButtons ? m_measuredStripHeight : 0);
+        m_sidebar->setTitlebarClearance(0);
     }
 
     // Verify-by-launch hook: dump the live NSWindow properties on demand.
@@ -2119,6 +2131,16 @@ void Shell::setActiveTab(int tab)
         return;
     }
 
+    // Stamp the context every stall and event carries, then record the switch. If a switch hangs,
+    // the ui_stall the watchdog logs will already say which kind of tab and how many were open.
+    const QString kind = m_tabs[tab].pdfReader      ? QStringLiteral("pdf")
+        : m_tabs[tab].epubReader                    ? QStringLiteral("epub")
+                                                    : QStringLiteral("library");
+    Telemetry::instance().setContext(QStringLiteral("tab_kind"), kind);
+    Telemetry::instance().setContext(QStringLiteral("tab_count"), int(m_tabs.size()));
+    Telemetry::instance().setContext(QStringLiteral("last_action"), QStringLiteral("tab_switch"));
+    Telemetry::instance().logEvent(QStringLiteral("tab_switch"), {{QStringLiteral("to_kind"), kind}});
+
     if (m_showSidebarConnection) {
         disconnect(m_showSidebarConnection);
         m_showSidebarConnection = {};
@@ -2158,12 +2180,15 @@ void Shell::setActiveTab(int tab)
             m_sidebar->setCurrentWidget(outlineWidget);
         }
 
-        const bool outlineAvailable = reader->hasOutline();
         m_showSidebarAction = m_pdfShowSidebarAction;
         if (m_showSidebarAction) {
-            m_showSidebarAction->setEnabled(outlineAvailable);
-            m_showSidebarAction->setChecked(outlineAvailable && m_sidebarVisibleOnDocTabs);
+            // Always enabled: the sidebar hosts AI Navigation (available for ANY PDF), not just a
+            // native table of contents, so the toggle must open it even when hasOutline() is false.
+            // Gating on hasOutline() left the top-left button dead/grey on outline-less PDFs.
+            m_showSidebarAction->setEnabled(true);
+            m_showSidebarAction->setChecked(m_sidebarVisibleOnDocTabs);
             m_showSidebarConnection = connect(m_showSidebarAction, &QAction::triggered, this, [this](bool visible) {
+                m_sidebarVisibleOnDocTabs = visible; // explicit user choice — the ONLY thing that sets the preference
                 if (m_sidebar) {
                     m_sidebar->setAnimatedVisible(visible, PdfView::readerMotionEnabled());
                 }
@@ -2171,7 +2196,7 @@ void Shell::setActiveTab(int tab)
         }
 
         m_tabWidget->toolbar()->setNavigationAction(m_pdfShowSidebarAction);
-        m_sidebar->setAnimatedVisible(outlineAvailable && m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
+        m_sidebar->setAnimatedVisible(m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
         setCaption(reader->url().fileName());
         m_printAction->setEnabled(false);
         m_closeAction->setEnabled(true);
@@ -2190,12 +2215,15 @@ void Shell::setActiveTab(int tab)
             m_sidebar->setCurrentWidget(outlineWidget);
         }
 
-        const bool outlineAvailable = reader->hasOutline();
         m_showSidebarAction = m_pdfShowSidebarAction;
         if (m_showSidebarAction) {
-            m_showSidebarAction->setEnabled(outlineAvailable);
-            m_showSidebarAction->setChecked(outlineAvailable && m_sidebarVisibleOnDocTabs);
+            // Always enabled: the sidebar hosts AI Navigation (available for ANY PDF), not just a
+            // native table of contents, so the toggle must open it even when hasOutline() is false.
+            // Gating on hasOutline() left the top-left button dead/grey on outline-less PDFs.
+            m_showSidebarAction->setEnabled(true);
+            m_showSidebarAction->setChecked(m_sidebarVisibleOnDocTabs);
             m_showSidebarConnection = connect(m_showSidebarAction, &QAction::triggered, this, [this](bool visible) {
+                m_sidebarVisibleOnDocTabs = visible; // explicit user choice — the ONLY thing that sets the preference
                 if (m_sidebar) {
                     m_sidebar->setAnimatedVisible(visible, PdfView::readerMotionEnabled());
                 }
@@ -2203,7 +2231,7 @@ void Shell::setActiveTab(int tab)
         }
 
         m_tabWidget->toolbar()->setPdfView(reader, m_pdfShowSidebarAction);
-        m_sidebar->setAnimatedVisible(outlineAvailable && m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
+        m_sidebar->setAnimatedVisible(m_sidebarVisibleOnDocTabs, PdfView::readerMotionEnabled());
         setCaption(reader->url().fileName());
         m_printAction->setEnabled(false);
         m_closeAction->setEnabled(true);
@@ -2216,6 +2244,15 @@ void Shell::closeTab(int tab)
     if (tab < 0 || tab >= m_tabs.size()) {
         return;
     }
+
+    // The crash the user hit was a tab close with a PDF open; record every close and its kind so a
+    // teardown that aborts is preceded by a durable breadcrumb naming what was being torn down.
+    Telemetry::instance().setContext(QStringLiteral("last_action"), QStringLiteral("tab_close"));
+    Telemetry::instance().logEvent(QStringLiteral("tab_close"),
+                                   {{QStringLiteral("kind"),
+                                     m_tabs[tab].pdfReader   ? QStringLiteral("pdf")
+                                         : m_tabs[tab].epubReader ? QStringLiteral("epub")
+                                                                  : QStringLiteral("library")}});
 
     if (m_tabs[tab].isLibrary()) {
         // Library tabs close without questions and are not restorable

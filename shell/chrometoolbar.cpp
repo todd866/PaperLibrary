@@ -167,6 +167,15 @@ ChromeToolbar::ChromeToolbar(QWidget *parent)
     m_pdfPageCountLabel = new QLabel(m_pdfPageWidget);
     m_pdfPageCountLabel->setMinimumWidth(40);
     pdfPageLayout->addWidget(m_pdfPageCountLabel);
+    // "how close to the end of the chapter am I" -- shown next to the page count so the reader can
+    // decide whether to push through. Dimmed, so it reads as secondary to the page number.
+    m_pdfChapterLabel = new QLabel(m_pdfPageWidget);
+    m_pdfChapterLabel->setObjectName(QStringLiteral("pdfChapterLabel"));
+    QFont chapterFont = m_pdfChapterLabel->font();
+    chapterFont.setPointSizeF(qMax(1.0, chapterFont.pointSizeF() - 1.0));
+    m_pdfChapterLabel->setFont(chapterFont);
+    m_pdfChapterLabel->setEnabled(false); // palette-dimmed without a hand-picked colour
+    pdfPageLayout->addWidget(m_pdfChapterLabel);
     m_pdfPageWidget->hide();
     connect(m_pdfPageSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, [this](int page) {
         if (m_pdfView) {
@@ -348,6 +357,8 @@ void ChromeToolbar::setPdfView(PdfView *reader, QAction *showSidebarAction)
     m_overflowButton->setVisible(!m_overflowMenu->isEmpty());
 
     m_pdfConnections << connect(reader, &PdfView::pageStateChanged, this, &ChromeToolbar::updatePdfPageControls);
+    m_pdfConnections << connect(reader, &PdfView::chapterStateChanged, this, &ChromeToolbar::updatePdfChapter);
+    updatePdfChapter(reader->currentChapterProgress());
     m_pdfConnections << connect(reader, &PdfView::zoomStateChanged, this, &ChromeToolbar::updatePdfZoomText);
 
     show();
@@ -367,6 +378,35 @@ void ChromeToolbar::updatePdfPageControls(int currentPage, int pageCount)
     m_pdfPageSpinBox->setMaximum(qMax(1, pageCount));
     m_pdfPageSpinBox->setValue(qBound(1, currentPage, qMax(1, pageCount)));
     m_pdfPageCountLabel->setText(hasPages ? i18n("/ %1", pageCount) : QStringLiteral("/ 0"));
+}
+
+void ChromeToolbar::updatePdfChapter(const PdfView::ChapterProgress &chapter)
+{
+    if (!m_pdfChapterLabel) {
+        return;
+    }
+    if (!chapter.valid) {
+        m_pdfChapterLabel->clear();
+        m_pdfChapterLabel->hide();
+        return;
+    }
+    // Lead with what the reader asked for -- pages to the end of this chapter -- and keep the
+    // chapter title in the tooltip so a long title never widens the toolbar.
+    QString text;
+    if (chapter.pagesLeftInChapter <= 1) {
+        text = i18nc("reader: last page of the chapter", "chapter end");
+    } else {
+        text = i18ncp("reader: pages remaining in the current chapter", "%1 page to chapter end",
+                      "%1 pages to chapter end", chapter.pagesLeftInChapter);
+    }
+    m_pdfChapterLabel->setText(text);
+    const QString where = chapter.chapterIndex >= 1
+        ? i18nc("reader: which chapter, of how many", "Chapter %1 of %2: %3",
+                chapter.chapterIndex, chapter.chapterCount, chapter.title)
+        : chapter.title;
+    m_pdfChapterLabel->setToolTip(i18nc("reader chapter tooltip", "%1 (%2% through)", where,
+                                        qRound(chapter.fraction * 100.0)));
+    m_pdfChapterLabel->show();
 }
 
 void ChromeToolbar::updatePdfZoomText(qreal zoomFactor, bool fitWidthMode)

@@ -7,6 +7,7 @@
 #include <QTest>
 
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -38,6 +39,13 @@ struct SyntheticRecord {
     qint64 bytes;
     QString source;
     QString addedTs;
+    QString genre = {};
+    QString recordKind = {};
+    QString normTitle = {};
+    QString description = {};
+    QStringList topics = {};
+    QString readingLevel = {};
+    QString subgenre = {};
 };
 
 static SyntheticRecord widgetRecord()
@@ -345,7 +353,84 @@ static QByteArray recordLine(const SyntheticRecord &record)
     object.insert(QStringLiteral("bytes"), record.bytes);
     object.insert(QStringLiteral("source"), record.source);
     object.insert(QStringLiteral("added_ts"), record.addedTs);
+    if (!record.genre.isEmpty()) {
+        object.insert(QStringLiteral("genre"), record.genre);
+    }
+    if (!record.recordKind.isEmpty()) {
+        object.insert(QStringLiteral("record_kind"), record.recordKind);
+    }
+    if (!record.normTitle.isEmpty()) {
+        object.insert(QStringLiteral("norm_title"), record.normTitle);
+    }
+    if (!record.description.isEmpty()) {
+        object.insert(QStringLiteral("description"), record.description);
+    }
+    if (!record.topics.isEmpty()) {
+        object.insert(QStringLiteral("topics"), QJsonArray::fromStringList(record.topics));
+    }
+    if (!record.readingLevel.isEmpty()) {
+        object.insert(QStringLiteral("reading_level"), record.readingLevel);
+    }
+    if (!record.subgenre.isEmpty()) {
+        object.insert(QStringLiteral("subgenre"), record.subgenre);
+    }
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
+
+static void writeCorpusHealthState(const QString &corpusDir,
+                                   bool healthy,
+                                   int catalogRows,
+                                   bool searchFresh,
+                                   bool graphFresh,
+                                   const QStringList &issues = {})
+{
+    QFile catalog(QDir(corpusDir).filePath(QStringLiteral("catalog.jsonl")));
+    QVERIFY(catalog.open(QIODevice::ReadOnly));
+    const QByteArray catalogBytes = catalog.readAll();
+    catalog.close();
+    const QString manifestHash = QString::fromLatin1(
+        QCryptographicHash::hash(catalogBytes, QCryptographicHash::Sha256).toHex());
+    const QString catalogRevision = QStringLiteral("sha256:test-catalog");
+    const QString manifestSourceRevision = QStringLiteral("sha256:test-manifest-source");
+    QJsonObject manifestMetadata{
+        {QStringLiteral("schema_version"), 1},
+        {QStringLiteral("catalog_revision"), catalogRevision},
+        {QStringLiteral("manifest_source_revision"), manifestSourceRevision},
+        {QStringLiteral("rows"), catalogRows},
+        {QStringLiteral("manifest_sha256"), manifestHash},
+    };
+    QFile metadataFile(QDir(corpusDir).filePath(QStringLiteral("catalog.meta.json")));
+    QVERIFY(metadataFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(metadataFile.write(QJsonDocument(manifestMetadata).toJson(QJsonDocument::Compact)) > 0);
+    metadataFile.close();
+
+    QJsonArray issueArray;
+    for (const QString &issue : issues) {
+        issueArray.append(issue);
+    }
+    QJsonObject artifacts;
+    artifacts.insert(QStringLiteral("manifest"), QJsonObject{
+        {QStringLiteral("fresh"), true},
+        {QStringLiteral("sha256"), manifestHash},
+        {QStringLiteral("manifest_source_revision"), manifestSourceRevision},
+    });
+    artifacts.insert(QStringLiteral("search"), QJsonObject{{QStringLiteral("fresh"), searchFresh}});
+    artifacts.insert(QStringLiteral("graph"), QJsonObject{{QStringLiteral("fresh"), graphFresh}});
+    QJsonObject state;
+    state.insert(QStringLiteral("schema_version"), 1);
+    state.insert(QStringLiteral("generated_at"), QStringLiteral("2026-07-10T00:00:00Z"));
+    state.insert(QStringLiteral("healthy"), healthy);
+    state.insert(QStringLiteral("issues"), issueArray);
+    state.insert(QStringLiteral("warnings"), QJsonArray());
+    state.insert(QStringLiteral("catalog"), QJsonObject{
+        {QStringLiteral("rows"), catalogRows},
+        {QStringLiteral("revision"), catalogRevision},
+    });
+    state.insert(QStringLiteral("artifacts"), artifacts);
+    QFile file(QDir(corpusDir).filePath(QStringLiteral("corpus_state.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(QJsonDocument(state).toJson(QJsonDocument::Compact)) > 0, true);
+    file.close();
 }
 
 class PaperLibraryModelTest : public QObject
@@ -357,6 +442,7 @@ private Q_SLOTS:
     void init();
 
     void testParseCatalogFields();
+    void testLibrarianMetadataDrivesTileRoles();
     void testParseSkipsMalformedLines();
     void testSortNewestFirst();
     void testCorpusExists();
@@ -366,26 +452,45 @@ private Q_SLOTS:
     void testFilterModel();
     void testResolveWithoutDatabase();
     void testDatabaseEnrichment();
+    void testDatabaseEnrichmentReadsUncheckpointedWal();
     void testDatabaseInPathWithSpecialCharacters();
     void testFullTextSearchUsesCatalogIndex();
+    void testFullTextSearchUsesDedicatedSearchDb();
     void testSemanticGraphRelatedRows();
+    void testSemanticGraphUsesDedicatedGraphDb();
+    void testCorpusHealthReadsPublishedFreshness();
+    void testGenreDrivesShelfClassification();
+    void testRecordKindRoutesBooksAndNormTitle();
+    void testAdjacentExplicitRowsKeepBooks();
     void testExplicitSearchRowsStayTileFirstAndShelfScoped();
     void testSectionedModelSmartShelves();
     void testSectionedModelInfiniteScrollKeepsCorpusBehindFocus();
     void testSectionedModelInfersCorpusThumbnailAssetPath();
     void testMndPaperTopicInferencePrefersPaperSpecificSignals();
     void testPapersShelfSurfacesInterestNoveltyAndEngagement();
+    void testFictionAndNonfictionShelvesNeverContainPapers();
+    void testBookGenreRescuesARowMislabelledAsAPaper();
+    void testAClinicalAbstractFromAPaperFeedNeverReachesBooks();
+    void testFinishedBooksAreOffTheReadingShelves();
+    void testSettingTheSameLocalBooksDoesNotResetTheModel();
     void testFocusManifestDrivesWorkShelf();
+    void testFocusManifestResolvesRelativePath();
     void testFocusManifestInfersThumbnailAssetPath();
     void testReadingManifestDrivesReadingShelves();
+    void testAFinishedBookIsExcludedFromTheBookFeed();
+    void testTitleLookupFindsACorpusTwinWithABlurb();
+    void testAFileBackedFeedBookCanBeMarkedFinishedViaItsCorpusTwin();
     void testFictionShelfRejectsNovelPaperFalsePositives();
     void testCaroBiographyDoesNotMatchPsychiatry();
     void testBookShelfMetadataDoesNotLeakProjectClassifiers();
     void testSectionedModelSuppressesDuplicateWorks();
     void testImportedBookMetadataIsCleanedAndReclassified();
+    void testStaleLoadGenerationIsIgnored();
+    void testReloadFromLoadedKeepsNewestWorker();
     void testReloadIfChanged();
     void testDestroyDuringLoadReclaimsWorker();
     void testDestroyAfterLoad();
+    void testDownrankStateSynchronizesAcrossModels();
 
 private:
     QString writeCatalog(const QList<SyntheticRecord> &records);
@@ -461,6 +566,45 @@ void PaperLibraryModelTest::testParseCatalogFields()
     // Empty fields parse as empty strings, not noise
     QCOMPARE(records.last().title, QString());
     QCOMPARE(records.last().bytes, Q_INT64_C(0));
+}
+
+void PaperLibraryModelTest::testLibrarianMetadataDrivesTileRoles()
+{
+    SyntheticRecord enriched = widgetRecord();
+    enriched.description = QStringLiteral("A backend-authored synopsis of the synthetic evidence.");
+    enriched.topics = {QStringLiteral("Causal widgets"), QStringLiteral("Measurement theory")};
+    enriched.readingLevel = QStringLiteral("professional");
+    enriched.subgenre = QStringLiteral("Evidence synthesis");
+    const QString corpusDir = writeCatalog({enriched});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QCOMPARE(model.rowCount(), 1);
+    const QModelIndex sourceIndex = model.index(0);
+    QCOMPARE(sourceIndex.data(PaperLibraryModel::DescriptionRole).toString(), enriched.description);
+    QCOMPARE(sourceIndex.data(PaperLibraryModel::TopicsRole).toStringList(), enriched.topics);
+    QCOMPARE(sourceIndex.data(PaperLibraryModel::ReadingLevelRole).toString(), enriched.readingLevel);
+    QCOMPARE(sourceIndex.data(PaperLibraryModel::SubgenreRole).toString(), enriched.subgenre);
+    QVERIFY(sourceIndex.data(PaperLibraryModel::HaystackRole).toString().contains(QStringLiteral("measurement theory")));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Papers);
+    QModelIndex tile;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        const QModelIndex candidate = sections.index(row);
+        if (!candidate.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+            tile = candidate;
+            break;
+        }
+    }
+    QVERIFY(tile.isValid());
+    QCOMPARE(tile.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList(), enriched.topics);
+    QCOMPARE(tile.data(PaperLibrarySectionedModel::ShelfIntentRole).toString(), enriched.description);
+    QCOMPARE(tile.data(PaperLibrarySectionedModel::PriorityHintRole).toString(), enriched.readingLevel);
+    QCOMPARE(tile.data(PaperLibrarySectionedModel::RelationHintRole).toString(), enriched.subgenre);
 }
 
 void PaperLibraryModelTest::testParseSkipsMalformedLines()
@@ -635,6 +779,54 @@ void PaperLibraryModelTest::testDatabaseEnrichment()
     QCOMPARE(model.data(model.index(2), PaperLibraryModel::MissingRole).toBool(), true);
 }
 
+void PaperLibraryModelTest::testDatabaseEnrichmentReadsUncheckpointedWal()
+{
+    const QString customPdf = touchFile(QStringLiteral("books/wal-only-widget.pdf"));
+    QVERIFY(!customPdf.isEmpty());
+    const QString corpusDir = writeCatalog({widgetRecord()});
+    const QString dbPath = m_dir->filePath(QStringLiteral("catalog.db"));
+    const QString connectionName = QStringLiteral("papertest_wal_fixture");
+
+    {
+        // Keep the writer open with its committed row only in the WAL. An immutable reader ignores
+        // that file and sees the checkpointed schema but no row; a normal read-only connection sees
+        // the committed pdf_path immediately.
+        QSqlDatabase writer = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        writer.setDatabaseName(dbPath);
+        QVERIFY(writer.open());
+        QSqlQuery query(writer);
+        QVERIFY(query.exec(QStringLiteral("PRAGMA journal_mode=WAL")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toString().toLower(), QStringLiteral("wal"));
+        query.finish();
+        QVERIFY(query.exec(QStringLiteral("PRAGMA wal_autocheckpoint=0")));
+        query.finish();
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        query.finish();
+        QVERIFY(query.exec(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)")));
+        QVERIFY(query.next());
+        QCOMPARE(query.value(0).toInt(), 0);
+        query.finish();
+        query.prepare(QStringLiteral("INSERT INTO papers VALUES(?, ?, 0, NULL, 7, 0, NULL)"));
+        query.addBindValue(widgetRecord().slug);
+        query.addBindValue(customPdf);
+        QVERIFY(query.exec());
+        query.finish();
+        QVERIFY(QFileInfo(dbPath + QStringLiteral("-wal")).size() > 0);
+
+        PaperLibraryModel model;
+        QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+        model.load(corpusDir);
+        QVERIFY(loadedSpy.wait(10000));
+        QCOMPARE(model.rowCount(), 1);
+        QCOMPARE(model.resolvePdfPath(0), customPdf);
+        QCOMPARE(model.data(model.index(0), PaperLibraryModel::AccessCountRole).toInt(), 7);
+
+        writer.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+}
+
 // The catalog.db is opened through a file: URI. When the corpus lives under a
 // directory whose name contains characters that are significant in a URI
 // (spaces, %, ?, #), a naively concatenated URI is malformed and the database
@@ -788,6 +980,385 @@ void PaperLibraryModelTest::testSemanticGraphRelatedRows()
     QCOMPARE(rows.size(), 2);
     QCOMPARE(model.data(model.index(rows.at(0)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"));
     QCOMPARE(model.data(model.index(rows.at(1)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-widget-1"));
+}
+
+// Regression guard: the backend keeps the FTS index in a dedicated search.db (not in
+// catalog.db, so the catalog's snapshot stays small). The app must find and use it
+// there. Without this, moving the index out of catalog.db silently disables full-text
+// search with no failing test.
+void PaperLibraryModelTest::testFullTextSearchUsesDedicatedSearchDb()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), mndRecord(), gadgetRecord()});
+
+    // Papers metadata stays in catalog.db.
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_searchdb_papers"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("catalog.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        for (const QString &slug : {QStringLiteral("10-9999-synthetic-widget-1"), QStringLiteral("10-9999-synthetic-mnd-5"), QStringLiteral("10-9999-synthetic-gadget-2")}) {
+            QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('%1', NULL, 0, NULL, 0, 0, NULL)").arg(slug)));
+        }
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_searchdb_papers"));
+
+    // FTS index lives in the dedicated search.db — NOT catalog.db.
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_searchdb_fts"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("search.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE paper_search_rows (rowid INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE)")));
+        QVERIFY(query.exec(QStringLiteral("CREATE VIRTUAL TABLE paper_fts USING fts5(title, authors, year, journal, doi, source, body, content='', tokenize='unicode61 remove_diacritics 2', prefix='2 3 4')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(1,'10-9999-synthetic-widget-1')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(2,'10-9999-synthetic-mnd-5')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO paper_search_rows(rowid,slug) VALUES(3,'10-9999-synthetic-gadget-2')")));
+        query.prepare(QStringLiteral("INSERT INTO paper_fts(rowid,title,authors,year,journal,doi,source,body) VALUES(?,?,?,?,?,?,?,?)"));
+        query.addBindValue(2);
+        query.addBindValue(QStringLiteral("Neurofilament Biomarkers in Amyotrophic Lateral Sclerosis"));
+        query.addBindValue(QStringLiteral("Casey Clinician"));
+        query.addBindValue(QStringLiteral("2026"));
+        query.addBindValue(QStringLiteral("Journal of Synthetic Neurology"));
+        query.addBindValue(QStringLiteral("10.9999/synthetic.mnd.5"));
+        query.addBindValue(QStringLiteral("md-project-review-set"));
+        query.addBindValue(QStringLiteral("serum neurofilament light chain biomarkers in ALS diagnosis"));
+        QVERIFY(query.exec());
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_searchdb_fts"));
+    writeCorpusHealthState(corpusDir,
+                           false,
+                           3,
+                           true,
+                           false,
+                           {QStringLiteral("semantic graph is stale (0/3 embedding rows)")});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QVERIFY(model.hasFullTextSearchIndex());
+    QVERIFY(model.hasFreshFullTextSearchIndex());
+
+    const QList<int> rows = model.fullTextSearchRows(QStringLiteral("neurofilament light"), 5);
+    QCOMPARE(rows.size(), 1);
+    QCOMPARE(model.data(model.index(rows.first()), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-mnd-5"));
+}
+
+// Regression guard: the semantic graph lives in a dedicated graph/graph.db. The app must
+// find related_edges there for "show adjacent" (Tier-1) and the tile connection badges.
+void PaperLibraryModelTest::testSemanticGraphUsesDedicatedGraphDb()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), mndRecord(), mndDiagnosisRecord(), gadgetRecord()});
+
+    // Papers metadata stays in catalog.db.
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_graphdb_papers"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("catalog.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE papers (slug TEXT PRIMARY KEY, pdf_path TEXT, pdf_evicted INTEGER DEFAULT 0, last_accessed TEXT, access_count INTEGER DEFAULT 0, pinned INTEGER DEFAULT 0, cited_by_count INTEGER)")));
+        for (const QString &slug : {QStringLiteral("10-9999-synthetic-widget-1"), QStringLiteral("10-9999-synthetic-mnd-5"), QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"), QStringLiteral("10-9999-synthetic-gadget-2")}) {
+            QVERIFY(query.exec(QStringLiteral("INSERT INTO papers(slug,pdf_path,pdf_evicted,last_accessed,access_count,pinned,cited_by_count) VALUES('%1', NULL, 0, NULL, 0, 0, NULL)").arg(slug)));
+        }
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_graphdb_papers"));
+
+    // related_edges lives in the dedicated graph/graph.db — NOT catalog.db.
+    QVERIFY(QDir(corpusDir).mkpath(QStringLiteral("graph")));
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_graphdb_edges"));
+        db.setDatabaseName(m_dir->filePath(QStringLiteral("graph/graph.db")));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE related_edges (source_slug TEXT NOT NULL, target_slug TEXT NOT NULL, score REAL NOT NULL, rank INTEGER NOT NULL, kind TEXT NOT NULL, generated_ts TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY(source_slug,target_slug,kind))")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO related_edges VALUES('10-9999-synthetic-mnd-5','10-9999-synthetic-mnd-diagnosis-16',0.91,1,'semantic','2026-07-06T00:00:00Z','synthetic')")));
+        QVERIFY(query.exec(QStringLiteral("INSERT INTO related_edges VALUES('10-9999-synthetic-mnd-5','10-9999-synthetic-widget-1',0.72,2,'semantic','2026-07-06T00:00:00Z','synthetic')")));
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_graphdb_edges"));
+    writeCorpusHealthState(corpusDir,
+                           false,
+                           4,
+                           false,
+                           true,
+                           {QStringLiteral("full-text index is stale (0/4 rows)")});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QVERIFY(model.hasSemanticGraph());
+    QVERIFY(model.hasFreshSemanticGraph());
+
+    const int mndRow = model.rowForLookupSlug(QStringLiteral("10-9999-synthetic-mnd-5"));
+    QVERIFY(mndRow >= 0);
+    QCOMPARE(model.data(model.index(mndRow), PaperLibraryModel::RelatedCountRole).toInt(), 2);
+
+    const QList<int> rows = model.relatedRowsForSlug(QStringLiteral("10-9999-synthetic-mnd-5"), 10);
+    QCOMPARE(rows.size(), 2);
+    QCOMPARE(model.data(model.index(rows.at(0)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-mnd-diagnosis-16"));
+    QCOMPARE(model.data(model.index(rows.at(1)), PaperLibraryModel::SlugRole).toString(), QStringLiteral("10-9999-synthetic-widget-1"));
+}
+
+void PaperLibraryModelTest::testCorpusHealthReadsPublishedFreshness()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), gadgetRecord()});
+    {
+        QSqlDatabase search = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_health_search"));
+        search.setDatabaseName(QDir(corpusDir).filePath(QStringLiteral("search.db")));
+        QVERIFY(search.open());
+        QSqlQuery query(search);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE paper_fts(dummy TEXT)")));
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE paper_search_rows(rowid INTEGER PRIMARY KEY, slug TEXT)")));
+        search.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_health_search"));
+    QVERIFY(QDir(corpusDir).mkpath(QStringLiteral("graph")));
+    {
+        QSqlDatabase graph = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("papertest_health_graph"));
+        graph.setDatabaseName(QDir(corpusDir).filePath(QStringLiteral("graph/graph.db")));
+        QVERIFY(graph.open());
+        QSqlQuery query(graph);
+        QVERIFY(query.exec(QStringLiteral("CREATE TABLE related_edges(source_slug TEXT, target_slug TEXT)")));
+        graph.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("papertest_health_graph"));
+    writeCorpusHealthState(corpusDir, true, 2, true, true);
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    PaperLibraryModel::CorpusHealth health = model.corpusHealth();
+    QCOMPARE(health.status, PaperLibraryModel::CorpusHealth::Healthy);
+    QCOMPARE(health.generatedAt, QStringLiteral("2026-07-10T00:00:00Z"));
+    QVERIFY(health.searchFresh);
+    QVERIFY(health.graphFresh);
+
+    writeCorpusHealthState(corpusDir,
+                           false,
+                           2,
+                           false,
+                           false,
+                           {QStringLiteral("full-text index is stale (1/2 rows)"), QStringLiteral("semantic graph is stale (0/2 embedding rows)")});
+    model.load(corpusDir);
+    QTRY_COMPARE_WITH_TIMEOUT(loadedSpy.count(), 2, 10000);
+    health = model.corpusHealth();
+    QCOMPARE(health.status, PaperLibraryModel::CorpusHealth::Degraded);
+    QVERIFY(!health.searchFresh);
+    QVERIFY(!health.graphFresh);
+    QCOMPARE(health.issues.size(), 2);
+
+    // Even a previously healthy state cannot certify a different catalog generation.
+    writeCorpusHealthState(corpusDir, true, 1, true, true);
+    model.load(corpusDir);
+    QTRY_COMPARE_WITH_TIMEOUT(loadedSpy.count(), 3, 10000);
+    health = model.corpusHealth();
+    QCOMPARE(health.status, PaperLibraryModel::CorpusHealth::Degraded);
+    QVERIFY(!health.searchFresh);
+    QVERIFY(!health.graphFresh);
+    QVERIFY(health.issues.constFirst().contains(QStringLiteral("1 of 2")));
+
+    // A same-row-count metadata change cannot inherit an older green state.
+    writeCorpusHealthState(corpusDir, true, 2, true, true);
+    QFile catalog(QDir(corpusDir).filePath(QStringLiteral("catalog.jsonl")));
+    QVERIFY(catalog.open(QIODevice::ReadOnly));
+    QByteArray changed = catalog.readAll();
+    catalog.close();
+    QVERIFY(changed.contains("Widget Dynamics"));
+    changed.replace("Widget Dynamics", "Wadget Dynamics");
+    QVERIFY(catalog.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(catalog.write(changed), changed.size());
+    catalog.close();
+    model.load(corpusDir);
+    QTRY_COMPARE_WITH_TIMEOUT(loadedSpy.count(), 4, 10000);
+    health = model.corpusHealth();
+    QCOMPARE(health.status, PaperLibraryModel::CorpusHealth::Degraded);
+    QVERIFY(!health.searchFresh);
+    QVERIFY(!health.graphFresh);
+    QVERIFY(health.issues.join(QLatin1Char(' ')).contains(QStringLiteral("attestation")));
+}
+
+void PaperLibraryModelTest::testGenreDrivesShelfClassification()
+{
+    // A confident librarian genre is authoritative for the Fiction/Nonfiction shelves;
+    // an obscure fiction book no allowlist/heuristic would catch is included via genre,
+    // while an empty-genre allowlist book still falls back to the text heuristic.
+    auto rec = [](const char *slug, const char *title, const char *author, const char *year,
+                  const char *source, const char *genre) {
+        SyntheticRecord r;
+        r.slug = QString::fromLatin1(slug);
+        r.title = QString::fromLatin1(title);
+        r.authors = QString::fromLatin1(author);
+        r.year = QString::fromLatin1(year);
+        r.bytes = 1000;
+        r.source = QString::fromLatin1(source);
+        r.addedTs = QStringLiteral("2026-06-01T00:00:00+00:00");
+        r.genre = QString::fromLatin1(genre);
+        return r;
+    };
+    const SyntheticRecord fic = rec("10-9999-obscure-novel", "An Utterly Obscure Speculative Tale", "N. Body", "2021", "aa_book", "Fiction");
+    const SyntheticRecord nonfic = rec("10-9999-obscure-nonfic", "A Serious History of Widgets", "H. Storian", "2019", "book:epub", "Nonfiction");
+    const SyntheticRecord paper = rec("10-9999-plain-paper", "On the Kinetics of Something", "R. Searcher", "2020", "unpaywall", "");
+    const SyntheticRecord allowlistFic = rec("10-9999-hobbit", "The Hobbit, or There and Back Again", "J.R.R. Tolkien", "1937", "book:epub", "");
+    // genre="Unknown" must NOT be authoritative — it falls back to the heuristic (Dune allowlist).
+    const SyntheticRecord unknownFic = rec("10-9999-unknown-dune", "Dune", "Frank Herbert", "1965", "book:epub", "Unknown");
+    // a paper mislabelled genre=Fiction must not reach the book-only Fiction shelf.
+    const SyntheticRecord ficPaper = rec("10-9999-fiction-paper", "On Fictional Models of Diffusion", "R. Searcher", "2020", "unpaywall", "Fiction");
+
+    const QString corpusDir = writeCatalog({fic, nonfic, paper, allowlistFic, unknownFic, ficPaper});
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    const int ficRow = model.rowForLookupSlug(fic.slug);
+    QVERIFY(ficRow >= 0);
+    QCOMPARE(model.data(model.index(ficRow), PaperLibraryModel::GenreRole).toString(), QStringLiteral("Fiction"));
+
+    auto slugsInShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int r = 0; r < sections.rowCount(); ++r) {
+            const QModelIndex idx = sections.index(r);
+            if (sections.data(idx, PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                continue;
+            }
+            const int sourceRow = sections.data(idx, PaperLibrarySectionedModel::SourceRowRole).toInt();
+            slugs << model.data(model.index(sourceRow), PaperLibraryModel::SlugRole).toString();
+        }
+        return slugs;
+    };
+
+    const QStringList fiction = slugsInShelf(PaperLibrarySectionedModel::Fiction);
+    QVERIFY2(fiction.contains(fic.slug), "genre=Fiction book must be on the Fiction shelf");
+    QVERIFY2(fiction.contains(allowlistFic.slug), "empty-genre allowlist fiction must still fall back to the heuristic");
+    QVERIFY2(!fiction.contains(nonfic.slug), "genre=Nonfiction must not be Fiction");
+    QVERIFY2(!fiction.contains(paper.slug), "a paper must not be on the Fiction shelf");
+    QVERIFY2(fiction.contains(unknownFic.slug), "genre=Unknown must fall back to the heuristic, not hide the book");
+    QVERIFY2(!fiction.contains(ficPaper.slug), "a paper mislabelled genre=Fiction must not reach the book-only Fiction shelf");
+
+    const QStringList nonfiction = slugsInShelf(PaperLibrarySectionedModel::Nonfiction);
+    QVERIFY2(nonfiction.contains(nonfic.slug), "genre=Nonfiction book must be on the Nonfiction shelf");
+    QVERIFY2(!nonfiction.contains(fic.slug), "genre=Fiction must not be Nonfiction");
+}
+
+void PaperLibraryModelTest::testRecordKindRoutesBooksAndNormTitle()
+{
+    // The authoritative librarian record_kind decides the Books/Papers split even when the
+    // text heuristic would disagree, and norm_title replaces an identifier-shaped raw title.
+    auto rec = [](const char *slug, const char *title, const char *source,
+                  const char *recordKind, const char *normTitle) {
+        SyntheticRecord r;
+        r.slug = QString::fromLatin1(slug);
+        r.title = QString::fromLatin1(title);
+        r.source = QString::fromLatin1(source);
+        r.bytes = 1000;
+        r.addedTs = QStringLiteral("2026-06-01T00:00:00+00:00");
+        r.recordKind = QString::fromLatin1(recordKind);
+        r.normTitle = QString::fromLatin1(normTitle);
+        return r;
+    };
+    // A book whose source ("unpaywall") the heuristic would read as a paper — record_kind rescues it.
+    const SyntheticRecord sneakyBook = rec("10-9999-rk-book", "A Quiet Monograph", "unpaywall", "book", "");
+    // A paper whose raw title is a bare PMID; norm_title carries the real title.
+    const SyntheticRecord junkTitlePaper = rec("10-9999-rk-paper", "30850440", "unpaywall", "paper", "Consensus Guidelines for ALS Trials");
+
+    const QString corpusDir = writeCatalog({sneakyBook, junkTitlePaper});
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    // norm_title preferred: the identifier title is replaced, a real title is not.
+    const int paperRow = model.rowForLookupSlug(junkTitlePaper.slug);
+    QVERIFY(paperRow >= 0);
+    QCOMPARE(model.data(model.index(paperRow), Qt::DisplayRole).toString(), QStringLiteral("Consensus Guidelines for ALS Trials"));
+    QCOMPARE(model.data(model.index(paperRow), PaperLibraryModel::RecordKindRole).toString(), QStringLiteral("paper"));
+
+    auto slugsInShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int r = 0; r < sections.rowCount(); ++r) {
+            const QModelIndex idx = sections.index(r);
+            if (sections.data(idx, PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                continue;
+            }
+            const int sourceRow = sections.data(idx, PaperLibrarySectionedModel::SourceRowRole).toInt();
+            slugs << model.data(model.index(sourceRow), PaperLibraryModel::SlugRole).toString();
+        }
+        return slugs;
+    };
+
+    const QStringList books = slugsInShelf(PaperLibrarySectionedModel::Books);
+    QVERIFY2(books.contains(sneakyBook.slug), "record_kind=book must reach the Books shelf despite a paper-like source");
+    QVERIFY2(!books.contains(junkTitlePaper.slug), "record_kind=paper must not reach the Books shelf");
+
+    const QStringList papers = slugsInShelf(PaperLibrarySectionedModel::Papers);
+    QVERIFY2(papers.contains(junkTitlePaper.slug), "record_kind=paper belongs on the Papers shelf");
+    QVERIFY2(!papers.contains(sneakyBook.slug), "record_kind=book must be excluded from the Papers shelf");
+}
+
+void PaperLibraryModelTest::testAdjacentExplicitRowsKeepBooks()
+{
+    // Adjacent documents land on the Papers shelf (whose filter is !isBook). With the
+    // shelf filter bypassed (adjacent) a book neighbour survives; without bypass (search)
+    // it is dropped — so "show adjacent" no longer silently loses book neighbours.
+    SyntheticRecord book;
+    book.slug = QStringLiteral("10-9999-adj-book");
+    book.title = QStringLiteral("An Adjacent Novel");
+    book.source = QStringLiteral("book:epub");
+    book.bytes = 1000;
+    book.addedTs = QStringLiteral("2026-06-01T00:00:00+00:00");
+    SyntheticRecord paper;
+    paper.slug = QStringLiteral("10-9999-adj-paper");
+    paper.title = QStringLiteral("An Adjacent Paper");
+    paper.source = QStringLiteral("unpaywall");
+    paper.bytes = 1000;
+    paper.addedTs = QStringLiteral("2026-06-01T00:00:00+00:00");
+
+    const QString corpusDir = writeCatalog({book, paper});
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    const int bookRow = model.rowForLookupSlug(book.slug);
+    const int paperRow = model.rowForLookupSlug(paper.slug);
+    QVERIFY(bookRow >= 0 && paperRow >= 0);
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Papers);
+    auto slugs = [&]() {
+        QStringList out;
+        for (int r = 0; r < sections.rowCount(); ++r) {
+            const QModelIndex idx = sections.index(r);
+            if (sections.data(idx, PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                continue;
+            }
+            const int sr = sections.data(idx, PaperLibrarySectionedModel::SourceRowRole).toInt();
+            out << model.data(model.index(sr), PaperLibraryModel::SlugRole).toString();
+        }
+        return out;
+    };
+
+    sections.setExplicitSourceRows({bookRow, paperRow}, QStringLiteral("Adjacent documents"), QStringLiteral("none"), /*bypassShelfFilter=*/true);
+    const QStringList adjacent = slugs();
+    QVERIFY2(adjacent.contains(book.slug), "adjacent must keep book neighbours");
+    QVERIFY2(adjacent.contains(paper.slug), "adjacent keeps paper neighbours");
+
+    sections.setExplicitSourceRows({bookRow, paperRow}, QStringLiteral("Search"), QStringLiteral("none"), /*bypassShelfFilter=*/false);
+    const QStringList search = slugs();
+    QVERIFY2(!search.contains(book.slug), "shelf-scoped search drops the book on the Papers shelf");
+    QVERIFY2(search.contains(paper.slug), "shelf-scoped search keeps the paper");
 }
 
 void PaperLibraryModelTest::testExplicitSearchRowsStayTileFirstAndShelfScoped()
@@ -1317,6 +1888,38 @@ void PaperLibraryModelTest::testFocusManifestDrivesWorkShelf()
     QVERIFY(!visibleTitles.contains(falsePositive.title));
 }
 
+void PaperLibraryModelTest::testFocusManifestResolvesRelativePath()
+{
+    const QString corpusDir = writeCatalog({});
+    const QString expectedPath = touchFile(QStringLiteral("loose/relative-review.pdf"));
+    QVERIFY(!expectedPath.isEmpty());
+    QVERIFY(QDir(corpusDir).mkpath(QStringLiteral("focus/Work")));
+
+    QJsonObject entry;
+    entry.insert(QStringLiteral("id"), QStringLiteral("relative-review"));
+    entry.insert(QStringLiteral("title"), QStringLiteral("Relative Review Response"));
+    entry.insert(QStringLiteral("path"), QStringLiteral("loose/relative-review.pdf"));
+    entry.insert(QStringLiteral("kind"), QStringLiteral("pdf"));
+    entry.insert(QStringLiteral("reason"), QStringLiteral("review/revision work"));
+    entry.insert(QStringLiteral("section"), QStringLiteral("00-current"));
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Work/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(QJsonArray{entry}).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Work);
+    QCOMPARE(sections.rowCount(), 1);
+    QCOMPARE(sections.resolvePath(sections.index(0)), expectedPath);
+    QCOMPARE(sections.data(sections.index(0), PaperLibrarySectionedModel::PdfPathRole).toString(), expectedPath);
+}
+
 void PaperLibraryModelTest::testFocusManifestInfersThumbnailAssetPath()
 {
     SyntheticRecord work = widgetRecord();
@@ -1427,6 +2030,195 @@ void PaperLibraryModelTest::testReadingManifestDrivesReadingShelves()
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Bullshit Jobs")));
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("Unrelated Methods Paper")));
     QCOMPARE(sections.resolvePath(sections.index(nonfictionTitles.indexOf(QStringLiteral("Bullshit Jobs")))), graeberPdf);
+}
+
+void PaperLibraryModelTest::testAFinishedBookIsExcludedFromTheBookFeed()
+{
+    // The Books shelf is a curated feed (focus/Reading/manifest.json), a SEPARATE render path from
+    // the section grid. A book the reader has finished must drop out of the feed the moment it is
+    // marked finished -- without a guard on the feed path, a finished book kept showing there even
+    // though the section grid correctly hid it. This is the real "finished books still on Books" bug.
+    SyntheticRecord finishedBook = widgetRecord();
+    finishedBook.slug = QStringLiteral("feed-finished");
+    finishedBook.title = QStringLiteral("A Finished Feed Novel");
+    finishedBook.journal = QStringLiteral("(book)");
+    finishedBook.genre = QStringLiteral("Fiction");
+    finishedBook.recordKind = QStringLiteral("book");
+    finishedBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord unreadBook = gadgetRecord();
+    unreadBook.slug = QStringLiteral("feed-unread");
+    unreadBook.title = QStringLiteral("An Unread Feed Novel");
+    unreadBook.journal = QStringLiteral("(book)");
+    unreadBook.genre = QStringLiteral("Fiction");
+    unreadBook.recordKind = QStringLiteral("book");
+    unreadBook.source = QStringLiteral("book:epub");
+
+    const QString corpusDir = writeCatalog({finishedBook, unreadBook});
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Reading"));
+    QJsonArray manifest;
+    const auto appendEntry = [&manifest](const QString &id, const QString &title) {
+        QJsonObject object;
+        object.insert(QStringLiteral("id"), id);
+        object.insert(QStringLiteral("title"), title);
+        object.insert(QStringLiteral("kind"), QStringLiteral("epub"));
+        object.insert(QStringLiteral("source"), QStringLiteral("book:epub"));
+        object.insert(QStringLiteral("shelf"), QStringLiteral("Reading"));
+        object.insert(QStringLiteral("section"), QStringLiteral("00-fiction-current"));
+        manifest.append(object);
+    };
+    appendEntry(QStringLiteral("feed-finished"), QStringLiteral("A Finished Feed Novel"));
+    appendEntry(QStringLiteral("feed-unread"), QStringLiteral("An Unread Feed Novel"));
+
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Reading/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    // Mark the one book finished, as the reader would (CorpusFeed/FinishedSlugs).
+    KConfigGroup feed = KSharedConfig::openConfig(QString::fromLocal8Bit(qgetenv("PAPERLIBRARY_CONFIG_PATH")),
+                                                  KConfig::SimpleConfig)->group(QStringLiteral("CorpusFeed"));
+    feed.writeEntry("FinishedSlugs", QStringList{QStringLiteral("feed-finished")});
+    feed.sync();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel sections;
+    sections.setSourceModel(&model);
+    sections.setSmartFilter(PaperLibrarySectionedModel::Books);
+
+    QStringList feedTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        const QModelIndex tile = sections.index(row);
+        if (!tile.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+            feedTitles << tile.data(Qt::DisplayRole).toString();
+        }
+    }
+    QVERIFY2(!feedTitles.contains(QStringLiteral("A Finished Feed Novel")),
+             "a finished book is still in the book feed");
+    QVERIFY2(feedTitles.contains(QStringLiteral("An Unread Feed Novel")),
+             "the unread book vanished from the feed");
+}
+
+void PaperLibraryModelTest::testTitleLookupFindsACorpusTwinWithABlurb()
+{
+    // The detail rail enriches a local-shelf book (no librarian metadata) from its corpus twin,
+    // matched by title. The lookup must be case/punctuation-insensitive and must only surface a row
+    // that actually has a blurb to lend -- a title-only match is fuzzy, so an empty-blurb row is useless.
+    SyntheticRecord withBlurb = widgetRecord();
+    withBlurb.slug = QStringLiteral("corpus-twin");
+    withBlurb.title = QStringLiteral("The Power Broker");
+    withBlurb.description = QStringLiteral("Pulitzer-winning biography of Robert Moses.");
+
+    SyntheticRecord noBlurb = gadgetRecord();
+    noBlurb.slug = QStringLiteral("no-blurb");
+    noBlurb.title = QStringLiteral("Bleak Untitled Volume");
+    noBlurb.description = QString();
+
+    const QString corpusDir = writeCatalog({withBlurb, noBlurb});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    // Case- and punctuation-insensitive match to the row that carries the blurb.
+    const int row = model.rowForLookupTitle(QStringLiteral("the POWER broker!"));
+    QVERIFY(row >= 0);
+    QCOMPARE(model.data(model.index(row), PaperLibraryModel::DescriptionRole).toString(), withBlurb.description);
+
+    // No confident match -> -1; and a title whose only row has no blurb is not indexed.
+    QCOMPARE(model.rowForLookupTitle(QStringLiteral("Some Book We Never Had")), -1);
+    QCOMPARE(model.rowForLookupTitle(QStringLiteral("Bleak Untitled Volume")), -1);
+}
+
+void PaperLibraryModelTest::testAFileBackedFeedBookCanBeMarkedFinishedViaItsCorpusTwin()
+{
+    // A reading-feed book with no catalog row of its own -- a file-backed import whose manifest id
+    // isn't a catalog slug and whose path resolves to nothing, so it renders with sourceRow < 0 --
+    // must still be markable finished. It binds to its corpus twin by title, so it lands on the
+    // (corpus-backed) Finished shelf and leaves the reading feed. Before the fix, marking it no-op'd.
+    SyntheticRecord twin = widgetRecord();
+    twin.slug = QStringLiteral("md5-got-corpus");
+    twin.title = QStringLiteral("A Game of Thrones");
+    twin.journal = QStringLiteral("(book)");
+    twin.genre = QStringLiteral("Fiction");
+    twin.recordKind = QStringLiteral("book");
+    twin.source = QStringLiteral("book:epub");
+
+    const QString corpusDir = writeCatalog({twin});
+
+    // A real reading file that is NOT the corpus copy -- so the entry resolves to sourceRow < 0.
+    const QString importedEpub = touchFile(QStringLiteral("reading/A_Game_Of_Thrones_import.epub"));
+    QVERIFY(!importedEpub.isEmpty());
+
+    QDir(corpusDir).mkpath(QStringLiteral("focus/Reading"));
+    QJsonArray manifest;
+    QJsonObject entry;
+    entry.insert(QStringLiteral("id"), QStringLiteral("file-deadbeef")); // not a catalog slug
+    entry.insert(QStringLiteral("title"), QStringLiteral("A Game of Thrones"));
+    entry.insert(QStringLiteral("path"), importedEpub);
+    entry.insert(QStringLiteral("kind"), QStringLiteral("epub"));
+    entry.insert(QStringLiteral("source"), QStringLiteral("app-recent"));
+    entry.insert(QStringLiteral("shelf"), QStringLiteral("Reading"));
+    entry.insert(QStringLiteral("section"), QStringLiteral("00-fiction-current"));
+    manifest.append(entry);
+    QFile manifestFile(QDir(corpusDir).filePath(QStringLiteral("focus/Reading/manifest.json")));
+    QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+    manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+    manifestFile.close();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel books;
+    books.setSourceModel(&model);
+    books.setSmartFilter(PaperLibrarySectionedModel::Books);
+
+    QModelIndex feedRow;
+    for (int r = 0; r < books.rowCount(); ++r) {
+        const QModelIndex ix = books.index(r);
+        if (ix.data(Qt::DisplayRole).toString() == QStringLiteral("A Game of Thrones")) {
+            feedRow = ix;
+            break;
+        }
+    }
+    QVERIFY2(feedRow.isValid(), "the file-backed book is missing from the reading feed");
+    QCOMPARE(feedRow.data(PaperLibrarySectionedModel::SourceRowRole).toInt(), -1);
+
+    books.setFinished(feedRow, true); // was a silent no-op before the fix (sourceRow < 0)
+
+    // It must have left the reading feed...
+    QStringList feedTitles;
+    for (int r = 0; r < books.rowCount(); ++r) {
+        const QModelIndex ix = books.index(r);
+        if (!ix.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+            feedTitles << ix.data(Qt::DisplayRole).toString();
+        }
+    }
+    QVERIFY2(!feedTitles.contains(QStringLiteral("A Game of Thrones")),
+             "the finished file-backed book is still in the reading feed");
+
+    // ...and a Finished shelf, picking the mark up from config, must now show its corpus twin.
+    PaperLibrarySectionedModel finishedShelf;
+    finishedShelf.setSourceModel(&model);
+    finishedShelf.setSmartFilter(PaperLibrarySectionedModel::Finished);
+    finishedShelf.reloadFinishedSlugs();
+    QStringList finishedTitles;
+    for (int r = 0; r < finishedShelf.rowCount(); ++r) {
+        const QModelIndex ix = finishedShelf.index(r);
+        if (!ix.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+            finishedTitles << ix.data(Qt::DisplayRole).toString();
+        }
+    }
+    QVERIFY2(finishedTitles.contains(QStringLiteral("A Game of Thrones")),
+             "the finished file-backed book did not reach the Finished shelf");
 }
 
 void PaperLibraryModelTest::testFictionShelfRejectsNovelPaperFalsePositives()
@@ -1765,9 +2557,24 @@ void PaperLibraryModelTest::testSectionedModelSuppressesDuplicateWorks()
     QCOMPARE(nonfictionTitles.count(QStringLiteral("Debt: The First 5,000 Years")), 1);
     QCOMPARE(nonfictionTitles.count(QStringLiteral("Bullshit Jobs")), 1);
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Why Work?")));
-    QVERIFY2(nonfictionTitles.contains(QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything")), qPrintable(nonfictionTitles.join(QLatin1Char('\n'))));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Path to Power")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Power Broker")));
+
+    // dawnCommentary is a journal paper (source "imported", journal "Synthetic Cliodynamics"),
+    // so it belongs on Papers, not on the Non-fiction BOOK shelf. What this test exists to prove
+    // is that the commentary survives duplicate-suppression as a work distinct from the book it
+    // discusses -- so assert that on the shelf it actually belongs to.
+    const QString commentary =
+        QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything");
+    QVERIFY2(!nonfictionTitles.contains(commentary), qPrintable(nonfictionTitles.join(QLatin1Char('\n'))));
+
+    sections.setSmartFilter(PaperLibrarySectionedModel::Papers);
+    QStringList paperTitles;
+    for (int row = 0; row < sections.rowCount(); ++row) {
+        paperTitles.append(sections.data(sections.index(row), Qt::DisplayRole).toString());
+    }
+    QVERIFY2(paperTitles.contains(commentary), qPrintable(paperTitles.join(QLatin1Char('\n'))));
+    QCOMPARE(paperTitles.count(commentary), 1);
 }
 
 void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
@@ -1941,7 +2748,8 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     QVERIFY(nonfictionTitles.contains(QStringLiteral("The Dawn of Everything")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("Debt: The First 5,000 Years")));
     QVERIFY(nonfictionTitles.contains(QStringLiteral("A Sand County Almanac & Other Writings on Ecology and Conservation")));
-    QVERIFY(nonfictionTitles.contains(QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything")));
+    // A journal commentary is a paper; the Non-fiction shelf holds books.
+    QVERIFY(!nonfictionTitles.contains(QStringLiteral("Introduction to Special Issue: Leading Scholars Comment on Dawn of Everything")));
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("1941")));
     QVERIFY(!nonfictionTitles.contains(QStringLiteral("ref13 graeber 2011")));
     QVERIFY(!nonfictionTitles.join(QLatin1Char('\n')).contains(QStringLiteral("Anna")));
@@ -2026,6 +2834,57 @@ void PaperLibraryModelTest::testImportedBookMetadataIsCleanedAndReclassified()
     QCOMPARE(model.data(model.index(cyberneticsRow), PaperLibraryModel::YearRole).toString(), QStringLiteral("2019"));
 }
 
+void PaperLibraryModelTest::testStaleLoadGenerationIsIgnored()
+{
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    const QList<PaperLibraryModel::Record> stale = PaperLibraryModel::parseCatalog(recordLine(widgetRecord()));
+    const QList<PaperLibraryModel::Record> current = PaperLibraryModel::parseCatalog(recordLine(widgetRecord()) + recordLine(gadgetRecord()));
+
+    model.m_loading = true;
+    model.m_loadGeneration = 2;
+    model.finishLoad(stale, {}, 1);
+    QCOMPARE(model.rowCount(), 0);
+    QCOMPARE(loadedSpy.count(), 0);
+    QVERIFY(model.m_loading); // the current generation is still in flight
+
+    model.finishLoad(current, {}, 2);
+    QCOMPARE(model.rowCount(), 2);
+    QCOMPARE(loadedSpy.count(), 1);
+    QCOMPARE(loadedSpy.constFirst().constFirst().toInt(), 2);
+    QVERIFY(!model.m_loading);
+}
+
+void PaperLibraryModelTest::testReloadFromLoadedKeepsNewestWorker()
+{
+    const QString corpusDir = writeCatalog({widgetRecord()});
+    QVERIFY(!corpusDir.isEmpty());
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    bool secondLoadStarted = false;
+    bool secondCatalogWritten = false;
+    QThread *secondWorker = nullptr;
+    connect(&model, &PaperLibraryModel::loaded, &model, [&](int) {
+        if (secondLoadStarted) {
+            return;
+        }
+        secondLoadStarted = true;
+        secondCatalogWritten = !writeCatalog({widgetRecord(), gadgetRecord()}).isEmpty();
+        model.load(corpusDir); // starts before generation one's queued finished handler runs
+        secondWorker = model.m_worker;
+    });
+
+    model.load(corpusDir);
+    QTRY_COMPARE_WITH_TIMEOUT(loadedSpy.count(), 2, 10000);
+    QVERIFY(secondLoadStarted);
+    QVERIFY(secondCatalogWritten);
+    QVERIFY(secondWorker);
+    QCOMPARE(model.rowCount(), 2);
+    QTRY_VERIFY_WITH_TIMEOUT(model.m_workers.isEmpty(), 10000);
+    QCOMPARE(model.m_worker, nullptr);
+}
+
 void PaperLibraryModelTest::testReloadIfChanged()
 {
     const QString corpusDir = writeCatalog({widgetRecord()});
@@ -2093,6 +2952,368 @@ void PaperLibraryModelTest::testDestroyAfterLoad()
 
     delete model;  // destructor is a no-op on the already-reclaimed worker
     QVERIFY(true); // reached here without crashing
+}
+
+void PaperLibraryModelTest::testDownrankStateSynchronizesAcrossModels()
+{
+    const QString corpusDir = writeCatalog({widgetRecord(), gadgetRecord()});
+    PaperLibraryModel source;
+    QSignalSpy loadedSpy(&source, &PaperLibraryModel::loaded);
+    source.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibrarySectionedModel first;
+    PaperLibrarySectionedModel second;
+    first.setSourceModel(&source);
+    second.setSourceModel(&source);
+
+    const auto indexForSlug = [&source](PaperLibrarySectionedModel &sections, const QString &slug) {
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex index = sections.index(row);
+            const int sourceRow = sections.data(index, PaperLibrarySectionedModel::SourceRowRole).toInt();
+            if (sourceRow >= 0 && source.data(source.index(sourceRow), PaperLibraryModel::SlugRole).toString() == slug) {
+                return index;
+            }
+        }
+        return QModelIndex();
+    };
+    const auto isDownranked = [&indexForSlug](PaperLibrarySectionedModel &sections, const QString &slug) {
+        const QModelIndex index = indexForSlug(sections, slug);
+        return index.isValid() && sections.data(index, PaperLibrarySectionedModel::DownrankedRole).toBool();
+    };
+
+    QModelIndex widgetIndex = indexForSlug(first, widgetRecord().slug);
+    QVERIFY(widgetIndex.isValid());
+    first.setDownranked(widgetIndex, true);
+    QVERIFY(isDownranked(first, widgetRecord().slug));
+    QVERIFY(isDownranked(second, widgetRecord().slug));
+
+    // `second` was constructed before the first mutation. Its next write must merge that first
+    // slug instead of replacing the config with its previously stale private set.
+    QModelIndex gadgetIndex = indexForSlug(second, gadgetRecord().slug);
+    QVERIFY(gadgetIndex.isValid());
+    second.setDownranked(gadgetIndex, true);
+    for (PaperLibrarySectionedModel *sections : {&first, &second}) {
+        QVERIFY(isDownranked(*sections, widgetRecord().slug));
+        QVERIFY(isDownranked(*sections, gadgetRecord().slug));
+    }
+
+    KConfigGroup feed = KSharedConfig::openConfig(m_dir->filePath(QStringLiteral("paperlibraryrc")), KConfig::SimpleConfig)->group(QStringLiteral("CorpusFeed"));
+    QStringList persisted = feed.readEntry(QStringLiteral("DownrankedSlugs"), QStringList());
+    persisted.sort();
+    QStringList expected{widgetRecord().slug, gadgetRecord().slug};
+    expected.sort();
+    QCOMPARE(persisted, expected);
+
+    widgetIndex = indexForSlug(second, widgetRecord().slug);
+    QVERIFY(widgetIndex.isValid());
+    second.setDownranked(widgetIndex, false);
+    QVERIFY(!isDownranked(first, widgetRecord().slug));
+    QVERIFY(!isDownranked(second, widgetRecord().slug));
+    QVERIFY(isDownranked(first, gadgetRecord().slug));
+    const KSharedConfigPtr refreshedConfig = KSharedConfig::openConfig(m_dir->filePath(QStringLiteral("paperlibraryrc")), KConfig::SimpleConfig);
+    refreshedConfig->reparseConfiguration();
+    const KConfigGroup refreshedFeed(refreshedConfig, QStringLiteral("CorpusFeed"));
+    QCOMPARE(refreshedFeed.readEntry(QStringLiteral("DownrankedSlugs"), QStringList()), QStringList{gadgetRecord().slug});
+}
+
+void PaperLibraryModelTest::testSettingTheSameLocalBooksDoesNotResetTheModel()
+{
+    // LibraryView::refresh() runs on every library-tab show and calls setLocalBooks(). A model
+    // reset there invalidates every sectioned proxy and forces a full 21k-row rebuild -- so
+    // switching to a library tab was paying it every time. Imports rarely change; an unchanged
+    // set must not reset the model.
+    const QString corpusDir = writeCatalog({widgetRecord(), gadgetRecord()});
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    PaperLibraryModel::Record book;
+    book.slug = QStringLiteral("local-1");
+    book.title = QStringLiteral("An Imported Book");
+    book.recordKind = QStringLiteral("book");
+    book.pdfPath = QStringLiteral("/tmp/An Imported Book.epub");
+
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    model.setLocalBooks({book});
+    const int afterFirst = resetSpy.count();
+    QVERIFY2(afterFirst >= 1, "the first setLocalBooks with new content must reset");
+
+    model.setLocalBooks({book}); // identical content
+    QCOMPARE(resetSpy.count(), afterFirst); // no second reset
+
+    model.setLocalBooks({}); // genuinely different -> must reset again
+    QVERIFY2(resetSpy.count() > afterFirst, "clearing the local books must reset");
+}
+
+void PaperLibraryModelTest::testFinishedBooksAreOffTheReadingShelves()
+{
+    // A finished book clutters the "what to read" shelves; it lives on Finished. Books, Fiction,
+    // Non-fiction and Textbooks must not show it.
+    SyntheticRecord finishedBook = widgetRecord();
+    finishedBook.slug = QStringLiteral("done-book");
+    finishedBook.title = QStringLiteral("A Finished Novel");
+    finishedBook.journal = QStringLiteral("(book)");
+    finishedBook.genre = QStringLiteral("Fiction");
+    finishedBook.recordKind = QStringLiteral("book");
+    finishedBook.source = QStringLiteral("book:epub");
+
+    // The SAME book, a second catalog row with a DIFFERENT slug (an EPUB vs a PDF acquisition).
+    // Only "done-book" is marked finished, but this duplicate must be retired with it -- that was
+    // the bug: finished books kept showing on Books through their unmarked duplicate.
+    SyntheticRecord finishedDuplicate = widgetRecord();
+    finishedDuplicate.slug = QStringLiteral("done-book-pdf");
+    finishedDuplicate.title = QStringLiteral("A Finished Novel"); // same title, different slug
+    finishedDuplicate.journal = QStringLiteral("(book)");
+    finishedDuplicate.genre = QStringLiteral("Fiction");
+    finishedDuplicate.recordKind = QStringLiteral("book");
+    finishedDuplicate.source = QStringLiteral("book:pdf");
+
+    // A THIRD copy whose title is series-prefixed -- the real case: "Means of Ascent" is finished
+    // but the shown copy is "The Years of Lyndon Johnson: Means of Ascent". Different title, same
+    // book; the contains-match must still retire it.
+    SyntheticRecord seriesEdition = widgetRecord();
+    seriesEdition.slug = QStringLiteral("done-book-series");
+    seriesEdition.title = QStringLiteral("The Collected Works: A Finished Novel");
+    seriesEdition.journal = QStringLiteral("(book)");
+    seriesEdition.genre = QStringLiteral("Fiction");
+    seriesEdition.recordKind = QStringLiteral("book");
+    seriesEdition.source = QStringLiteral("book:epub");
+
+    SyntheticRecord unreadBook = gadgetRecord();
+    unreadBook.slug = QStringLiteral("unread-book");
+    unreadBook.title = QStringLiteral("An Unread Novel");
+    unreadBook.journal = QStringLiteral("(book)");
+    unreadBook.genre = QStringLiteral("Fiction");
+    unreadBook.recordKind = QStringLiteral("book");
+    unreadBook.source = QStringLiteral("book:epub");
+
+    const QString corpusDir = writeCatalog({finishedBook, finishedDuplicate, seriesEdition, unreadBook});
+
+    // Mark only ONE slug finished, the way the reader would (CorpusFeed/FinishedSlugs).
+    KConfigGroup feed = KSharedConfig::openConfig(QString::fromLocal8Bit(qgetenv("PAPERLIBRARY_CONFIG_PATH")),
+                                                  KConfig::SimpleConfig)->group(QStringLiteral("CorpusFeed"));
+    feed.writeEntry("FinishedSlugs", QStringList{QStringLiteral("done-book")});
+    feed.sync();
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    const auto slugsOnShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex tile = sections.index(row);
+            if (!tile.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                slugs << tile.data(PaperLibraryModel::SlugRole).toString();
+            }
+        }
+        return slugs;
+    };
+
+    for (auto shelf : {PaperLibrarySectionedModel::Books, PaperLibrarySectionedModel::Fiction}) {
+        const QStringList slugs = slugsOnShelf(shelf);
+        QVERIFY2(!slugs.contains(QStringLiteral("done-book")), "a finished book is still on a reading shelf");
+        QVERIFY2(!slugs.contains(QStringLiteral("done-book-pdf")),
+                 "the finished book's unmarked duplicate is still on a reading shelf");
+        QVERIFY2(!slugs.contains(QStringLiteral("done-book-series")),
+                 "the finished book's series-prefixed edition is still on a reading shelf");
+        QVERIFY2(slugs.contains(QStringLiteral("unread-book")), "the unread book vanished");
+    }
+    // ...but the finished book IS on Finished.
+    QVERIFY(slugsOnShelf(PaperLibrarySectionedModel::Finished).contains(QStringLiteral("done-book")));
+
+    feed.deleteEntry("FinishedSlugs"); // don't leak into sibling tests
+    feed.sync();
+}
+
+void PaperLibraryModelTest::testAClinicalAbstractFromAPaperFeedNeverReachesBooks()
+{
+    // The ALS/MND leak: europepmc/harvest serve conference abstracts and papers, which the
+    // librarian sometimes tags genre="Reference". A book genre must NOT rescue those into Books.
+    // A genuine book from a book-serving source with the same genre still must.
+    SyntheticRecord abstract = widgetRecord();
+    abstract.slug = QStringLiteral("als-abstract");
+    abstract.title = QStringLiteral("Platform Communications: Abstract Book — 30th Symposium on ALS/MND");
+    abstract.journal = QStringLiteral("Amyotrophic Lateral Sclerosis");
+    abstract.genre = QStringLiteral("Reference"); // librarian mislabel
+    abstract.recordKind = QStringLiteral("paper");
+    abstract.source = QStringLiteral("europepmc");
+
+    SyntheticRecord realBook = gadgetRecord();
+    realBook.slug = QStringLiteral("real-reference-book");
+    realBook.title = QStringLiteral("The Handbook of Cognition and Emotion");
+    realBook.journal = QStringLiteral("(book)");
+    realBook.genre = QStringLiteral("Reference");
+    realBook.recordKind = QStringLiteral("paper"); // also mislabelled, but from a book source
+    realBook.source = QStringLiteral("libgen");
+
+    const QString corpusDir = writeCatalog({abstract, realBook});
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+
+    const auto slugsOnShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex tile = sections.index(row);
+            if (!tile.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                slugs << tile.data(PaperLibraryModel::SlugRole).toString();
+            }
+        }
+        return slugs;
+    };
+
+    const QStringList books = slugsOnShelf(PaperLibrarySectionedModel::Books);
+    QVERIFY2(!books.contains(QStringLiteral("als-abstract")), "an ALS abstract from europepmc leaked into Books");
+    QVERIFY2(books.contains(QStringLiteral("real-reference-book")), "a genuine book from libgen was wrongly excluded");
+    // The abstract belongs on Papers.
+    QVERIFY(slugsOnShelf(PaperLibrarySectionedModel::Papers).contains(QStringLiteral("als-abstract")));
+}
+
+void PaperLibraryModelTest::testBookGenreRescuesARowMislabelledAsAPaper()
+{
+    // The librarian assigns record_kind and genre in one pass and they disagree on 447 live
+    // rows: record_kind="paper" over a book genre. isBook believed record_kind, and it gates
+    // Books AND Non-fiction, so 137 real books were on no book shelf at all.
+    SyntheticRecord textbook = widgetRecord();
+    textbook.slug = QStringLiteral("mislabelled-textbook");
+    textbook.title = QStringLiteral("Elements of Information Theory");
+    textbook.journal = QStringLiteral("(book)");
+    textbook.genre = QStringLiteral("Textbook");
+    textbook.recordKind = QStringLiteral("paper"); // the librarian contradicts itself
+    textbook.source = QStringLiteral("libgen");
+
+    // "Manual" stays out: 310 rows carry it and they are practice guidelines, not books.
+    SyntheticRecord guideline = gadgetRecord();
+    guideline.slug = QStringLiteral("practice-guideline");
+    guideline.title = QStringLiteral("EANM practice guideline/SNMMI procedure standard");
+    guideline.journal = QStringLiteral("European Journal of Nuclear Medicine");
+    guideline.genre = QStringLiteral("Manual");
+    guideline.recordKind = QStringLiteral("paper");
+    guideline.source = QStringLiteral("unpaywall");
+
+    const QString corpusDir = writeCatalog({textbook, guideline});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QCOMPARE(model.rowCount(), 2);
+
+    const auto slugsOnShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex tile = sections.index(row);
+            if (tile.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                continue;
+            }
+            slugs << tile.data(PaperLibraryModel::SlugRole).toString();
+        }
+        slugs.sort();
+        return slugs;
+    };
+
+    // The rescue puts it back on a book shelf -- specifically Textbooks. Books is the general
+    // reading shelf (fiction + trade non-fiction) and deliberately excludes textbooks/medicine/
+    // psychiatry, which have their own shelves, so the textbook does NOT appear on Books.
+    QVERIFY2(!slugsOnShelf(PaperLibrarySectionedModel::Books).contains(QStringLiteral("mislabelled-textbook")),
+             "a rescued textbook belongs on Textbooks, not the general Books shelf");
+    QCOMPARE(slugsOnShelf(PaperLibrarySectionedModel::Textbooks), QStringList{QStringLiteral("mislabelled-textbook")});
+    // The guideline is a paper: it belongs on Papers, and on no book shelf.
+    QCOMPARE(slugsOnShelf(PaperLibrarySectionedModel::Papers), QStringList{QStringLiteral("practice-guideline")});
+    QVERIFY(!slugsOnShelf(PaperLibrarySectionedModel::Nonfiction).contains(QStringLiteral("practice-guideline")));
+}
+
+void PaperLibraryModelTest::testFictionAndNonfictionShelvesNeverContainPapers()
+{
+    // Fiction and Non-fiction are BOOK shelves. Their genre-driven branch says so
+    // (isBook && ...), but the fallback branch -- taken whenever the librarian genre is
+    // not one of Fiction/Nonfiction/Reference/Textbook/Manual, i.e. for every "Academic"
+    // row, ~95% of the corpus -- dropped the isBook conjunct. A paper in a journal whose
+    // NAME contains "Anthropology" then matched recordMatchesNonfiction()'s ungated needle
+    // and landed on Non-fiction. 730 papers did, in the live corpus; 165 reached Fiction.
+    SyntheticRecord anthroPaper = widgetRecord();
+    anthroPaper.slug = QStringLiteral("anthro-paper");
+    anthroPaper.title = QStringLiteral("Postmarital residence and biological variation");
+    anthroPaper.journal = QStringLiteral("American Journal of Physical Anthropology");
+    anthroPaper.genre = QStringLiteral("Academic");
+    anthroPaper.recordKind = QStringLiteral("paper");
+    anthroPaper.source = QStringLiteral("unpaywall");
+
+    SyntheticRecord policyPaper = gadgetRecord();
+    policyPaper.slug = QStringLiteral("policy-paper");
+    policyPaper.title = QStringLiteral("Government regulation of private health insurance");
+    policyPaper.journal = QStringLiteral("Cochrane Database of Systematic Reviews");
+    policyPaper.genre = QStringLiteral("Academic");
+    policyPaper.recordKind = QStringLiteral("paper");
+    policyPaper.source = QStringLiteral("cochrane");
+
+    SyntheticRecord fictionPaper = widgetRecord();
+    fictionPaper.slug = QStringLiteral("fiction-paper");
+    fictionPaper.title = QStringLiteral("Science fiction and the public understanding of science");
+    fictionPaper.journal = QStringLiteral("Public Understanding of Science");
+    fictionPaper.genre = QStringLiteral("Academic");
+    fictionPaper.recordKind = QStringLiteral("paper");
+    fictionPaper.source = QStringLiteral("unpaywall");
+
+    SyntheticRecord nonfictionBook = widgetRecord();
+    nonfictionBook.slug = QStringLiteral("nonfiction-book");
+    nonfictionBook.title = QStringLiteral("Debt: The First 5000 Years");
+    nonfictionBook.journal = QStringLiteral("(book)");
+    nonfictionBook.genre = QStringLiteral("Nonfiction");
+    nonfictionBook.recordKind = QStringLiteral("book");
+    nonfictionBook.source = QStringLiteral("book:epub");
+
+    SyntheticRecord fictionBook = gadgetRecord();
+    fictionBook.slug = QStringLiteral("fiction-book");
+    fictionBook.title = QStringLiteral("Frankenstein");
+    fictionBook.journal = QStringLiteral("(book)");
+    fictionBook.genre = QStringLiteral("Fiction");
+    fictionBook.recordKind = QStringLiteral("book");
+    fictionBook.source = QStringLiteral("book:standardebooks");
+
+    const QString corpusDir =
+        writeCatalog({anthroPaper, policyPaper, fictionPaper, nonfictionBook, fictionBook});
+
+    PaperLibraryModel model;
+    QSignalSpy loadedSpy(&model, &PaperLibraryModel::loaded);
+    model.load(corpusDir);
+    QVERIFY(loadedSpy.wait(10000));
+    QCOMPARE(model.rowCount(), 5);
+
+    const auto slugsOnShelf = [&model](PaperLibrarySectionedModel::SmartFilter filter) {
+        PaperLibrarySectionedModel sections;
+        sections.setSourceModel(&model);
+        sections.setSmartFilter(filter);
+        QStringList slugs;
+        for (int row = 0; row < sections.rowCount(); ++row) {
+            const QModelIndex tile = sections.index(row);
+            if (tile.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool()) {
+                continue;
+            }
+            slugs << tile.data(PaperLibraryModel::SlugRole).toString();
+        }
+        slugs.sort();
+        return slugs;
+    };
+
+    QCOMPARE(slugsOnShelf(PaperLibrarySectionedModel::Nonfiction),
+             QStringList{QStringLiteral("nonfiction-book")});
+    QCOMPARE(slugsOnShelf(PaperLibrarySectionedModel::Fiction),
+             QStringList{QStringLiteral("fiction-book")});
 }
 
 QTEST_GUILESS_MAIN(PaperLibraryModelTest)

@@ -10,17 +10,25 @@
 
 #include <QDir>
 #include <QDirIterator>
+#include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QImageReader>
 #include <QRegularExpression>
 #include <QTextDocumentFragment>
 #include <QUrl>
+#include <QVector>
 #include <QXmlStreamReader>
 
 namespace
 {
 const qint64 FallbackImageSizeLimit = 5 * 1024 * 1024; // don't decode giant scans speculatively
+const qint64 MetadataFileSizeLimit = 8 * 1024 * 1024;
+const qint64 DecodedImagePixelLimit = 80LL * 1000 * 1000;
+const qsizetype ArchiveEntryLimit = 20000;
+const qint64 ArchiveTotalSizeLimit = 1024LL * 1024 * 1024;
+const int ArchiveDepthLimit = 64;
 
 bool hasImageSuffix(const QString &name)
 {
@@ -49,6 +57,8 @@ public:
     virtual ~EpubSource() = default;
     /** Bytes of the file at archive-relative @p path; null when absent. */
     virtual QByteArray read(const QString &path) const = 0;
+    /** Entire source satisfies the bounded traversal contract. */
+    virtual bool withinBudget() const = 0;
     /** Bytes of the largest image within the size limit; null when none. */
     virtual QByteArray largestImage() const = 0;
 };
@@ -68,36 +78,73 @@ public:
             return QByteArray();
         }
         const KArchiveEntry *entry = m_root->entry(clean);
-        return entry && entry->isFile() ? static_cast<const KArchiveFile *>(entry)->data() : QByteArray();
+        if (!entry || !entry->isFile()) {
+            return QByteArray();
+        }
+        const auto *file = static_cast<const KArchiveFile *>(entry);
+        return file->size() >= 0 && file->size() <= MetadataFileSizeLimit ? file->data() : QByteArray();
+    }
+
+    bool withinBudget() const override
+    {
+        return scan(nullptr);
     }
 
     QByteArray largestImage() const override
     {
-        const KArchiveFile *best = largestIn(m_root);
+        const KArchiveFile *best = nullptr;
+        if (!scan(&best)) {
+            return QByteArray();
+        }
         return best ? best->data() : QByteArray();
     }
 
 private:
-    /** The largest image file in the archive within the size limit, or null. */
-    static const KArchiveFile *largestIn(const KArchiveDirectory *dir)
+    /** Iterative, bounded archive traversal; optionally returns the best image. */
+    bool scan(const KArchiveFile **bestOut) const
     {
         const KArchiveFile *best = nullptr;
-        const QStringList names = dir->entries();
-        for (const QString &name : names) {
-            const KArchiveEntry *entry = dir->entry(name);
-            if (entry->isDirectory()) {
-                const KArchiveFile *candidate = largestIn(static_cast<const KArchiveDirectory *>(entry));
-                if (candidate && (!best || candidate->size() > best->size())) {
-                    best = candidate;
+        qsizetype entriesSeen = 0;
+        qint64 totalBytes = 0;
+        QVector<QPair<const KArchiveDirectory *, int>> pending;
+        pending.append({m_root, 0});
+        while (!pending.isEmpty()) {
+            const auto current = pending.takeLast();
+            const QStringList names = current.first->entries();
+            for (const QString &name : names) {
+                if (++entriesSeen > ArchiveEntryLimit) {
+                    return false;
                 }
-            } else if (entry->isFile() && hasImageSuffix(name)) {
-                const KArchiveFile *file = static_cast<const KArchiveFile *>(entry);
-                if (file->size() <= FallbackImageSizeLimit && (!best || file->size() > best->size())) {
+                const KArchiveEntry *entry = current.first->entry(name);
+                if (!entry) {
+                    return false;
+                }
+                if (entry->isDirectory()) {
+                    if (current.second >= ArchiveDepthLimit) {
+                        return false;
+                    }
+                    pending.append({static_cast<const KArchiveDirectory *>(entry), current.second + 1});
+                    continue;
+                }
+                if (!entry->isFile()) {
+                    continue;
+                }
+                const auto *file = static_cast<const KArchiveFile *>(entry);
+                const qint64 size = file->size();
+                if (size < 0 || size > ArchiveTotalSizeLimit - totalBytes) {
+                    return false;
+                }
+                totalBytes += size;
+                if (hasImageSuffix(name) && size <= FallbackImageSizeLimit
+                    && (!best || size > best->size())) {
                     best = file;
                 }
             }
         }
-        return best;
+        if (bestOut) {
+            *bestOut = best;
+        }
+        return true;
     }
 
     const KArchiveDirectory *m_root;
@@ -125,21 +172,21 @@ public:
             return QByteArray();
         }
         QFile file(canonical);
-        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+        return file.size() >= 0 && file.size() <= MetadataFileSizeLimit && file.open(QIODevice::ReadOnly)
+            ? file.readAll()
+            : QByteArray();
+    }
+
+    bool withinBudget() const override
+    {
+        return scan(nullptr);
     }
 
     QByteArray largestImage() const override
     {
         QString bestPath;
-        qint64 bestSize = -1;
-        QDirIterator it(m_root.path(), QDir::Files, QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            const QFileInfo info = it.fileInfo();
-            if (hasImageSuffix(info.fileName()) && info.size() <= FallbackImageSizeLimit && info.size() > bestSize) {
-                bestSize = info.size();
-                bestPath = info.filePath();
-            }
+        if (!scan(&bestPath)) {
+            return QByteArray();
         }
         if (bestPath.isEmpty()) {
             return QByteArray();
@@ -149,6 +196,54 @@ public:
     }
 
 private:
+    bool scan(QString *bestOut) const
+    {
+        QString bestPath;
+        qint64 bestSize = -1;
+        qint64 totalBytes = 0;
+        qsizetype entriesSeen = 0;
+        QVector<QPair<QString, int>> pending;
+        pending.append({m_root.path(), 0});
+        while (!pending.isEmpty()) {
+            const auto current = pending.takeLast();
+            QDirIterator entries(
+                current.first,
+                QDir::AllEntries | QDir::NoDotAndDotDot,
+                QDirIterator::NoIteratorFlags);
+            while (entries.hasNext()) {
+                entries.next();
+                const QFileInfo info = entries.fileInfo();
+                if (++entriesSeen > ArchiveEntryLimit || info.isSymLink()) {
+                    return false;
+                }
+                if (info.isDir()) {
+                    if (current.second >= ArchiveDepthLimit) {
+                        return false;
+                    }
+                    pending.append({info.absoluteFilePath(), current.second + 1});
+                    continue;
+                }
+                if (!info.isFile()) {
+                    continue;
+                }
+                const qint64 size = info.size();
+                if (size < 0 || size > ArchiveTotalSizeLimit - totalBytes) {
+                    return false;
+                }
+                totalBytes += size;
+                if (hasImageSuffix(info.fileName()) && size <= FallbackImageSizeLimit
+                    && size > bestSize) {
+                    bestSize = size;
+                    bestPath = info.absoluteFilePath();
+                }
+            }
+        }
+        if (bestOut) {
+            *bestOut = bestPath;
+        }
+        return true;
+    }
+
     QDir m_root;
 };
 
@@ -167,6 +262,9 @@ QString opfPath(const QByteArray &container)
 /** The OPF package bytes, with the OPF's directory in @p opfDirOut. */
 QByteArray opfBytes(const EpubSource &source, QString *opfDirOut)
 {
+    if (!source.withinBudget()) {
+        return QByteArray();
+    }
     const QString packagePath = opfPath(source.read(QStringLiteral("META-INF/container.xml")));
     if (packagePath.isEmpty()) {
         return QByteArray();
@@ -208,6 +306,20 @@ QString declaredCoverHref(const QByteArray &opf)
 
 QImage extractFrom(const EpubSource &source)
 {
+    const auto decodeImage = [](const QByteArray &bytes) {
+        QBuffer buffer;
+        buffer.setData(bytes);
+        if (!buffer.open(QIODevice::ReadOnly)) {
+            return QImage();
+        }
+        QImageReader reader(&buffer);
+        reader.setDecideFormatFromContent(true);
+        const QSize size = reader.size();
+        if (!size.isValid() || static_cast<qint64>(size.width()) * size.height() > DecodedImagePixelLimit) {
+            return QImage();
+        }
+        return reader.read();
+    };
     // The declared cover: container.xml → OPF → manifest
     QString opfDir;
     const QByteArray opf = opfBytes(source, &opfDir);
@@ -216,7 +328,7 @@ QImage extractFrom(const EpubSource &source)
         if (!href.isEmpty()) {
             href = QUrl::fromPercentEncoding(href.toUtf8()); // hrefs are URLs ("My%20Cover.png")
             const QString coverPath = (opfDir.isEmpty() || opfDir == QLatin1String(".")) ? href : opfDir + QLatin1Char('/') + href;
-            const QImage cover = QImage::fromData(source.read(coverPath));
+            const QImage cover = decodeImage(source.read(coverPath));
             if (!cover.isNull()) {
                 return cover;
             }
@@ -224,7 +336,7 @@ QImage extractFrom(const EpubSource &source)
     }
 
     // No (decodable) declared cover: fall back to the largest bundled image
-    return QImage::fromData(source.largestImage());
+    return decodeImage(source.largestImage());
 }
 
 bool sparsePackageTitle(const QString &title)

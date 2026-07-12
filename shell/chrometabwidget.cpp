@@ -9,6 +9,7 @@
 #include "chrometabbar.h"
 #include "chrometoolbar.h"
 
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -24,12 +25,23 @@ ChromeTabWidget::ChromeTabWidget(QWidget *parent)
     m_stack = new QStackedWidget(this);
     m_stack->setFrameShape(QFrame::NoFrame);
 
+    // The pages sit in a horizontal splitter under the strip+toolbar so optional side panels
+    // (the reader outline / AI navigation on the left, "what does this mean" on the right) live
+    // strictly BELOW the tab strip. Docking them in the QMainWindow instead would place them
+    // beside the central widget — pushing the tab strip inward so it no longer spans the window.
+    m_contentSplitter = new QSplitter(Qt::Horizontal, this);
+    m_contentSplitter->setObjectName(QStringLiteral("paperlibrary_reader_split"));
+    m_contentSplitter->setChildrenCollapsible(false);
+    m_contentSplitter->setHandleWidth(1);
+    m_contentSplitter->addWidget(m_stack);
+    m_contentSplitter->setStretchFactor(0, 1); // the pages take the slack; side panels keep their width
+
     QVBoxLayout *const layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(m_strip);
     layout->addWidget(m_toolbar);
-    layout->addWidget(m_stack, 1);
+    layout->addWidget(m_contentSplitter, 1);
 
     connect(m_bar, &QTabBar::currentChanged, this, [this](int index) {
         if (index >= 0 && index < m_stack->count()) {
@@ -63,6 +75,37 @@ QTabBar *ChromeTabWidget::tabBar() const
 ChromeToolbar *ChromeTabWidget::toolbar() const
 {
     return m_toolbar;
+}
+
+QSplitter *ChromeTabWidget::contentSplitter() const
+{
+    return m_contentSplitter;
+}
+
+void ChromeTabWidget::setLeftPanel(QWidget *panel)
+{
+    // The pages are always at least one splitter child; the left panel goes before them.
+    if (panel) {
+        m_contentSplitter->insertWidget(0, panel);
+    }
+    // Re-assert stretch: only the pages (m_stack) grow with the window; panels hold their width.
+    m_contentSplitter->setStretchFactor(m_contentSplitter->indexOf(m_stack), 1);
+    const int panelIndex = m_contentSplitter->indexOf(panel);
+    if (panelIndex >= 0) {
+        m_contentSplitter->setStretchFactor(panelIndex, 0);
+    }
+}
+
+void ChromeTabWidget::setRightPanel(QWidget *panel)
+{
+    if (panel) {
+        m_contentSplitter->addWidget(panel); // after the pages
+    }
+    m_contentSplitter->setStretchFactor(m_contentSplitter->indexOf(m_stack), 1);
+    const int panelIndex = m_contentSplitter->indexOf(panel);
+    if (panelIndex >= 0) {
+        m_contentSplitter->setStretchFactor(panelIndex, 0);
+    }
 }
 
 void ChromeTabWidget::setLeadingInset(int inset)

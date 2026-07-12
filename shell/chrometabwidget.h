@@ -13,6 +13,7 @@
 class ChromeTabBar;
 class ChromeTabStrip;
 class ChromeToolbar;
+class QSplitter;
 class QStackedWidget;
 class QTabBar;
 
@@ -34,6 +35,16 @@ public:
     ChromeTabBar *chromeTabBar() const;
     QTabBar *tabBar() const;
     ChromeToolbar *toolbar() const;
+
+    /**
+     * Install a panel as the left/right pane of the reader split, below the tab strip. Ownership
+     * passes to the split. Pass nullptr to detach and delete the current one. The pages between
+     * them keep the slack; each panel holds its own width and is drag-resizable.
+     */
+    void setLeftPanel(QWidget *panel);
+    void setRightPanel(QWidget *panel);
+    /** The horizontal split hosting [leftPanel | pages | rightPanel]. */
+    QSplitter *contentSplitter() const;
 
     /** Chrome's leading inset before the first tab (clears the traffic lights). */
     void setLeadingInset(int inset);
@@ -69,6 +80,7 @@ private:
     ChromeTabBar *m_bar;
     ChromeToolbar *m_toolbar;
     QStackedWidget *m_stack;
+    QSplitter *m_contentSplitter;
 };
 
 #endif

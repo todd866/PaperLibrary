@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!DOCTYPE gui SYSTEM "kpartgui.dtd">
-<gui version="14" name="paperlibrary_shell" >
+<gui version="16" name="paperlibrary_shell" >
  <MenuBar>
   <Menu name="file" >
    <DefineGroup append="open_merge" name="file_open" />
@@ -17,6 +17,7 @@
    <Action name="epub-scroll-global-paginated" />
    <Action name="epub-scroll-global-continuous" />
    <Separator/>
+   <Action name="epub-scroll-toggle" />
    <Action name="epub-scroll-book-global" />
    <Action name="epub-scroll-book-paginated" />
    <Action name="epub-scroll-book-continuous" />

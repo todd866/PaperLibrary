@@ -9,144 +9,204 @@
       "title": "Pride and Prejudice",
       "authors": "Jane Austen",
       "year": "1813",
-      "tags": ["fiction", "classic", "novel"],
+      "tags": [
+        "fiction",
+        "classic",
+        "novel"
+      ],
       "source": "Project Gutenberg",
       "source_id": "1342",
       "source_landing_url": "https://www.gutenberg.org/ebooks/1342",
       "download_url": "https://www.gutenberg.org/ebooks/1342.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Jane Austen's 1813 comedy of manners: Elizabeth Bennet and the proud Mr Darcy spar their way from prejudice to love in Regency England."
     },
     {
       "slug": "shelley-frankenstein",
       "title": "Frankenstein; or, The Modern Prometheus",
       "authors": "Mary Wollstonecraft Shelley",
       "year": "1818",
-      "tags": ["fiction", "gothic", "science"],
+      "tags": [
+        "fiction",
+        "gothic",
+        "science"
+      ],
       "source": "Project Gutenberg",
       "source_id": "84",
       "source_landing_url": "https://www.gutenberg.org/ebooks/84",
       "download_url": "https://www.gutenberg.org/ebooks/84.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Mary Shelley's 1818 gothic novel: a young scientist animates a creature from dead matter, then abandons it — with tragic consequences."
     },
     {
       "slug": "melville-moby-dick",
       "title": "Moby-Dick; or, The Whale",
       "authors": "Herman Melville",
       "year": "1851",
-      "tags": ["fiction", "classic", "novel"],
+      "tags": [
+        "fiction",
+        "classic",
+        "novel"
+      ],
       "source": "Project Gutenberg",
       "source_id": "2701",
       "source_landing_url": "https://www.gutenberg.org/ebooks/2701",
       "download_url": "https://www.gutenberg.org/ebooks/2701.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Herman Melville's 1851 epic of Captain Ahab's monomaniacal hunt for the white whale — a vast meditation on obsession, nature, and fate."
     },
     {
       "slug": "carroll-alice",
       "title": "Alice's Adventures in Wonderland",
       "authors": "Lewis Carroll",
       "year": "1865",
-      "tags": ["fiction", "fantasy", "children"],
+      "tags": [
+        "fiction",
+        "fantasy",
+        "children"
+      ],
       "source": "Project Gutenberg",
       "source_id": "11",
       "source_landing_url": "https://www.gutenberg.org/ebooks/11",
       "download_url": "https://www.gutenberg.org/ebooks/11.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Lewis Carroll's 1865 nonsense classic: Alice tumbles down a rabbit-hole into a logic-bending world of talking creatures and mad tea-parties."
     },
     {
       "slug": "doyle-sherlock-holmes",
       "title": "The Adventures of Sherlock Holmes",
       "authors": "Arthur Conan Doyle",
       "year": "1892",
-      "tags": ["fiction", "mystery", "short-stories"],
+      "tags": [
+        "fiction",
+        "mystery",
+        "short-stories"
+      ],
       "source": "Project Gutenberg",
       "source_id": "1661",
       "source_landing_url": "https://www.gutenberg.org/ebooks/1661",
       "download_url": "https://www.gutenberg.org/ebooks/1661.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Twelve of Arthur Conan Doyle's 1892 stories introducing the great detective and his method of ruthless deduction, narrated by Dr Watson."
     },
     {
       "slug": "wells-time-machine",
       "title": "The Time Machine",
       "authors": "H. G. Wells",
       "year": "1895",
-      "tags": ["fiction", "science-fiction", "classic"],
+      "tags": [
+        "fiction",
+        "science-fiction",
+        "classic"
+      ],
       "source": "Project Gutenberg",
       "source_id": "35",
       "source_landing_url": "https://www.gutenberg.org/ebooks/35",
       "download_url": "https://www.gutenberg.org/ebooks/35.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "H. G. Wells's 1895 novella: a Victorian inventor travels to the year 802,701 and finds humanity split into the gentle Eloi and subterranean Morlocks."
     },
     {
       "slug": "douglass-narrative",
       "title": "Narrative of the Life of Frederick Douglass, an American Slave",
       "authors": "Frederick Douglass",
       "year": "1845",
-      "tags": ["history", "memoir", "abolition"],
+      "tags": [
+        "history",
+        "memoir",
+        "abolition"
+      ],
       "source": "Project Gutenberg",
       "source_id": "23",
       "source_landing_url": "https://www.gutenberg.org/ebooks/23",
       "download_url": "https://www.gutenberg.org/ebooks/23.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "The 1845 autobiography of Frederick Douglass, who escaped slavery to become a towering abolitionist orator and writer."
     },
     {
       "slug": "dubois-souls-of-black-folk",
       "title": "The Souls of Black Folk",
       "authors": "W. E. B. Du Bois",
       "year": "1903",
-      "tags": ["history", "essays", "sociology"],
+      "tags": [
+        "history",
+        "essays",
+        "sociology"
+      ],
       "source": "Project Gutenberg",
       "source_id": "408",
       "source_landing_url": "https://www.gutenberg.org/ebooks/408",
       "download_url": "https://www.gutenberg.org/ebooks/408.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "W. E. B. Du Bois's 1903 essays on race in America, introducing 'double consciousness' and the metaphor of 'the veil'."
     },
     {
       "slug": "darwin-origin-of-species",
       "title": "On the Origin of Species By Means of Natural Selection",
       "authors": "Charles Darwin",
       "year": "1859",
-      "tags": ["science", "biology", "evolution"],
+      "tags": [
+        "science",
+        "biology",
+        "evolution"
+      ],
       "source": "Project Gutenberg",
       "source_id": "1228",
       "source_landing_url": "https://www.gutenberg.org/ebooks/1228",
       "download_url": "https://www.gutenberg.org/ebooks/1228.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Charles Darwin's 1859 work setting out evolution by natural selection — among the most influential books in the history of science."
     },
     {
       "slug": "thoreau-walden",
       "title": "Walden, and On The Duty Of Civil Disobedience",
       "authors": "Henry David Thoreau",
       "year": "1854",
-      "tags": ["essays", "philosophy", "nature"],
+      "tags": [
+        "essays",
+        "philosophy",
+        "nature"
+      ],
       "source": "Project Gutenberg",
       "source_id": "205",
       "source_landing_url": "https://www.gutenberg.org/ebooks/205",
       "download_url": "https://www.gutenberg.org/ebooks/205.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Henry David Thoreau's 1854 account of two years living simply by Walden Pond — a founding text of self-reliance and nature writing."
     },
     {
       "slug": "whitman-leaves-of-grass",
       "title": "Leaves of Grass",
       "authors": "Walt Whitman",
       "year": "1855",
-      "tags": ["poetry", "classic", "american-literature"],
+      "tags": [
+        "poetry",
+        "classic",
+        "american-literature"
+      ],
       "source": "Project Gutenberg",
       "source_id": "1322",
       "source_landing_url": "https://www.gutenberg.org/ebooks/1322",
       "download_url": "https://www.gutenberg.org/ebooks/1322.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "Walt Whitman's ever-expanding book of poems (from 1855), a sprawling democratic hymn to the body, the self, and America."
     },
     {
       "slug": "baum-wizard-of-oz",
       "title": "The Wonderful Wizard of Oz",
       "authors": "L. Frank Baum",
       "year": "1900",
-      "tags": ["fiction", "fantasy", "children"],
+      "tags": [
+        "fiction",
+        "fantasy",
+        "children"
+      ],
       "source": "Project Gutenberg",
       "source_id": "55",
       "source_landing_url": "https://www.gutenberg.org/ebooks/55",
       "download_url": "https://www.gutenberg.org/ebooks/55.epub3.images",
-      "rights": "Public domain in the USA"
+      "rights": "Public domain in the USA",
+      "description": "L. Frank Baum's 1900 fairy tale: a Kansas girl and her dog are swept to the land of Oz and journey to the Emerald City."
     }
   ]
 }

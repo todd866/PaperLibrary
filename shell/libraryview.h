@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
+#include <QListView>
 #include <QPersistentModelIndex>
 #include <QPoint>
 #include <QUrl>
@@ -27,15 +28,40 @@ class QLabel;
 class QLineEdit;
 class QListView;
 class QModelIndex;
+class QWheelEvent;
 class PaperLibrarySectionedModel;
 class QPropertyAnimation;
 class QProcess;
+class QProgressBar;
 class QPushButton;
+class QScrollArea;
+class QSplitter;
 class QStandardItem;
 class QStandardItemModel;
 class QTabBar;
 class QTimer;
 class QToolButton;
+class QKeyEvent;
+
+/**
+ * The shelf grid. Subclassed only to expose currentChanged() -- a view-level virtual Qt calls
+ * whenever the current tile moves (arrow keys, click, programmatic) regardless of which selection
+ * model is live. Connecting to QItemSelectionModel::currentChanged is unreliable because a shelf
+ * switch can replace the selection model out from under a cached connection; this cannot be orphaned.
+ */
+class LibraryGridView : public QListView
+{
+    Q_OBJECT
+public:
+    using QListView::QListView;
+Q_SIGNALS:
+    void currentTileChanged(const QModelIndex &current);
+
+protected:
+    void currentChanged(const QModelIndex &current, const QModelIndex &previous) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+};
 
 /**
  * The document library: a grid of cover tiles for pinned and frequently
@@ -93,6 +119,8 @@ public:
         GeneratedCoverRole, /**< bool: CoverRole holds a generated card, not a render */
         DownrankedRole,     /**< bool: thumbs-down feed signal */
         FinishedReadingRole,/**< bool: long-form item marked completed by the reader */
+        LocalFileRole,      /**< QString local path, cached from UrlRole; lets coverArrived match a
+                                 completed cover to its tiles without constructing a QUrl per row */
     };
 
     /** What the delegate paints under a tile's cover. */
@@ -110,7 +138,14 @@ public:
      */
     static TileCaption tileCaption(const QModelIndex &index);
 
-    explicit LibraryView(LibraryStore *store, QWidget *parent = nullptr, bool deferInitialRefresh = false);
+    /**
+     * @param sharedCorpusModel  a PaperLibraryModel owned elsewhere (the Shell) and shared by
+     *   every library tab. Passing one is what stops each new tab re-parsing the 21k-row catalog
+     *   and rebuilding -- the multi-second freeze telemetry recorded when opening tabs in a burst.
+     *   When null (single-view tests, the render rig) the view creates and owns its own model.
+     */
+    explicit LibraryView(LibraryStore *store, QWidget *parent = nullptr, bool deferInitialRefresh = false,
+                         PaperLibraryModel *sharedCorpusModel = nullptr);
 
     /** Re-read the store and Apple Books; normal shows run it immediately, user-created tabs may defer their first run. */
     void refresh();
@@ -150,6 +185,7 @@ Q_SIGNALS:
 
 protected:
     void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void changeEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -221,6 +257,7 @@ private:
     void renderPendingShelf();
     void renderShelf(Shelf shelf, bool animate);
     bool usesCorpusList(Shelf shelf) const;
+    void publishLocalBooksToCorpus();
     PaperLibrarySectionedModel *paperSectionsForShelf(Shelf shelf) const;
     PaperLibrarySectionedModel *activePaperSections() const;
     void attachCorpusShelf(Shelf shelf);
@@ -239,11 +276,14 @@ private:
     void requestCorpusCovers();
     void requestNextCorpusCoverBatch();
     int requestCorpusCoversForSections(PaperLibrarySectionedModel *sections, int startRow, int maxRequests);
-    void prebuildCorpusShelves();
     void scheduleCorpusPrewarm();
     void prewarmNextCorpusShelf();
     /** Load the corpus catalog on first entry; pick up mtime changes later. */
     void ensurePapersFresh();
+    /** Keep backend-published stale/unknown index health visible on corpus shelves. */
+    void updateCorpusHealthNotice();
+    /** Lay the floating notices over the grid (health at top, action toast at bottom). */
+    void positionOverlayNotices();
     void applyChromePalette();
     /** Non-modal inline notice over the corpus shelf; auto-hides by default. */
     void showPaperNotice(const QString &text, bool autoHide = true);
@@ -253,9 +293,19 @@ private:
     void resetTileDrag();
     bool showAdjacentDocumentsForIndex(const QModelIndex &index);
     void tileClicked(const QModelIndex &index);
+    void buildDetailRail();
+    void backfillReadingProgressTitles();
+    void updateDetailRail(const QModelIndex &current);
+    void refreshDetailRail();
+    void setDetailRailCollapsed(bool collapsed);
     void activateCurrentTile();
     void selectFirstTile();
     void showContextMenu(const QPoint &pos);
+    // Record a reader-reported problem with a book (wrong shelf, bad cover, bad title, other) to
+    // <corpus>/flags.jsonl. The morning check reads these and surfaces / acts on them.
+    void flagBook(const QModelIndex &index, const QString &kind, const QString &note = QString());
+    // Pop the flag-reason menu for the currently selected tile (bound to the "f" key).
+    void flagCurrentTile();
     void editMetadata(const QUrl &url);
     void coverArrived(const QString &filePath, const QString &coverPath);
     void syncViewModeButton();
@@ -307,6 +357,26 @@ private:
     QList<ShelfEntry> m_shelfEntries[DocumentShelfCount];
     QList<Shelf> m_visibleShelves;
     QListView *m_grid = nullptr;
+    // Left detail rail: shows the selected tile's cover, metadata, blurb, topics and actions.
+    QSplitter *m_shelfSplitter = nullptr;
+    QWidget *m_detailRail = nullptr;
+    QToolButton *m_detailToggle = nullptr;
+    QLabel *m_detailCover = nullptr;
+    QLabel *m_detailTitle = nullptr;
+    QLabel *m_detailMeta = nullptr;
+    QProgressBar *m_detailProgress = nullptr;
+    QLabel *m_detailBlurb = nullptr;
+    QWidget *m_detailTopicsBox = nullptr;
+    QLabel *m_detailReason = nullptr;
+    QLabel *m_detailProvenance = nullptr;
+    QLabel *m_detailPlaceholder = nullptr;
+    QWidget *m_detailBody = nullptr;
+    QScrollArea *m_detailScroll = nullptr;
+    QPushButton *m_detailOpen = nullptr;
+    QPushButton *m_detailFinish = nullptr;
+    QPersistentModelIndex m_detailIndex;
+    bool m_detailRailCollapsed = false;
+    bool m_progressTitlesBackfilled = false;
     QStandardItemModel *m_pdfModel;
     QStandardItemModel *m_booksModel;
     QStandardItemModel *m_textbooksModel;
@@ -340,9 +410,11 @@ private:
 
     // The PaperLibrary corpus shelf; all null when no corpus is configured
     QString m_paperCorpusDir;
-    PaperLibraryModel *m_paperModel = nullptr;
+    PaperLibraryModel *m_paperModel = nullptr;      /**< the active corpus model (shared or own) */
+    PaperLibraryModel *m_sharedCorpusModel = nullptr; /**< non-null when the Shell owns it, shared across tabs */
     PaperLibrarySectionedModel *m_paperSections[DocumentShelfCount + 1] = {};
     bool m_paperSectionAttached[DocumentShelfCount + 1] = {};
+    QLabel *m_corpusHealthNotice = nullptr;
     QLabel *m_paperNotice = nullptr;
     QTimer *m_paperNoticeTimer = nullptr;
 };

@@ -5,11 +5,14 @@
 */
 
 #include "paperlibrarymodel.h"
+#include "telemetry.h"
+#include "readingprogress.h"
 
 #include <KConfigGroup>
 #include <KSharedConfig>
 
 #include <QAtomicInt>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -26,22 +29,32 @@
 #include <QUrl>
 
 #include <algorithm>
+#include <utility>
 
 static QString catalogPath(const QString &corpusDir)
 {
     return corpusDir + QStringLiteral("/catalog.jsonl");
 }
 
-static KConfigGroup paperLibraryConfigGroup(const QString &name)
+static QString paperLibraryConfigFilePath()
 {
     const QString overridePath = qEnvironmentVariable("PAPERLIBRARY_CONFIG_PATH");
     const QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
-    const QString configFilePath =
-        !overridePath.isEmpty() ? overridePath : (configDir.isEmpty() ? QStringLiteral("paperlibraryrc") : configDir + QLatin1String("/paperlibraryrc"));
+    return !overridePath.isEmpty() ? overridePath : (configDir.isEmpty() ? QStringLiteral("paperlibraryrc") : configDir + QLatin1String("/paperlibraryrc"));
+}
+
+static KConfigGroup paperLibraryConfigGroupForPath(const QString &configFilePath, const QString &name)
+{
     return KSharedConfig::openConfig(configFilePath, KConfig::SimpleConfig)->group(name);
 }
 
+static KConfigGroup paperLibraryConfigGroup(const QString &name)
+{
+    return paperLibraryConfigGroupForPath(paperLibraryConfigFilePath(), name);
+}
+
 static const char DOWNRANKED_SLUGS_KEY[] = "DownrankedSlugs";
+static const char FINISHED_SLUGS_KEY[] = "FinishedSlugs";
 static constexpr int InitialCorpusRows = 360;
 static constexpr int CorpusFetchBatchRows = 240;
 
@@ -197,6 +210,17 @@ static QString normalizedDuplicateWorkText(QString text)
     return text.simplified();
 }
 
+// An imported book's title is often a raw filename dump — a bare paren year, a download-site stamp
+// ("( PDFDrive )"), a "final 2024"/"retail"/"_ocr" marker. When present, prefer the clean librarian
+// title over the imported one. Curated feed titles (no such markers) are left untouched.
+static bool titleHasImportCruft(const QString &title)
+{
+    static const QRegularExpression cruft(
+        QStringLiteral("\\((?:19|20)\\d\\d\\)|\\bpdf ?drive\\b|\\bz-?lib(?:gen)?\\b|allitebooks|\\bfinal\\s+20\\d\\d\\b|\\bretail\\b|_ocr\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return cruft.match(title).hasMatch();
+}
+
 static QString canonicalDuplicateWorkKey(const QString &title, const QString &authors = QString(), const QString &context = QString())
 {
     const QString titleKey = normalizedDuplicateWorkText(title);
@@ -223,11 +247,18 @@ static QString canonicalDuplicateWorkKey(const QString &title, const QString &au
         return QStringLiteral("work|utopia-of-rules|graeber");
     }
 
-    if (titleKey.size() < 12) {
+    if (titleKey.isEmpty()) {
         return QString();
     }
+    // Title alone must be distinctive — short titles collide across unrelated works, so
+    // keep the conservative floor there. But a title PLUS a known author is strong enough
+    // to treat as the same work even when the title is short ("Siddhartha" + "Hermann
+    // Hesse"), which is what lets duplicate editions with one missing author collapse.
     if (authorKey.isEmpty()) {
-        return QStringLiteral("title|%1").arg(titleKey);
+        return titleKey.size() < 12 ? QString() : QStringLiteral("title|%1").arg(titleKey);
+    }
+    if (titleKey.size() < 4) {
+        return QString();
     }
     return QStringLiteral("title|%1|author|%2").arg(titleKey, authorKey.left(60).trimmed());
 }
@@ -604,13 +635,48 @@ static QString derivedPdfPath(const QString &corpusDir, const QString &slug)
     return corpusDir + QStringLiteral("/pdfs/") + slug + QStringLiteral(".pdf");
 }
 
-// A read-only, immutable sqlite file: URI for @p dbPath. Percent-encoding the
-// path keeps a corpus directory whose name contains characters significant in
-// a URI (spaces, %, ?, #) from producing a malformed URI — which would open
-// the wrong file or fail silently.
-static QString readOnlyImmutableUri(const QString &dbPath)
+enum class ReadOnlyDatabaseMode {
+    LiveWalAware,
+    ImmutableSnapshot,
+};
+
+// catalog.db is a live backend database and commonly uses WAL. immutable=1 tells SQLite that the
+// file will never change and therefore makes it ignore an uncheckpointed -wal file. Derived
+// search.db/graph.db files are built under temporary names and atomically published, so immutable
+// reads remain safe and avoid taking locks on those large static indexes.
+static ReadOnlyDatabaseMode readOnlyDatabaseMode(const QString &dbPath)
 {
-    return QUrl::fromLocalFile(dbPath).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro&immutable=1");
+    return QFileInfo(dbPath).fileName().compare(QLatin1String("catalog.db"), Qt::CaseInsensitive) == 0
+        ? ReadOnlyDatabaseMode::LiveWalAware
+        : ReadOnlyDatabaseMode::ImmutableSnapshot;
+}
+
+// Percent-encoding keeps paths containing URI-significant characters (spaces, %, ?, #) valid.
+static QString readOnlyDatabaseUri(const QString &dbPath, ReadOnlyDatabaseMode mode)
+{
+    QString uri = QUrl::fromLocalFile(dbPath).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro");
+    if (mode == ReadOnlyDatabaseMode::ImmutableSnapshot) {
+        uri += QStringLiteral("&immutable=1");
+    }
+    return uri;
+}
+
+static bool openReadOnlyDatabase(QSqlDatabase &db, const QString &dbPath)
+{
+    const ReadOnlyDatabaseMode mode = readOnlyDatabaseMode(dbPath);
+    db.setDatabaseName(readOnlyDatabaseUri(dbPath, mode));
+    db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
+    if (!db.open()) {
+        return false;
+    }
+    if (mode == ReadOnlyDatabaseMode::LiveWalAware) {
+        QSqlQuery pragma(db);
+        if (!pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000")) || !pragma.exec(QStringLiteral("PRAGMA query_only=ON"))) {
+            db.close();
+            return false;
+        }
+    }
+    return true;
 }
 
 static QString nextPaperLibraryDbConnectionName(const QString &prefix)
@@ -629,9 +695,7 @@ static bool catalogDbHasTable(const QString &dbPath, const QString &tableName)
     bool found = false;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-        db.setDatabaseName(readOnlyImmutableUri(dbPath));
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
-        if (db.open()) {
+        if (openReadOnlyDatabase(db, dbPath)) {
             QSqlQuery query(db);
             query.prepare(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"));
             query.addBindValue(tableName);
@@ -641,6 +705,24 @@ static bool catalogDbHasTable(const QString &dbPath, const QString &tableName)
     }
     QSqlDatabase::removeDatabase(connectionName);
     return found;
+}
+
+// Resolve which database currently holds a derived-index table. The backend keeps
+// derived indexes OUT of the durable catalog.db so its snapshot stays small: the FTS
+// index lives in search.db and the semantic graph in graph/graph.db. Prefer that
+// dedicated file; fall back to catalog.db for older corpora that still embed the
+// index. Returns the DB path holding @p table, or an empty string if unavailable.
+static QString resolveIndexDb(const QString &corpusDir, const QString &dedicatedRelative, const QString &table)
+{
+    const QString dedicated = corpusDir + QLatin1Char('/') + dedicatedRelative;
+    if (catalogDbHasTable(dedicated, table)) {
+        return dedicated;
+    }
+    const QString catalog = corpusDir + QStringLiteral("/catalog.db");
+    if (catalogDbHasTable(catalog, table)) {
+        return catalog;
+    }
+    return QString();
 }
 
 static QString ftsMatchQuery(const QString &raw)
@@ -668,6 +750,152 @@ static QString normalizedFocusPathLookupKey(const QString &path)
     return trimmed.isEmpty() ? QString() : QDir::cleanPath(trimmed).toCaseFolded();
 }
 
+static QStringList jsonStringList(const QJsonValue &value)
+{
+    QStringList result;
+    if (!value.isArray()) {
+        return result;
+    }
+    for (const QJsonValue &item : value.toArray()) {
+        const QString text = item.toString().trimmed();
+        if (!text.isEmpty()) {
+            result.append(text);
+        }
+    }
+    return result;
+}
+
+static PaperLibraryModel::CorpusHealth readCorpusHealth(const QString &corpusDir)
+{
+    PaperLibraryModel::CorpusHealth health;
+    QFile file(QDir(corpusDir).filePath(QStringLiteral("corpus_state.json")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        health.issues.append(QStringLiteral("corpus_state.json is missing"));
+        return health;
+    }
+
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        health.issues.append(QStringLiteral("corpus_state.json is invalid"));
+        return health;
+    }
+
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("schema_version")).toInt(-1) != 1) {
+        health.issues.append(QStringLiteral("corpus_state.json uses an unsupported schema"));
+        return health;
+    }
+
+    health.generatedAt = object.value(QStringLiteral("generated_at")).toString().trimmed();
+    health.issues = jsonStringList(object.value(QStringLiteral("issues")));
+    health.warnings = jsonStringList(object.value(QStringLiteral("warnings")));
+    const QJsonObject catalog = object.value(QStringLiteral("catalog")).toObject();
+    if (catalog.value(QStringLiteral("rows")).isDouble()) {
+        health.catalogRows = catalog.value(QStringLiteral("rows")).toInt(-1);
+    }
+    health.catalogRevision = catalog.value(QStringLiteral("revision")).toString().trimmed();
+    const QJsonObject artifacts = object.value(QStringLiteral("artifacts")).toObject();
+    const QJsonObject manifest = artifacts.value(QStringLiteral("manifest")).toObject();
+    const QJsonValue manifestFresh = manifest.value(QStringLiteral("fresh"));
+    const QJsonValue searchFresh = artifacts.value(QStringLiteral("search")).toObject().value(QStringLiteral("fresh"));
+    const QJsonValue graphFresh = artifacts.value(QStringLiteral("graph")).toObject().value(QStringLiteral("fresh"));
+    health.manifestFresh = manifestFresh.toBool(false);
+    health.manifestSha256 = manifest.value(QStringLiteral("sha256")).toString().trimmed();
+    health.manifestSourceRevision = manifest.value(QStringLiteral("manifest_source_revision")).toString().trimmed();
+    health.searchFresh = searchFresh.toBool(false);
+    health.graphFresh = graphFresh.toBool(false);
+
+    const bool complete = object.value(QStringLiteral("healthy")).isBool()
+        && manifestFresh.isBool() && searchFresh.isBool() && graphFresh.isBool();
+    if (!complete) {
+        health.status = PaperLibraryModel::CorpusHealth::Degraded;
+        health.searchFresh = false;
+        health.graphFresh = false;
+        health.issues.append(QStringLiteral("corpus health state is incomplete"));
+    } else if (object.value(QStringLiteral("healthy")).toBool()) {
+        if (health.manifestFresh && health.searchFresh && health.graphFresh) {
+            health.status = PaperLibraryModel::CorpusHealth::Healthy;
+        } else {
+            health.status = PaperLibraryModel::CorpusHealth::Degraded;
+            health.searchFresh = false;
+            health.graphFresh = false;
+            health.issues.append(QStringLiteral("corpus health state is inconsistent"));
+        }
+    } else {
+        health.status = PaperLibraryModel::CorpusHealth::Degraded;
+        if (health.issues.isEmpty()) {
+            health.issues.append(QStringLiteral("one or more corpus artifacts are stale"));
+        }
+    }
+
+    if (health.searchFresh) {
+        const QString searchDb = resolveIndexDb(corpusDir, QStringLiteral("search.db"), QStringLiteral("paper_fts"));
+        if (searchDb.isEmpty() || !catalogDbHasTable(searchDb, QStringLiteral("paper_search_rows"))) {
+            health.status = PaperLibraryModel::CorpusHealth::Degraded;
+            health.searchFresh = false;
+            health.issues.append(QStringLiteral("full-text index is marked fresh but missing"));
+        }
+    }
+    if (health.graphFresh
+        && resolveIndexDb(corpusDir, QStringLiteral("graph/graph.db"), QStringLiteral("related_edges")).isEmpty()) {
+        health.status = PaperLibraryModel::CorpusHealth::Degraded;
+        health.graphFresh = false;
+        health.issues.append(QStringLiteral("semantic graph is marked fresh but missing"));
+    }
+    health.issues.removeDuplicates();
+    return health;
+}
+
+static void attestManifest(const QString &corpusDir,
+                           const QByteArray &catalogBytes,
+                           PaperLibraryModel::CorpusHealth &health)
+{
+    QFile file(QDir(corpusDir).filePath(QStringLiteral("catalog.meta.json")));
+    QJsonParseError error;
+    QJsonDocument document;
+    if (file.open(QIODevice::ReadOnly)) {
+        document = QJsonDocument::fromJson(file.readAll(), &error);
+    }
+    const QJsonObject metadata = document.isObject() ? document.object() : QJsonObject();
+    const QString actualHash = QString::fromLatin1(
+        QCryptographicHash::hash(catalogBytes, QCryptographicHash::Sha256).toHex());
+    const QString sidecarHash = metadata.value(QStringLiteral("manifest_sha256")).toString().trimmed();
+    const QString sidecarCatalogRevision = metadata.value(QStringLiteral("catalog_revision")).toString().trimmed();
+    const QString sidecarSourceRevision = metadata.value(QStringLiteral("manifest_source_revision")).toString().trimmed();
+    const int sidecarRows = metadata.value(QStringLiteral("rows")).toInt(-1);
+    bool valid = error.error == QJsonParseError::NoError
+        && metadata.value(QStringLiteral("schema_version")).toInt(-1) == 1
+        && !sidecarHash.isEmpty() && sidecarHash == actualHash
+        && sidecarRows >= 0;
+    if (health.catalogRows >= 0) {
+        valid = valid && sidecarRows == health.catalogRows;
+    }
+    if (!health.catalogRevision.isEmpty()) {
+        valid = valid && sidecarCatalogRevision == health.catalogRevision;
+    }
+    if (!health.manifestSha256.isEmpty()) {
+        valid = valid && health.manifestSha256 == sidecarHash;
+    }
+    if (!health.manifestSourceRevision.isEmpty()) {
+        valid = valid && health.manifestSourceRevision == sidecarSourceRevision;
+    }
+    if (health.status == PaperLibraryModel::CorpusHealth::Healthy) {
+        valid = valid && health.manifestFresh
+            && !health.catalogRevision.isEmpty()
+            && !health.manifestSha256.isEmpty()
+            && !health.manifestSourceRevision.isEmpty();
+    }
+    health.manifestFresh = health.manifestFresh && valid;
+    if (!valid) {
+        health.status = PaperLibraryModel::CorpusHealth::Degraded;
+        health.searchFresh = false;
+        health.graphFresh = false;
+        health.issues.prepend(QStringLiteral("catalog manifest attestation is missing or mismatched"));
+        health.issues.removeDuplicates();
+    }
+}
+
 PaperLibraryModel::PaperLibraryModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -675,17 +903,18 @@ PaperLibraryModel::PaperLibraryModel(QObject *parent)
 
 PaperLibraryModel::~PaperLibraryModel()
 {
-    if (!m_worker) {
-        return;
+    // A newer catalog generation may start from the previous generation's loaded() callback,
+    // before that previous QThread's finished event is delivered. Reclaim every such tail worker,
+    // not just m_worker (which always names the newest generation).
+    const QList<QThread *> workers = m_workers.values();
+    for (QThread *worker : workers) {
+        worker->disconnect(this);
     }
-    // The worker only touches this object through queued calls, which die with
-    // the object; waiting here keeps `this` valid for any call it is posting
-    // right now. Drop the finished() handler first — it would deleteLater() the
-    // thread on the event loop, but that never spins during teardown and its
-    // receiver (this) is going away, so reclaim the thread directly instead.
-    m_worker->disconnect(this);
-    m_worker->wait();
-    delete m_worker;
+    for (QThread *worker : workers) {
+        worker->wait();
+        delete worker;
+    }
+    m_workers.clear();
     m_worker = nullptr;
 }
 
@@ -707,38 +936,63 @@ QString PaperLibraryModel::corpusDir() const
 
 void PaperLibraryModel::load(const QString &corpusDir)
 {
-    if (m_loading) {
+    const QDateTime catalogMtime = QFileInfo(catalogPath(corpusDir)).lastModified();
+    const QDateTime manifestMtime = QFileInfo(QDir(corpusDir).filePath(QStringLiteral("catalog.meta.json"))).lastModified();
+    const QDateTime healthMtime = QFileInfo(QDir(corpusDir).filePath(QStringLiteral("corpus_state.json"))).lastModified();
+    // Repeated ensure-loaded calls for the same snapshot are no-ops. A different corpus or a
+    // catalog whose mtime moved is a new generation and may supersede an in-flight parse.
+    if (m_loading && corpusDir == m_corpusDir && catalogMtime == m_catalogMtime
+        && manifestMtime == m_manifestMtime && healthMtime == m_healthMtime) {
         return;
     }
     m_loading = true;
     m_corpusDir = corpusDir;
-    m_catalogMtime = QFileInfo(catalogPath(corpusDir)).lastModified();
+    m_catalogMtime = catalogMtime;
+    m_manifestMtime = manifestMtime;
+    m_healthMtime = healthMtime;
+    const quint64 generation = ++m_loadGeneration;
 
     // Parse and enrich on a worker thread — an ~18k-line catalog must never
-    // stall the UI — then land the rows in one queued model reset
-    m_worker = QThread::create([this, corpusDir]() {
+    // stall the UI — then land the newest generation in one queued model reset.
+    QThread *const worker = QThread::create([this, corpusDir, generation]() {
         QList<Record> records;
+        QByteArray catalogBytes;
         QFile catalog(catalogPath(corpusDir));
         if (catalog.open(QIODevice::ReadOnly)) {
-            records = parseCatalog(catalog.readAll());
+            catalogBytes = catalog.readAll();
+            records = parseCatalog(catalogBytes);
         }
         sortRecords(records);
         enrichRecords(records, corpusDir);
-        QMetaObject::invokeMethod(this, [this, records]() { finishLoad(records); }, Qt::QueuedConnection);
+        CorpusHealth health = readCorpusHealth(corpusDir);
+        attestManifest(corpusDir, catalogBytes, health);
+        QMetaObject::invokeMethod(this,
+                                  [this, records = std::move(records), health = std::move(health), generation]() mutable {
+                                      finishLoad(std::move(records), std::move(health), generation);
+                                  },
+                                  Qt::QueuedConnection);
     });
-    connect(m_worker, &QThread::finished, this, [this]() {
-        m_worker->deleteLater();
-        m_worker = nullptr;
+    worker->setParent(this);
+    m_workers.insert(worker);
+    m_worker = worker;
+    connect(worker, &QThread::finished, this, [this, worker]() {
+        m_workers.remove(worker);
+        if (m_worker == worker) {
+            m_worker = nullptr;
+        }
+        worker->deleteLater();
     });
-    m_worker->start();
+    worker->start();
 }
 
 void PaperLibraryModel::reloadIfChanged()
 {
-    if (!m_loaded || m_loading) {
+    if (!m_loaded) {
         return;
     }
-    if (QFileInfo(catalogPath(m_corpusDir)).lastModified() != m_catalogMtime) {
+    if (QFileInfo(catalogPath(m_corpusDir)).lastModified() != m_catalogMtime
+        || QFileInfo(QDir(m_corpusDir).filePath(QStringLiteral("catalog.meta.json"))).lastModified() != m_manifestMtime
+        || QFileInfo(QDir(m_corpusDir).filePath(QStringLiteral("corpus_state.json"))).lastModified() != m_healthMtime) {
         load(m_corpusDir);
     }
 }
@@ -748,15 +1002,87 @@ bool PaperLibraryModel::isLoaded() const
     return m_loaded;
 }
 
-void PaperLibraryModel::finishLoad(const QList<Record> &records)
+void PaperLibraryModel::finishLoad(QList<Record> records, CorpusHealth health, quint64 generation)
 {
+    if (generation != m_loadGeneration) {
+        return; // superseded worker: never publish an older catalog snapshot
+    }
+    if (health.catalogRows >= 0 && health.catalogRows != records.count()) {
+        health.status = CorpusHealth::Degraded;
+        health.searchFresh = false;
+        health.graphFresh = false;
+        health.issues.prepend(QStringLiteral("corpus health covers %1 of %2 catalog rows").arg(health.catalogRows).arg(records.count()));
+        health.issues.removeDuplicates();
+    }
+    TelemetryScope op(QStringLiteral("corpus_load")); // the reset + downstream shelf builds this triggers
     beginResetModel();
-    m_records = records;
-    rebuildLookupRows();
+    m_catalogRecords = std::move(records);
+    m_corpusHealth = std::move(health);
+    rebuildRecords();
     endResetModel();
     m_loading = false;
     m_loaded = true;
     Q_EMIT loaded(m_records.count());
+}
+
+/** Case- and punctuation-insensitive title key, for matching an import to a catalog row. */
+static QString titleKey(const QString &title)
+{
+    QString key;
+    key.reserve(title.size());
+    for (const QChar ch : title) {
+        if (ch.isLetterOrNumber()) {
+            key.append(ch.toCaseFolded());
+        }
+    }
+    return key;
+}
+
+void PaperLibraryModel::rebuildRecords()
+{
+    m_records = m_catalogRecords;
+    if (!m_localBooks.isEmpty()) {
+        QSet<QString> known;
+        known.reserve(m_catalogRecords.size());
+        for (const Record &record : std::as_const(m_catalogRecords)) {
+            known.insert(titleKey(record.title));
+        }
+        for (const Record &book : std::as_const(m_localBooks)) {
+            // The catalog row is the richer one: it carries genre, topics and reading level.
+            if (!known.contains(titleKey(book.title))) {
+                m_records.append(book);
+            }
+        }
+    }
+    rebuildLookupRows();
+}
+
+void PaperLibraryModel::setLocalBooks(const QList<Record> &books)
+{
+    // LibraryView::refresh() runs on every library-tab show and calls this. A reset here forces
+    // every sectioned proxy to rebuild over the whole corpus, so an unconditional reset made
+    // switching to a library tab pay a 21k-row rebuild every time. Imports rarely change, so skip
+    // the reset when the set is byte-for-byte the same. slug + title + path identify a local book.
+    QByteArray signature;
+    signature.reserve(books.size() * 64);
+    for (const Record &book : books) {
+        signature += book.slug.toUtf8();
+        signature += '\x1f';
+        signature += book.title.toUtf8();
+        signature += '\x1f';
+        signature += book.pdfPath.toUtf8();
+        signature += '\x1e';
+    }
+    if (m_localBooksSet && signature == m_localBooksSignature) {
+        return;
+    }
+    m_localBooksSet = true;
+    m_localBooksSignature = signature;
+
+    beginResetModel();
+    m_localBooks = books;
+    rebuildRecords();
+    endResetModel();
 }
 
 int PaperLibraryModel::rowCount(const QModelIndex &parent) const
@@ -810,8 +1136,40 @@ static bool containsAnyNeedle(const QString &text, const QStringList &needles)
     });
 }
 
+// Memoize a pure classifier keyed by its (content) inputs. The topic/shelf matchers below are the
+// per-row regex sweep that dominated "open a new tab and click the subtabs" — each library tab
+// builds its own models and re-classified the whole corpus. Because the result is a pure function of
+// the input string, the first call computes and every later one (any sectioned model, any tab) is a
+// hash lookup; keying by content means it never goes stale, so no invalidation is needed. The static
+// lives per template instantiation, and each call site passes a uniquely-typed lambda, so every
+// wrapped matcher gets its own cache.
+template <typename Fn>
+static bool memoMatch(const QString &key, Fn &&compute)
+{
+    static QHash<QString, bool> memo;
+    const auto it = memo.constFind(key);
+    if (it != memo.cend()) {
+        return it.value();
+    }
+    return *memo.insert(key, compute());
+}
+
+// String-valued equivalent for the per-row derivations (publication kind, etc.) that internally run
+// several of the matchers above; memoizing at this level caches a whole cluster of heuristics at once.
+template <typename Fn>
+static QString memoMatchStr(const QString &key, Fn &&compute)
+{
+    static QHash<QString, QString> memo;
+    const auto it = memo.constFind(key);
+    if (it != memo.cend()) {
+        return it.value();
+    }
+    return *memo.insert(key, compute());
+}
+
 static bool recordMatchesMnd(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyWholeWord(text, {QStringLiteral("mnd"), QStringLiteral("als"), QStringLiteral("sod1"), QStringLiteral("c9orf72"), QStringLiteral("tdp43")})
         || containsAnyNeedle(text,
                              {QStringLiteral("motor neurone"),
@@ -823,10 +1181,12 @@ static bool recordMatchesMnd(const QString &text)
                               QStringLiteral("neurodegenerative"),
                               QStringLiteral("mnd-funnel"),
                               QStringLiteral("md-project-review-set")});
+    });
 }
 
 static bool recordMatchesPsychiatry(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     if (containsAnyNeedle(text,
                           {QStringLiteral("great depression"),
                            QStringLiteral("world war"),
@@ -861,10 +1221,12 @@ static bool recordMatchesPsychiatry(const QString &text)
                               QStringLiteral("autism"),
                               QStringLiteral("ptsd"),
                               QStringLiteral("personality disorder")});
+    });
 }
 
 static bool recordMatchesPaediatrics(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text,
                              {QStringLiteral("paediatric"),
                               QStringLiteral("pediatric"),
@@ -874,10 +1236,12 @@ static bool recordMatchesPaediatrics(const QString &text)
                               QStringLiteral("children"),
                               QStringLiteral("adolescent"),
                               QStringLiteral("developmental")});
+    });
 }
 
 static bool recordMatchesObgyn(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text,
                              {QStringLiteral("obstetric"),
                               QStringLiteral("gynecology"),
@@ -889,11 +1253,13 @@ static bool recordMatchesObgyn(const QString &text)
                               QStringLiteral("antenatal"),
                               QStringLiteral("postpartum"),
                               QStringLiteral("reproductive")});
+    });
 }
 
 static bool recordMatchesBeyondBayes(const QString &text, const QString &source, const QString &journal)
 {
     Q_UNUSED(journal);
+    return memoMatch(text + QLatin1Char('\x1f') + source, [&]() -> bool {
     return source.contains(QStringLiteral("highdimensional")) || source.contains(QStringLiteral("beyond-bayes")) || source.contains(QStringLiteral("beyond_bayes"))
         || containsAnyNeedle(text,
                              {QStringLiteral("beyond bayes"),
@@ -905,10 +1271,12 @@ static bool recordMatchesBeyondBayes(const QString &text, const QString &source,
                               QStringLiteral("timing inaccessibility"),
                               QStringLiteral("high-dimensional coherence"),
                               QStringLiteral("coherence time in biological oscillator")});
+    });
 }
 
 static bool recordMatchesPeerReview(const QString &text, const QString &source)
 {
+    return memoMatch(text + QLatin1Char('\x1f') + source, [&]() -> bool {
     return source.contains(QStringLiteral("peer-review")) || source.contains(QStringLiteral("peerreview")) || source.contains(QStringLiteral("review-assignment"))
         || containsAnyNeedle(text,
                              {QStringLiteral("peer review"),
@@ -917,15 +1285,19 @@ static bool recordMatchesPeerReview(const QString &text, const QString &source)
                               QStringLiteral("minor revisions"),
                               QStringLiteral("manuscript review"),
                               QStringLiteral("referee report")});
+    });
 }
 
 static bool recordMatchesGameOfThrones(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text, {QStringLiteral("game of thrones"), QStringLiteral("song of ice and fire"), QStringLiteral("george r. r. martin"), QStringLiteral("george rr martin")});
+    });
 }
 
 static bool recordLooksBookishFromText(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text,
                              {QStringLiteral("book:"),
                               QStringLiteral("aa_book"),
@@ -939,10 +1311,12 @@ static bool recordLooksBookishFromText(const QString &text)
                               QStringLiteral("bantam books"),
                               QStringLiteral("bantam spectra"),
                               QStringLiteral("penguin random house")});
+    });
 }
 
 static bool recordMatchesFiction(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     if (containsAnyNeedle(text, {QStringLiteral("nonfiction"), QStringLiteral("non-fiction"), QStringLiteral("non fiction")})) {
         return false;
     }
@@ -990,10 +1364,12 @@ static bool recordMatchesFiction(const QString &text)
     }
     return containsAnyWholeWord(text, {QStringLiteral("fiction"), QStringLiteral("fantasy"), QStringLiteral("novel")})
         || text.contains(QStringLiteral("speculative fiction")) || text.contains(QStringLiteral("science fiction"));
+    });
 }
 
 static bool recordMatchesCaroLbj(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text,
                              {QStringLiteral("robert caro"),
                               QStringLiteral("robert a. caro"),
@@ -1005,10 +1381,12 @@ static bool recordMatchesCaroLbj(const QString &text)
                               QStringLiteral("means of ascent"),
                               QStringLiteral("master of the senate"),
                               QStringLiteral("passage of power")});
+    });
 }
 
 static bool recordMatchesPolitics(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return recordMatchesCaroLbj(text)
         || containsAnyNeedle(text,
                              {QStringLiteral("politics"),
@@ -1018,20 +1396,26 @@ static bool recordMatchesPolitics(const QString &text)
                               QStringLiteral("government"),
                               QStringLiteral("public policy"),
                               QStringLiteral("presidential biography")});
+    });
 }
 
 static bool recordMatchesGraeber(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return containsAnyNeedle(text, {QStringLiteral("david graeber"), QStringLiteral("graeber"), QStringLiteral("bullshit jobs"), QStringLiteral("debt:"), QStringLiteral("dawn of everything")});
+    });
 }
 
 static bool recordMatchesAnthropology(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return recordMatchesGraeber(text) || containsAnyNeedle(text, {QStringLiteral("anthropolog"), QStringLiteral("ethnograph"), QStringLiteral("archaeolog"), QStringLiteral("kinship"), QStringLiteral("debt and exchange")});
+    });
 }
 
 static bool recordMatchesMedicine(const QString &text)
 {
+    return memoMatch(text, [&]() -> bool {
     return recordMatchesMnd(text) || recordMatchesPsychiatry(text) || recordMatchesPaediatrics(text) || recordMatchesObgyn(text)
         || containsAnyNeedle(text,
                              {QStringLiteral("medicine"),
@@ -1047,6 +1431,7 @@ static bool recordMatchesMedicine(const QString &text)
                               QStringLiteral("pharmacology"),
                               QStringLiteral("surgery"),
                               QStringLiteral("emergency")});
+    });
 }
 
 static bool recordMatchesClinicalEssentials(const QString &text)
@@ -1109,6 +1494,7 @@ static bool recordMatchesPatientSafety(const QString &text)
 
 static bool recordMatchesNonfiction(const QString &text, const QString &source, const QString &journal)
 {
+    return memoMatch(text + QLatin1Char('\x1f') + source + QLatin1Char('\x1f') + journal, [&]() -> bool {
     if (recordMatchesFiction(text)) {
         return false;
     }
@@ -1131,10 +1517,12 @@ static bool recordMatchesNonfiction(const QString &text, const QString &source, 
                                                                                                                     QStringLiteral("politics"),
                                                                                                                     QStringLiteral("anthropology"),
                                                                                                                     QStringLiteral("science")}));
+    });
 }
 
 static bool recordMatchesTextbook(const QString &text, const QString &source)
 {
+    return memoMatch(text + QLatin1Char('\x1f') + source, [&]() -> bool {
     const bool bookSource = source.startsWith(QLatin1String("book:")) || source == QLatin1String("aa_book");
     const bool textbookSignal = containsAnyNeedle(text,
                                                   {QStringLiteral("textbook"),
@@ -1159,6 +1547,7 @@ static bool recordMatchesTextbook(const QString &text, const QString &source)
                                                    QStringLiteral("medical"),
                                                    QStringLiteral("medical students")});
     return (bookSource && textbookSignal) || text.contains(QStringLiteral("textbook of "));
+    });
 }
 
 static bool recordMatchesBook(const QString &text, const QString &source, const QString &journal)
@@ -1182,6 +1571,7 @@ static QString sourceRowDuplicateWorkKey(const PaperLibraryModel *source, int ro
 
 static QString publicationKindFor(const QString &text, const QString &source, const QString &journal)
 {
+    return memoMatchStr(text + QLatin1Char('\x1f') + source + QLatin1Char('\x1f') + journal, [&]() -> QString {
     if (recordMatchesTextbook(text, source)) {
         return QStringLiteral("Textbooks");
     }
@@ -1201,6 +1591,7 @@ static QString publicationKindFor(const QString &text, const QString &source, co
         return QStringLiteral("Studies");
     }
     return QStringLiteral("Papers");
+    });
 }
 
 static QString sourceBucketFor(const QString &source)
@@ -1538,6 +1929,18 @@ QVariant PaperLibraryModel::data(const QModelIndex &index, int role) const
         return record.citedByCount;
     case RelatedCountRole:
         return record.relatedCount;
+    case GenreRole:
+        return record.genre;
+    case RecordKindRole:
+        return record.recordKind;
+    case DescriptionRole:
+        return record.description;
+    case TopicsRole:
+        return record.topics;
+    case ReadingLevelRole:
+        return record.readingLevel;
+    case SubgenreRole:
+        return record.subgenre;
     case HaystackRole:
         return record.haystack;
     case MissingRole:
@@ -1581,22 +1984,66 @@ int PaperLibraryModel::rowForLookupPath(const QString &path) const
     return key.isEmpty() ? -1 : m_rowsByLookupPath.value(key, -1);
 }
 
+// A title reduced to lowercase letters and digits, so "The Power Broker" and "the power broker!"
+// map to one key. Used only for the local-shelf -> corpus blurb cross-reference (best-effort).
+static QString normalizedTitleLookupKey(const QString &title)
+{
+    QString key;
+    key.reserve(title.size());
+    for (const QChar ch : title) {
+        if (ch.isLetterOrNumber()) {
+            key.append(ch.toCaseFolded());
+        }
+    }
+    return key;
+}
+
+int PaperLibraryModel::rowForLookupTitle(const QString &title) const
+{
+    const QString key = normalizedTitleLookupKey(title);
+    return key.size() >= 6 ? m_rowsByLookupTitle.value(key, -1) : -1;
+}
+
+int PaperLibraryModel::rowForAnyTitle(const QString &title) const
+{
+    const QString key = normalizedTitleLookupKey(title);
+    return key.size() >= 6 ? m_rowsByAnyTitle.value(key, -1) : -1;
+}
+
+PaperLibraryModel::CorpusHealth PaperLibraryModel::corpusHealth() const
+{
+    return m_corpusHealth;
+}
+
 bool PaperLibraryModel::hasFullTextSearchIndex() const
 {
-    const QString dbPath = m_corpusDir + QStringLiteral("/catalog.db");
-    return catalogDbHasTable(dbPath, QStringLiteral("paper_fts")) && catalogDbHasTable(dbPath, QStringLiteral("paper_search_rows"));
+    // FTS index lives in search.db (backend build_search_index.py); older corpora embed it in catalog.db.
+    const QString dbPath = resolveIndexDb(m_corpusDir, QStringLiteral("search.db"), QStringLiteral("paper_fts"));
+    return !dbPath.isEmpty() && catalogDbHasTable(dbPath, QStringLiteral("paper_search_rows"));
 }
 
 bool PaperLibraryModel::hasSemanticGraph() const
 {
-    return catalogDbHasTable(m_corpusDir + QStringLiteral("/catalog.db"), QStringLiteral("related_edges"));
+    // Semantic graph lives in graph/graph.db (backend build_semantic_graph.py); older corpora embed it in catalog.db.
+    return !resolveIndexDb(m_corpusDir, QStringLiteral("graph/graph.db"), QStringLiteral("related_edges")).isEmpty();
+}
+
+bool PaperLibraryModel::hasFreshFullTextSearchIndex() const
+{
+    return m_corpusHealth.searchFresh && hasFullTextSearchIndex();
+}
+
+bool PaperLibraryModel::hasFreshSemanticGraph() const
+{
+    return m_corpusHealth.graphFresh && hasSemanticGraph();
 }
 
 QList<int> PaperLibraryModel::fullTextSearchRows(const QString &queryText, int limit) const
 {
     QList<int> rows;
     const QString match = ftsMatchQuery(queryText);
-    if (match.isEmpty() || limit <= 0 || !hasFullTextSearchIndex()) {
+    const QString dbPath = resolveIndexDb(m_corpusDir, QStringLiteral("search.db"), QStringLiteral("paper_fts"));
+    if (match.isEmpty() || limit <= 0 || dbPath.isEmpty()) {
         return rows;
     }
 
@@ -1604,9 +2051,7 @@ QList<int> PaperLibraryModel::fullTextSearchRows(const QString &queryText, int l
     QSet<int> seenRows;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-        db.setDatabaseName(readOnlyImmutableUri(m_corpusDir + QStringLiteral("/catalog.db")));
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
-        if (db.open()) {
+        if (openReadOnlyDatabase(db, dbPath)) {
             QSqlQuery query(db);
             query.prepare(QStringLiteral(
                 "SELECT sr.slug, bm25(paper_fts, 8.0, 5.0, 1.5, 3.0, 9.0, 1.0, 1.0) AS rank "
@@ -1638,7 +2083,8 @@ QList<int> PaperLibraryModel::relatedRowsForSlug(const QString &slug, int limit)
 {
     QList<int> rows;
     const QString normalizedSlug = slug.trimmed();
-    if (normalizedSlug.isEmpty() || limit <= 0 || !hasSemanticGraph()) {
+    const QString dbPath = resolveIndexDb(m_corpusDir, QStringLiteral("graph/graph.db"), QStringLiteral("related_edges"));
+    if (normalizedSlug.isEmpty() || limit <= 0 || dbPath.isEmpty()) {
         return rows;
     }
 
@@ -1646,9 +2092,7 @@ QList<int> PaperLibraryModel::relatedRowsForSlug(const QString &slug, int limit)
     QSet<int> seenRows;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-        db.setDatabaseName(readOnlyImmutableUri(m_corpusDir + QStringLiteral("/catalog.db")));
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
-        if (db.open()) {
+        if (openReadOnlyDatabase(db, dbPath)) {
             QSqlQuery query(db);
             query.prepare(QStringLiteral(
                 "SELECT target_slug "
@@ -1680,9 +2124,23 @@ void PaperLibraryModel::rebuildLookupRows()
     m_rowsByLookupSlug.clear();
     m_rowsByLookupDoi.clear();
     m_rowsByLookupPath.clear();
+    m_rowsByLookupTitle.clear();
+    m_rowsByAnyTitle.clear();
 
     for (int row = 0; row < m_records.count(); ++row) {
         const Record &record = m_records.at(row);
+        const QString titleKey = normalizedTitleLookupKey(record.title);
+        // Only index rows that actually carry a librarian description, and keep the first such row
+        // for a title -- a title-only match is fuzzy, so bias it toward a row with something to show.
+        if (titleKey.size() >= 6 && !record.description.trimmed().isEmpty()
+            && !m_rowsByLookupTitle.contains(titleKey)) {
+            m_rowsByLookupTitle.insert(titleKey, row);
+        }
+        // A blurb-agnostic title index: any corpus row, first wins. Used to find the corpus twin of a
+        // file-backed feed book when it is marked finished.
+        if (titleKey.size() >= 6 && !m_rowsByAnyTitle.contains(titleKey)) {
+            m_rowsByAnyTitle.insert(titleKey, row);
+        }
         const QString slugKey = normalizedFocusLookupKey(record.slug);
         if (!slugKey.isEmpty() && !m_rowsByLookupSlug.contains(slugKey)) {
             m_rowsByLookupSlug.insert(slugKey, row);
@@ -1700,6 +2158,20 @@ void PaperLibraryModel::rebuildLookupRows()
             m_rowsByLookupPath.insert(derivedPathKey, row);
         }
     }
+}
+
+// A catalog title is "identifier-shaped" when it carries no real words — a bare
+// PMID ("30850440"), a mangled DOI ("10-3109-21678421-2014-960176-052"), or an
+// empty string. Such rows show a clean librarian norm_title instead when one exists.
+static bool titleLooksLikeIdentifier(const QString &title)
+{
+    int letters = 0;
+    for (const QChar ch : title) {
+        if (ch.isLetter() && ++letters >= 3) {
+            return false;
+        }
+    }
+    return true;
 }
 
 QList<PaperLibraryModel::Record> PaperLibraryModel::parseCatalog(const QByteArray &jsonl)
@@ -1732,16 +2204,59 @@ QList<PaperLibraryModel::Record> PaperLibraryModel::parseCatalog(const QByteArra
         record.year = object.value(QLatin1String("year")).toString();
         record.journal = object.value(QLatin1String("journal")).toString();
         record.source = object.value(QLatin1String("source")).toString();
+        record.genre = object.value(QLatin1String("genre")).toString().trimmed();
+        record.recordKind = object.value(QLatin1String("record_kind")).toString().trimmed();
+        record.description = object.value(QLatin1String("description")).toString().trimmed();
+        record.topics = jsonStringList(object.value(QLatin1String("topics")));
+        if (record.topics.isEmpty()) {
+            const QString singleTopic = object.value(QLatin1String("topics")).toString().trimmed();
+            if (!singleTopic.isEmpty()) {
+                record.topics.append(singleTopic);
+            }
+        }
+        record.readingLevel = object.value(QLatin1String("reading_level")).toString().trimmed();
+        record.subgenre = object.value(QLatin1String("subgenre")).toString().trimmed();
+        // Librarian-cleaned strings; authoritative fallbacks when the raw catalog values
+        // are empty or (for titles) a bare identifier. Only confident records are exported.
+        const QString normTitle = object.value(QLatin1String("norm_title")).toString().trimmed();
+        const QString normAuthors = object.value(QLatin1String("norm_authors")).toString().trimmed();
         const ImportedBookMetadata cleanedMetadata = importedBookMetadataFromTitle(rawTitle, record.authors, record.year, record.source, record.journal);
-        record.title = cleanedMetadata.title;
-        record.authors = cleanedMetadata.authors;
+        // Book titles in the raw catalog are libgen dumps — author + publisher + year + filename
+        // ("Robert Shea, Robert Anton Wilson  The illuminatus!", "amari2016", "USYD Textbook ...
+        // final 2024"). The librarian norm_title is the clean book title and, on audit, is better
+        // in every differing case and never empty/worse — so for BOOK records prefer it outright.
+        // Papers keep the conservative rule (norm_title only when the raw title is a bare
+        // identifier), since crossref/pubmed paper titles are already clean. The raw title stays in
+        // the search haystack below, so a user who remembers the messy string can still find the row.
+        const bool isBookRecord = record.recordKind.compare(QLatin1String("book"), Qt::CaseInsensitive) == 0;
+        record.title = (!normTitle.isEmpty() && (isBookRecord || titleLooksLikeIdentifier(cleanedMetadata.title)))
+            ? normTitle
+            : cleanedMetadata.title;
+        record.authors = !cleanedMetadata.authors.isEmpty() ? cleanedMetadata.authors : normAuthors;
         record.year = cleanedMetadata.year;
         record.addedTs = object.value(QLatin1String("added_ts")).toString();
         record.bytes = static_cast<qint64>(object.value(QLatin1String("bytes")).toDouble());
 
         // Precomputed so the filter does one contains() per row; the query
-        // side case-folds the same way
-        record.haystack = QStringList({record.title, record.authors, record.journal, record.year, record.citeKey, record.doi, record.slug, record.source}).join(QLatin1Char('\n')).toCaseFolded();
+        // side case-folds the same way. The raw title stays searchable (a user who
+        // remembers a PMID/DOI can still find the row) even when we display norm_title.
+        record.haystack = QStringList({record.title,
+                                      rawTitle,
+                                      record.authors,
+                                      record.journal,
+                                      record.year,
+                                      record.citeKey,
+                                      record.doi,
+                                      record.slug,
+                                      record.source,
+                                      record.genre,
+                                      record.recordKind,
+                                      record.description,
+                                      record.topics.join(QLatin1Char(' ')),
+                                      record.readingLevel,
+                                      record.subgenre})
+                             .join(QLatin1Char('\n'))
+                             .toCaseFolded();
         records.append(record);
     }
     return records;
@@ -1770,10 +2285,9 @@ struct CatalogDbRow {
 };
 
 /**
- * The pdf_path/pdf_evicted columns of catalog.db, keyed by slug. Strictly
- * read-only AND immutable: the URI's immutable=1 keeps sqlite from even
- * taking shared locks, so a harvester writing the database is never
- * disturbed — and a WAL-locked or missing database simply reports failure.
+ * The pdf_path/pdf_evicted columns of catalog.db, keyed by slug. The connection
+ * is strictly read-only but WAL-aware so committed harvester changes that have
+ * not yet been checkpointed remain visible to the app.
  */
 static QHash<QString, CatalogDbRow> readCatalogDb(const QString &dbPath, bool *ok)
 {
@@ -1786,9 +2300,7 @@ static QHash<QString, CatalogDbRow> readCatalogDb(const QString &dbPath, bool *o
     const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary"));
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-        db.setDatabaseName(readOnlyImmutableUri(dbPath));
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
-        if (db.open()) {
+        if (openReadOnlyDatabase(db, dbPath)) {
             QSqlQuery query(db);
             if (query.exec(QStringLiteral("SELECT slug, pdf_path, pdf_evicted, last_accessed, access_count, pinned, cited_by_count FROM papers"))) {
                 *ok = true;
@@ -1821,9 +2333,7 @@ static QHash<QString, int> readRelatedCountsFromCatalogDb(const QString &dbPath,
     const QString connectionName = nextPaperLibraryDbConnectionName(QStringLiteral("paperlibrary_graph_counts"));
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-        db.setDatabaseName(readOnlyImmutableUri(dbPath));
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI"));
-        if (db.open()) {
+        if (openReadOnlyDatabase(db, dbPath)) {
             QSqlQuery query(db);
             if (query.exec(QStringLiteral("SELECT source_slug, COUNT(*) FROM related_edges WHERE kind='semantic' GROUP BY source_slug"))) {
                 *ok = true;
@@ -1844,7 +2354,9 @@ void PaperLibraryModel::enrichRecords(QList<Record> &records, const QString &cor
     bool dbOk = false;
     const QHash<QString, CatalogDbRow> dbRows = readCatalogDb(dbPath, &dbOk);
     bool graphOk = false;
-    const QHash<QString, int> relatedCounts = readRelatedCountsFromCatalogDb(dbPath, &graphOk);
+    // related_edges lives in graph/graph.db now (falls back to catalog.db for older corpora).
+    const QString graphDbPath = resolveIndexDb(corpusDir, QStringLiteral("graph/graph.db"), QStringLiteral("related_edges"));
+    const QHash<QString, int> relatedCounts = readRelatedCountsFromCatalogDb(graphDbPath, &graphOk);
 
     for (Record &record : records) {
         if (graphOk) {
@@ -2526,6 +3038,8 @@ static QString corpusShelfIntentFor(PaperLibrarySectionedModel::SmartFilter filt
             return QStringLiteral("Politics and history");
         }
         return QStringLiteral("Non-fiction reading");
+    case PaperLibrarySectionedModel::Finished:
+        return QStringLiteral("Finished reading");
     }
     return QStringLiteral("Reading candidate");
 }
@@ -2769,6 +3283,8 @@ static int sourceRowShelfPriorityScore(const PaperLibraryModel *source, int row,
     case PaperLibrarySectionedModel::Politics:
         score -= 180;
         break;
+    case PaperLibrarySectionedModel::Finished:
+        break;
     }
 
     const int citedBy = index.data(PaperLibraryModel::CitedByCountRole).toInt();
@@ -2836,6 +3352,18 @@ static QString focusLookupKey(const QString &value)
 static QString focusPathLookupKey(const QString &path)
 {
     return normalizedFocusPathLookupKey(path);
+}
+
+static QString resolveFocusManifestPath(const QString &corpusDir, const QString &path)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) {
+        return QString();
+    }
+    if (QFileInfo(trimmed).isAbsolute()) {
+        return QDir::cleanPath(trimmed);
+    }
+    return QDir::cleanPath(QDir(corpusDir).absoluteFilePath(trimmed));
 }
 
 static bool allDigits(const QString &text)
@@ -3003,6 +3531,18 @@ static QString inferredFocusThumbnailPath(const QString &corpusDir, const QStrin
     return QString();
 }
 
+// AI-generated cover art (from the backend cover pipeline) for a book that has no real cover.
+// Lives at <corpus>/covers-ai/<slug>.png. Preferred over a PDF render or the typographic card, but
+// never over a genuine extracted cover.
+static QString aiCoverPathFor(const QString &corpusDir, const QString &slug)
+{
+    if (corpusDir.isEmpty() || slug.isEmpty()) {
+        return QString();
+    }
+    const QString path = corpusDir + QStringLiteral("/covers-ai/") + slug + QStringLiteral(".png");
+    return QFileInfo::exists(path) ? path : QString();
+}
+
 static QString inferredCorpusThumbnailPath(const QString &corpusDir, const QString &id)
 {
     const QString fileName = focusThumbnailFileName(id);
@@ -3124,7 +3664,7 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
         FocusManifestEntry entry;
         entry.id = object.value(QLatin1String("id")).toString().trimmed();
         entry.title = object.value(QLatin1String("title")).toString().trimmed();
-        entry.path = object.value(QLatin1String("path")).toString().trimmed();
+        entry.path = resolveFocusManifestPath(corpusDir, object.value(QLatin1String("path")).toString());
         entry.kind = object.value(QLatin1String("kind")).toString().trimmed();
         entry.authors = object.value(QLatin1String("authors")).toString().trimmed();
         entry.year = object.value(QLatin1String("year")).toString().trimmed();
@@ -3167,15 +3707,60 @@ static FocusManifest loadFocusManifest(PaperLibrarySectionedModel::SmartFilter f
     return manifest;
 }
 
-PaperLibrarySectionedModel::PaperLibrarySectionedModel(QObject *parent)
-    : QAbstractListModel(parent)
+static QSet<QString> slugSetFromConfig(const KConfigGroup &group, const char *key)
 {
-    const QStringList slugs = paperLibraryConfigGroup(QStringLiteral("CorpusFeed")).readEntry(DOWNRANKED_SLUGS_KEY, QStringList());
-    for (const QString &slug : slugs) {
+    QSet<QString> result;
+    for (const QString &slug : group.readEntry(key, QStringList())) {
         if (!slug.isEmpty()) {
-            m_downrankedSlugs.insert(slug);
+            result.insert(slug);
         }
     }
+    return result;
+}
+
+// Section models are per shelf and per Library tab, but their feed preferences are one shared
+// user setting. Keep a lightweight registry per config file so a mutation can update every live
+// model immediately instead of leaving stale copies that later overwrite one another.
+static QHash<QString, QSet<PaperLibrarySectionedModel *>> &sectionedModelsByConfig()
+{
+    static QHash<QString, QSet<PaperLibrarySectionedModel *>> models;
+    return models;
+}
+
+PaperLibrarySectionedModel::PaperLibrarySectionedModel(QObject *parent)
+    : QAbstractListModel(parent)
+    , m_feedConfigPath(paperLibraryConfigFilePath())
+{
+    const KConfigGroup feed = paperLibraryConfigGroupForPath(m_feedConfigPath, QStringLiteral("CorpusFeed"));
+    m_downrankedSlugs = slugSetFromConfig(feed, DOWNRANKED_SLUGS_KEY);
+    m_finishedSlugs = slugSetFromConfig(feed, FINISHED_SLUGS_KEY);
+    sectionedModelsByConfig()[m_feedConfigPath].insert(this);
+    // m_finishedTitles is built once the source model is attached (setSourceModel).
+}
+
+PaperLibrarySectionedModel::~PaperLibrarySectionedModel()
+{
+    auto &models = sectionedModelsByConfig();
+    auto it = models.find(m_feedConfigPath);
+    if (it == models.end()) {
+        return;
+    }
+    it->remove(this);
+    if (it->isEmpty()) {
+        models.erase(it);
+    }
+}
+
+// Process-wide shelf classification cache, keyed by slug. The per-row heuristics (~10 regex sweeps
+// over the whole corpus) are a pure function of a record's content, so their result is identical for
+// a given slug across EVERY sectioned model and EVERY library tab. Each LibraryView builds its own
+// PaperLibraryModel + ~11 sectioned models, so without this the sweep re-ran for every shelf of
+// every new tab — the "open a new tab and click the subtabs -> multi-second freeze". UI-thread only,
+// so a plain function-local static needs no locking. Cleared when a source model's data changes.
+static QHash<QString, quint16> &sharedClassifyCache()
+{
+    static QHash<QString, quint16> cache;
+    return cache;
 }
 
 void PaperLibrarySectionedModel::setSourceModel(PaperLibraryModel *model)
@@ -3187,17 +3772,29 @@ void PaperLibrarySectionedModel::setSourceModel(PaperLibraryModel *model)
         m_source->disconnect(this);
     }
     clearRowCache();
+    m_classifyCache.clear();
     m_source = model;
     if (m_source) {
+        // Source data changed -> BOTH the per-model row cache and the process-wide slug cache are
+        // stale; drop them (unlike clearRowCache from downrank/finished/query, which must keep the
+        // classification). Clearing the shared cache here (not on plain re-attach) is what keeps it
+        // reusable across tabs while staying correct when the catalog is reloaded/edited.
         connect(m_source, &QAbstractItemModel::modelReset, this, [this]() {
             clearRowCache();
+            m_classifyCache.clear();
+            sharedClassifyCache().clear();
+            rebuildFinishedTitles(); // titles come from the source; refresh when it changes
             rebuild();
         });
         connect(m_source, &QAbstractItemModel::dataChanged, this, [this]() {
             clearRowCache();
+            m_classifyCache.clear();
+            sharedClassifyCache().clear();
+            rebuildFinishedTitles();
             rebuild();
         });
     }
+    rebuildFinishedTitles();
     rebuild();
 }
 
@@ -3249,12 +3846,14 @@ void PaperLibrarySectionedModel::setQuery(const QString &query)
     rebuild();
 }
 
-void PaperLibrarySectionedModel::setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText)
+void PaperLibrarySectionedModel::setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText, bool bypassShelfFilter)
 {
-    if (m_explicitRowsActive && m_explicitSourceRows == sourceRows && m_explicitRowsLabel == label && m_explicitRowsEmptyText == emptyText) {
+    if (m_explicitRowsActive && m_explicitSourceRows == sourceRows && m_explicitRowsLabel == label
+        && m_explicitRowsEmptyText == emptyText && m_explicitBypassFilter == bypassShelfFilter) {
         return;
     }
     m_explicitRowsActive = true;
+    m_explicitBypassFilter = bypassShelfFilter;
     m_explicitSourceRows = sourceRows;
     m_explicitRowsLabel = label.trimmed();
     m_explicitRowsEmptyText = emptyText.trimmed();
@@ -3267,6 +3866,7 @@ void PaperLibrarySectionedModel::clearExplicitSourceRows()
         return;
     }
     m_explicitRowsActive = false;
+    m_explicitBypassFilter = false;
     m_explicitSourceRows.clear();
     m_explicitRowsLabel.clear();
     m_explicitRowsEmptyText.clear();
@@ -3333,6 +3933,16 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == PdfPathRole) {
         return focusPath;
     }
+    if (role == ReadingProgressRole) {
+        // Prefer what our own readers recorded for this exact file; fall back to Apple Books, which
+        // knows this book by title even though it lives at a different path there.
+        const double own = ReadingProgress::fractionForPath(focusPath);
+        if (own >= 0.0) {
+            return own;
+        }
+        return ReadingProgress::fractionForTitle(m_source->index(row.sourceRow >= 0 ? row.sourceRow : 0)
+                                                     .data(Qt::DisplayRole).toString());
+    }
     if (role == CoverPixmapRole) {
         return QVariant::fromValue(m_coverPixmaps.value(focusPath));
     }
@@ -3341,10 +3951,14 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     }
     if (role == ThumbnailPathRole) {
         if (!row.focusThumbnailPath.isEmpty()) {
-            return row.focusThumbnailPath;
+            return row.focusThumbnailPath; // a genuine extracted cover always wins
         }
         if (row.sourceRow >= 0 && m_source) {
             const QString slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
+            const QString ai = aiCoverPathFor(m_source->corpusDir(), slug);
+            if (!ai.isEmpty()) {
+                return ai; // AI art beats a PDF render / typographic card for a coverless book
+            }
             return inferredCorpusThumbnailPath(m_source->corpusDir(), slug);
         }
         return QString();
@@ -3355,6 +3969,9 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         }
         if (row.sourceRow >= 0 && m_source) {
             const QString slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
+            if (!aiCoverPathFor(m_source->corpusDir(), slug).isEmpty()) {
+                return QStringLiteral("paperlibrary-ai-generated");
+            }
             if (!inferredCorpusThumbnailPath(m_source->corpusDir(), slug).isEmpty()) {
                 return QStringLiteral("paperlibrary-corpus-thumbnail");
             }
@@ -3386,7 +4003,7 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         case PaperLibraryModel::ResolvedPathRole:
             return row.focusPath;
         case PaperLibraryModel::RelatedCountRole:
-            return m_source && m_source->hasSemanticGraph() ? 0 : -1;
+            return m_source && m_source->hasFreshSemanticGraph() ? 0 : -1;
         case KindRole:
             return row.focusKind.isEmpty() ? QStringLiteral("PDF") : row.focusKind.toUpper();
         case TopicTagsRole:
@@ -3411,10 +4028,26 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
     if (role == DownrankedRole) {
         return sourceRowDownranked(row.sourceRow);
     }
+    if (role == FinishedRole) {
+        return sourceRowFinished(row.sourceRow);
+    }
     const QString source = sourceIndex.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
     const QString journal = sourceIndex.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
     const QString text = sourceIndex.data(PaperLibraryModel::HaystackRole).toString() + QLatin1Char('\n') + source;
+    const QString description = sourceIndex.data(PaperLibraryModel::DescriptionRole).toString().trimmed();
+    const QStringList librarianTopics = sourceIndex.data(PaperLibraryModel::TopicsRole).toStringList();
+    const QString readingLevel = sourceIndex.data(PaperLibraryModel::ReadingLevelRole).toString().trimmed();
+    const QString subgenre = sourceIndex.data(PaperLibraryModel::SubgenreRole).toString().trimmed();
     if (role == Qt::DisplayRole && focusRow && !row.title.isEmpty()) {
+        // If this feed/imported row maps to a catalog book and its imported title carries obvious
+        // download cruft ("Langman Medical Embryology (2018)", "... ( PDFDrive )"), show the clean
+        // librarian title instead. Curated feed titles have no such markers and are kept as-is.
+        if (row.sourceRow >= 0 && m_source && titleHasImportCruft(row.title)) {
+            const QString clean = m_source->index(row.sourceRow).data(Qt::DisplayRole).toString().trimmed();
+            if (!clean.isEmpty()) {
+                return clean;
+            }
+        }
         return row.title;
     }
     if (role == PaperLibraryModel::DetailRole && focusRow && !focusDetailText.isEmpty()) {
@@ -3424,6 +4057,9 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         if (focusRow && !row.focusReason.isEmpty()) {
             return focusReasonPrimary(row.focusReason);
         }
+        if (!description.isEmpty()) {
+            return description;
+        }
         return corpusShelfIntentFor(m_smartFilter, sourceIndex, text, source, journal);
     }
     if (role == RelationHintRole) {
@@ -3431,11 +4067,17 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
             const QString secondary = focusReasonSecondary(row.focusReason);
             return secondary.isEmpty() ? row.focusSection : secondary;
         }
+        if (!subgenre.isEmpty()) {
+            return subgenre;
+        }
         return corpusRelationHintFor(m_smartFilter, sourceIndex, text, source, journal);
     }
     if (role == PriorityHintRole) {
         if (focusRow && !row.focusSection.isEmpty()) {
             return row.focusSection;
+        }
+        if (!readingLevel.isEmpty()) {
+            return readingLevel;
         }
         return corpusPriorityHintFor(sourceIndex, text, source, journal);
     }
@@ -3458,6 +4100,13 @@ QVariant PaperLibrarySectionedModel::data(const QModelIndex &index, int role) co
         return QStringLiteral("PAPER");
     }
     if (role == TopicTagsRole) {
+        if (!librarianTopics.isEmpty()) {
+            QStringList tags = librarianTopics;
+            if (focusRow && !row.focusSection.isEmpty() && !tags.contains(row.focusSection)) {
+                tags.append(row.focusSection);
+            }
+            return tags;
+        }
         if (focusRow) {
             QStringList tags;
             if (m_smartFilter == Mnd) {
@@ -3572,6 +4221,80 @@ QString PaperLibrarySectionedModel::storedPathForSourceRow(int sourceRow) const
     return m_source->index(sourceRow).data(PaperLibraryModel::ResolvedPathRole).toString();
 }
 
+// Non-fiction book genres from the closed librarian vocabulary (Fiction is handled
+// separately; Academic/Unknown are not book non-fiction shelves).
+static bool isNonfictionBookGenre(const QString &genre)
+{
+    return genre.compare(QLatin1String("Nonfiction"), Qt::CaseInsensitive) == 0
+        || genre.compare(QLatin1String("Reference"), Qt::CaseInsensitive) == 0
+        || genre.compare(QLatin1String("Textbook"), Qt::CaseInsensitive) == 0
+        || genre.compare(QLatin1String("Manual"), Qt::CaseInsensitive) == 0;
+}
+
+// A genre is authoritative for shelves ONLY if it maps to one. "Unknown", "Academic",
+// a typo, or any unrecognized value must NOT suppress the heuristic fallback — otherwise
+// one bad/stale backend value would hide a book from Fiction AND Nonfiction.
+static bool genreDrivesShelves(const QString &genre)
+{
+    return genre.compare(QLatin1String("Fiction"), Qt::CaseInsensitive) == 0
+        || isNonfictionBookGenre(genre);
+}
+
+// Is this record a book? Prefer the authoritative librarian record_kind ('book'/'paper'
+// from catalog.jsonl); fall back to the text heuristic only when the flag is absent
+// (an older catalog, or a row with no librarian record). This is what lets genre-classified
+// books stop vanishing — recordMatchesBook alone was too fragile to gate the shelves on.
+/** Genres that override a record_kind of "paper", because only a book carries them.
+    "Manual" is absent: 310 rows carry it and they are practice guidelines and procedure
+    standards, not books. "Fiction" is absent too -- no live row is genre=Fiction over
+    record_kind=paper, so admitting it would buy nothing and would undo the guard that
+    keeps a paper mislabelled Fiction off the Fiction shelf. */
+static bool isUnambiguousBookGenre(const QString &genre)
+{
+    return genre.compare(QLatin1String("Nonfiction"), Qt::CaseInsensitive) == 0
+        || genre.compare(QLatin1String("Reference"), Qt::CaseInsensitive) == 0
+        || genre.compare(QLatin1String("Textbook"), Qt::CaseInsensitive) == 0;
+}
+
+// Feeds that serve papers, clinical guidelines, drug labels and reports -- never books. The
+// librarian sometimes tags a conference abstract "Reference", so a book genre from one of these
+// must NOT rescue it into Books (this is the ALS/MND leak: europepmc/harvest abstracts).
+static bool isPaperFeedSource(const QString &source)
+{
+    static const QStringList feeds = {QStringLiteral("europepmc"), QStringLiteral("pmc"),
+                                      QStringLiteral("harvest"),   QStringLiteral("guideline"),
+                                      QStringLiteral("localevidence"), QStringLiteral("gov-report"),
+                                      QStringLiteral("cochrane"),  QStringLiteral("crossref"),
+                                      QStringLiteral("semantic")};
+    const QString prefix = source.section(QLatin1Char(':'), 0, 0).trimmed();
+    for (const QString &feed : feeds) {
+        if (prefix.compare(feed, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool recordIsBook(const QString &recordKind, const QString &genre, const QString &text, const QString &source,
+                         const QString &journal)
+{
+    if (recordKind.compare(QLatin1String("book"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    // The librarian assigns record_kind and genre in one pass and they disagree on ~140 rows:
+    // record_kind="paper" over a book genre. The genre is right often enough to rescue a real book
+    // (Elements of Information Theory, Demonic Males) that record_kind hid -- but ONLY from sources
+    // that actually serve books. From a paper/clinical feed a "Reference" tag is the librarian
+    // mislabelling an abstract, so a book genre there is not trusted.
+    if (isUnambiguousBookGenre(genre) && !isPaperFeedSource(source)) {
+        return true;
+    }
+    if (recordKind.compare(QLatin1String("paper"), Qt::CaseInsensitive) == 0) {
+        return false;
+    }
+    return recordMatchesBook(text, source, journal);
+}
+
 bool PaperLibrarySectionedModel::acceptsSourceRow(int sourceRow) const
 {
     if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {
@@ -3581,14 +4304,33 @@ bool PaperLibrarySectionedModel::acceptsSourceRow(int sourceRow) const
     const QString haystack = index.data(PaperLibraryModel::HaystackRole).toString();
     const QString source = index.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
     const QString journal = index.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
+    // Authoritative librarian genre (from catalog.jsonl). When present it decides
+    // Fiction/Nonfiction directly; when empty we fall back to the text heuristics.
+    // Only a confident genre is exported, so a present genre is trustworthy.
+    const QString genre = index.data(PaperLibraryModel::GenreRole).toString();
+    const QString recordKind = index.data(PaperLibraryModel::RecordKindRole).toString();
     const QString text = haystack + QLatin1Char('\n') + source;
-    const bool isBook = recordMatchesBook(text, source, journal);
+    const bool isBook = recordIsBook(recordKind, genre, text, source, journal);
+    // A finished book belongs on the Finished shelf, not cluttering the "what to read" shelves.
+    if ((m_smartFilter == Books || m_smartFilter == Fiction || m_smartFilter == Nonfiction
+         || m_smartFilter == Textbooks)
+        && sourceRowFinished(sourceRow)) {
+        return false;
+    }
     switch (m_smartFilter) {
     case Papers:
         return !isBook;
     case Books:
         return isBook;
+    case Finished:
+        return sourceRowFinished(sourceRow);
     case Textbooks:
+        // The librarian's genre is authoritative when it is present: 178 rows are marked
+        // Textbook, and the heuristic below neither finds all of them nor confines itself
+        // to books (any title containing "textbook of " matched, paper or not).
+        if (genreDrivesShelves(genre)) {
+            return isBook && genre.compare(QLatin1String("Textbook"), Qt::CaseInsensitive) == 0;
+        }
         return recordMatchesTextbook(text, source);
     case Medicine:
         return recordMatchesMedicine(text) && recordMatchesTextbook(text, source);
@@ -3603,9 +4345,18 @@ bool PaperLibrarySectionedModel::acceptsSourceRow(int sourceRow) const
     case Politics:
         return recordMatchesPolitics(text);
     case Fiction:
-        return recordMatchesFiction(text);
+        // Both branches are book shelves. The fallback runs for every row whose genre is
+        // not one of Fiction/Nonfiction/Reference/Textbook/Manual -- notably "Academic",
+        // ~95% of the corpus -- so without isBook it admitted papers on a text match.
+        if (genreDrivesShelves(genre)) {
+            return isBook && genre.compare(QLatin1String("Fiction"), Qt::CaseInsensitive) == 0;
+        }
+        return isBook && recordMatchesFiction(text);
     case Nonfiction:
-        return recordMatchesNonfiction(text, source, journal);
+        if (genreDrivesShelves(genre)) {
+            return isBook && isNonfictionBookGenre(genre);
+        }
+        return isBook && recordMatchesNonfiction(text, source, journal);
     }
     return false;
 }
@@ -3619,17 +4370,46 @@ bool PaperLibrarySectionedModel::sourceRowDownranked(int sourceRow) const
     return !slug.isEmpty() && m_downrankedSlugs.contains(slug);
 }
 
-void PaperLibrarySectionedModel::saveDownrankedSlugs() const
+QSet<QString> PaperLibrarySectionedModel::readDownrankedSlugs() const
+{
+    return slugSetFromConfig(paperLibraryConfigGroupForPath(m_feedConfigPath, QStringLiteral("CorpusFeed")), DOWNRANKED_SLUGS_KEY);
+}
+
+void PaperLibrarySectionedModel::saveDownrankedSlugs(const QSet<QString> &downrankedSlugs) const
 {
     QStringList slugs;
-    slugs.reserve(m_downrankedSlugs.size());
-    for (const QString &slug : m_downrankedSlugs) {
+    slugs.reserve(downrankedSlugs.size());
+    for (const QString &slug : downrankedSlugs) {
         slugs.append(slug);
     }
     slugs.sort();
-    KConfigGroup group = paperLibraryConfigGroup(QStringLiteral("CorpusFeed"));
+    KConfigGroup group = paperLibraryConfigGroupForPath(m_feedConfigPath, QStringLiteral("CorpusFeed"));
     group.writeEntry(DOWNRANKED_SLUGS_KEY, slugs);
     group.sync();
+}
+
+void PaperLibrarySectionedModel::applyDownrankedSlugs(const QSet<QString> &downrankedSlugs)
+{
+    if (m_downrankedSlugs == downrankedSlugs) {
+        return;
+    }
+    m_downrankedSlugs = downrankedSlugs;
+    clearRowCache();
+    rebuild();
+}
+
+void PaperLibrarySectionedModel::broadcastDownrankedSlugs(const QSet<QString> &downrankedSlugs)
+{
+    // Copy before rebuilding, then re-check membership: code reacting to one model's reset can
+    // synchronously destroy another receiver that has not been visited yet.
+    auto &registry = sectionedModelsByConfig();
+    const QSet<PaperLibrarySectionedModel *> models = sectionedModelsByConfig().value(m_feedConfigPath);
+    for (PaperLibrarySectionedModel *model : models) {
+        const auto live = registry.constFind(m_feedConfigPath);
+        if (model && live != registry.cend() && live->contains(model)) {
+            model->applyDownrankedSlugs(downrankedSlugs);
+        }
+    }
 }
 
 void PaperLibrarySectionedModel::setDownranked(const QModelIndex &index, bool downranked)
@@ -3645,23 +4425,190 @@ void PaperLibrarySectionedModel::setDownranked(const QModelIndex &index, bool do
     if (slug.isEmpty()) {
         return;
     }
-    const bool changed = downranked ? !m_downrankedSlugs.contains(slug) : m_downrankedSlugs.contains(slug);
+
+    // Merge against the persisted source of truth at mutation time. Another shelf/tab may have
+    // changed it since this model was built; writing this model's stale snapshot would clobber that
+    // change even if broadcasting were otherwise correct.
+    QSet<QString> latest = readDownrankedSlugs();
+    const bool changed = downranked ? !latest.contains(slug) : latest.contains(slug);
     if (!changed) {
+        broadcastDownrankedSlugs(latest);
         return;
     }
     if (downranked) {
-        m_downrankedSlugs.insert(slug);
+        latest.insert(slug);
     } else {
-        m_downrankedSlugs.remove(slug);
+        latest.remove(slug);
     }
-    saveDownrankedSlugs();
-    clearRowCache();
-    rebuild();
+    saveDownrankedSlugs(latest);
+    broadcastDownrankedSlugs(latest);
+}
+
+static QString finishedTitleKey(const QString &title)
+{
+    QString key;
+    key.reserve(title.size());
+    for (const QChar ch : title) {
+        if (ch.isLetterOrNumber()) {
+            key.append(ch.toCaseFolded());
+        }
+    }
+    return key;
+}
+
+void PaperLibrarySectionedModel::rebuildFinishedTitles()
+{
+    // A book often has several catalog rows (an EPUB and a PDF, different acquisitions), each with
+    // its own slug. Marking one finished must retire them all, so map the finished slugs to titles
+    // and match on the title too. Small set, so scan the source once when the finished set changes.
+    m_finishedTitles.clear();
+    if (!m_source || m_finishedSlugs.isEmpty()) {
+        return;
+    }
+    const int rows = m_source->rowCount();
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = m_source->index(row);
+        if (m_finishedSlugs.contains(index.data(PaperLibraryModel::SlugRole).toString())) {
+            const QString key = finishedTitleKey(index.data(Qt::DisplayRole).toString());
+            if (!key.isEmpty()) {
+                m_finishedTitles.insert(key);
+            }
+        }
+    }
+}
+
+bool PaperLibrarySectionedModel::sourceRowFinished(int sourceRow) const
+{
+    if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {
+        return false;
+    }
+    const QModelIndex index = m_source->index(sourceRow);
+    const QString slug = index.data(PaperLibraryModel::SlugRole).toString();
+    if (!slug.isEmpty() && m_finishedSlugs.contains(slug)) {
+        return true;
+    }
+    return titleIsFinished(index.data(Qt::DisplayRole).toString());
+}
+
+// True when @p title matches a finished book by title. A finished book often has several catalog
+// rows (and file-backed feed copies) with DIFFERENT titles -- "Means of Ascent" vs "The Years of
+// Lyndon Johnson: Means of Ascent" -- so beyond an exact normalised-key match, one title CONTAINING
+// the other counts too, guarded by a minimum length so a short title can't sweep up unrelated books.
+// Used both for corpus rows and for file-backed feed rows that carry no corpus slug.
+bool PaperLibrarySectionedModel::titleIsFinished(const QString &title) const
+{
+    const QString titleKey = finishedTitleKey(title);
+    if (titleKey.isEmpty()) {
+        return false;
+    }
+    if (m_finishedTitles.contains(titleKey)) {
+        return true;
+    }
+    constexpr int MinContainsLen = 10; // "means of ascent" -> "meansofascent" (13), safely specific
+    for (const QString &finishedKey : m_finishedTitles) {
+        if (finishedKey.size() >= MinContainsLen && titleKey.contains(finishedKey)) {
+            return true;
+        }
+        if (titleKey.size() >= MinContainsLen && finishedKey.contains(titleKey)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PaperLibrarySectionedModel::saveFinishedSlugs() const
+{
+    QStringList slugs;
+    slugs.reserve(m_finishedSlugs.size());
+    for (const QString &slug : m_finishedSlugs) {
+        slugs.append(slug);
+    }
+    slugs.sort();
+    KConfigGroup group = paperLibraryConfigGroupForPath(m_feedConfigPath, QStringLiteral("CorpusFeed"));
+    group.writeEntry(FINISHED_SLUGS_KEY, slugs);
+    group.sync();
+}
+
+void PaperLibrarySectionedModel::reloadFinishedSlugs()
+{
+    // The finished set is shared through config; each shelf's model keeps its own copy, so a
+    // mark made on (say) the Books model must be picked up here before the Finished shelf is
+    // shown. Re-read, and only rebuild when the set actually changed AND this model's
+    // membership depends on it (the Finished shelf).
+    const QSet<QString> latest = slugSetFromConfig(paperLibraryConfigGroupForPath(m_feedConfigPath, QStringLiteral("CorpusFeed")), FINISHED_SLUGS_KEY);
+    if (latest == m_finishedSlugs) {
+        return;
+    }
+    m_finishedSlugs = latest;
+    rebuildFinishedTitles();
+    // Finished changing affects the Finished shelf AND the reading shelves it is excluded from.
+    if (m_smartFilter == Finished || m_smartFilter == Books || m_smartFilter == Fiction
+        || m_smartFilter == Nonfiction || m_smartFilter == Textbooks) {
+        clearRowCache();
+        rebuild();
+    }
+}
+
+void PaperLibrarySectionedModel::setFinished(const QModelIndex &index, bool finished)
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.count() || !m_source) {
+        return;
+    }
+    const Row &row = m_rows.at(index.row());
+    if (row.header) {
+        return;
+    }
+    QString slug;
+    if (row.sourceRow >= 0) {
+        slug = m_source->index(row.sourceRow).data(PaperLibraryModel::SlugRole).toString();
+    } else if (!row.title.isEmpty()) {
+        // A file-backed feed book (an imported reading item with no corpus row of its own) has
+        // sourceRow < 0 and thus no slug. Bind it to its corpus twin by title, so marking it
+        // finished lands it on the (corpus-backed) Finished shelf and drops it from the reading feed.
+        const int twin = m_source->rowForAnyTitle(row.title);
+        if (twin >= 0) {
+            slug = m_source->index(twin).data(PaperLibraryModel::SlugRole).toString();
+        }
+    }
+    if (slug.isEmpty()) {
+        return;
+    }
+    const bool changed = finished ? !m_finishedSlugs.contains(slug) : m_finishedSlugs.contains(slug);
+    if (!changed) {
+        return;
+    }
+    if (finished) {
+        m_finishedSlugs.insert(slug);
+    } else {
+        m_finishedSlugs.remove(slug);
+    }
+    saveFinishedSlugs();
+    // Keep the by-title finished set current so title-based detection (a file-backed feed book, a
+    // differently-titled edition) sees this mark without waiting for a source reload.
+    rebuildFinishedTitles();
+    // Reflect the change on the CURRENT shelf right away: a finished book leaves the reading feed and
+    // appears on Finished. A single warm rebuild on an explicit user action is fine -- classification
+    // is cached, so this is not the cold whole-corpus sweep the mark path once triggered. Other live
+    // shelves pick it up from config via reloadFinishedSlugs() when next shown.
+    if (m_smartFilter == Finished || m_smartFilter == Books || m_smartFilter == Fiction
+        || m_smartFilter == Nonfiction || m_smartFilter == Textbooks) {
+        clearRowCache();
+        rebuild();
+    }
 }
 
 QString PaperLibrarySectionedModel::cacheKey() const
 {
-    return QStringLiteral("%1|%2|%3").arg(static_cast<int>(m_smartFilter)).arg(static_cast<int>(m_sectionMode)).arg(m_query);
+    // The finished set is part of what a shelf shows (finished books are excluded from the reading
+    // shelves), so it MUST be in the key -- otherwise a rebuild that runs before the finished titles
+    // are known caches rows that still contain them, and later rebuilds return that stale cache.
+    QStringList finished(m_finishedTitles.constBegin(), m_finishedTitles.constEnd());
+    finished.sort();
+    return QStringLiteral("%1|%2|%3|%4")
+        .arg(static_cast<int>(m_smartFilter))
+        .arg(static_cast<int>(m_sectionMode))
+        .arg(m_query)
+        .arg(qHash(finished.join(QLatin1Char('\x1f'))));
 }
 
 void PaperLibrarySectionedModel::clearRowCache()
@@ -3693,6 +4640,7 @@ void PaperLibrarySectionedModel::resetVisibleRows()
 
 void PaperLibrarySectionedModel::rebuild()
 {
+    TelemetryScope op(QStringLiteral("shelf_rebuild"));
     const QString key = cacheKey();
     beginResetModel();
     if (!m_explicitRowsActive) {
@@ -3718,17 +4666,49 @@ void PaperLibrarySectionedModel::rebuild()
     QSet<QString> emittedManifestPaths;
     QSet<QString> emittedWorkKeys;
     QSet<QString> emittedBookTitleKeys;
-    const auto duplicateBookTitleKey = [this](const QString &title) {
-        if (!isBookPresentationShelf(m_smartFilter)) {
+    const auto duplicateBookTitleKey = [this](const QString &title, const QString &author) -> QString {
+        // Collapse same-title editions/copies on any BOOK shelf (cover-only presentation), not just
+        // the feed shelves -- otherwise three separate "The Psychiatric Interview" files all show on
+        // Textbooks. (isBookPresentationShelf is deliberately left alone -- it also drives tags.)
+        switch (m_smartFilter) {
+        case Books:
+        case Fiction:
+        case Nonfiction:
+        case Textbooks:
+        case Medicine:
+        case Finished:
+            break;
+        default:
             return QString();
         }
-        const QString key = normalizedDuplicateWorkText(title);
-        return key.size() >= 16 ? key : QString();
+        const QString t = normalizedDuplicateWorkText(title);
+        if (t.isEmpty()) {
+            return QString();
+        }
+        // Merge on the title alone when it is distinctive: either long, or carrying a number
+        // ("Galatea 2.2", "Fahrenheit 451" -> one specific work). Crucially this merges two copies
+        // even when one lacks an author, which title+author cannot (the "Galatea 2.2" duplicate: one
+        // copy had no author, so its author-qualified key never matched the other's).
+        static const QRegularExpression hasDigit(QStringLiteral("[0-9]"));
+        if (t.size() >= 16 || t.contains(hasDigit)) {
+            return t;
+        }
+        // A short, generic title ("Meditations", "Poems") needs the author, so different works that
+        // share it (Aurelius vs Descartes) stay separate; without an author it is too generic to merge.
+        const QString a = normalizedDuplicateWorkText(author);
+        return a.isEmpty() ? QString() : t + QStringLiteral(" | ") + a;
     };
 
     if (m_explicitRowsActive) {
         for (const int sourceRow : std::as_const(m_explicitSourceRows)) {
-            if (emittedSourceRows.contains(sourceRow) || !acceptsSourceRow(sourceRow)) {
+            // Explicit rows are curated by the caller. Search results stay shelf-scoped, but
+            // "adjacent documents" pass bypassShelfFilter so book neighbours aren't dropped by
+            // the Papers shelf's !isBook rule. Always bounds-check the row either way.
+            if (sourceRow < 0 || !m_source || sourceRow >= m_source->rowCount()
+                || emittedSourceRows.contains(sourceRow)) {
+                continue;
+            }
+            if (!m_explicitBypassFilter && !acceptsSourceRow(sourceRow)) {
                 continue;
             }
             const QString workKey = sourceRowDuplicateWorkKey(m_source, sourceRow);
@@ -3777,6 +4757,25 @@ void PaperLibrarySectionedModel::rebuild()
             }
             if (sourceRow < 0 && !pathKey.isEmpty()) {
                 sourceRow = m_source->rowForLookupPath(pathKey);
+            }
+
+            // A finished book belongs on the Finished shelf, not the reading feed. The feed
+            // (focus manifest) is a separate render path from the section grid, so it needs its
+            // own guard -- without this, marking a book finished never removes it from the feed. A
+            // file-backed feed book (sourceRow < 0, an imported reading item) has no corpus slug, so
+            // fall back to matching its finished-state by title.
+            // A finished book belongs on the Finished shelf, not the reading feed. Check three ways,
+            // because the feed entry is often an IMPORTED reading copy whose md5 id is not a corpus
+            // slug: (1) the entry's own manifest id is in the finished set (the imported copy the
+            // user actually marked finished -- this is the case sourceRowFinished/titleIsFinished
+            // both miss), (2) it resolves to a finished corpus row, or (3) its title matches a
+            // finished title. Without (1), finished Caro/Graeber reading copies leaked onto Books.
+            if ((m_smartFilter == Books || m_smartFilter == Fiction || m_smartFilter == Nonfiction
+                 || m_smartFilter == Textbooks)
+                && (m_finishedSlugs.contains(entry.id.trimmed())
+                    || (sourceRow >= 0 && sourceRowFinished(sourceRow))
+                    || titleIsFinished(entry.title))) {
+                continue;
             }
 
             QString queryText = QStringList({entry.title, entry.authors, entry.year, entry.journal, entry.source, entry.doi, entry.id, entry.reason, entry.section})
@@ -3835,9 +4834,16 @@ void PaperLibrarySectionedModel::rebuild()
             row.focusThumbnailPath = entry.thumbnailPath;
             row.focusThumbnailSource = entry.thumbnailSource;
             row.focusPath = entry.path;
+            // A feed entry that names no file of its own but resolves to a catalog row inherits that
+            // row's PDF path -- otherwise it has no stable identity to key its cover/thumbnail by (an
+            // empty path is skipped by the cover loader), and no file to open.
+            if (row.focusPath.isEmpty() && sourceRow >= 0) {
+                row.focusPath = m_source->resolvePdfPath(sourceRow);
+            }
             row.focusOrder = entry.order;
             row.focusScore = entry.score;
-            const QString bookTitleKey = duplicateBookTitleKey(row.title);
+            const QString bookTitleKey = duplicateBookTitleKey(
+                row.title, sourceRow >= 0 ? m_source->index(sourceRow).data(PaperLibraryModel::AuthorsRole).toString() : row.focusAuthors);
             if (!bookTitleKey.isEmpty()) {
                 if (emittedBookTitleKeys.contains(bookTitleKey)) {
                     continue;
@@ -3871,20 +4877,77 @@ void PaperLibrarySectionedModel::rebuild()
         if (!m_query.isEmpty() && !haystack.contains(m_query)) {
             continue;
         }
+        // The Finished shelf's membership is purely the finished-slug set. Skip the ~10 per-row
+        // classification heuristics for the 18k rows that aren't finished — running them for the
+        // whole corpus cost ~3s uncached and was the mark/finished-shelf hang.
+        if (m_smartFilter == Finished && !sourceRowFinished(row)) {
+            continue;
+        }
 
         const QString source = index.data(PaperLibraryModel::SourceRole).toString().toCaseFolded();
         const QString journal = index.data(PaperLibraryModel::JournalRole).toString().toCaseFolded();
+        // Authoritative librarian genre (only confident genres are exported); when present
+        // it decides Fiction/Nonfiction, otherwise fall back to the text heuristics.
+        const QString genre = index.data(PaperLibraryModel::GenreRole).toString();
+        const QString recordKind = index.data(PaperLibraryModel::RecordKindRole).toString();
         const QString text = haystack + QLatin1Char('\n') + source;
-        const bool isBook = recordMatchesBook(text, source, journal);
-        const bool isTextbook = recordMatchesTextbook(text, source);
-        const bool isMedicine = recordMatchesMedicine(text);
-        const bool isPsychiatry = recordMatchesPsychiatry(text);
-        const bool isWork = recordMatchesBeyondBayes(text, source, journal) || recordMatchesPeerReview(text, source);
-        const bool isAnthropology = recordMatchesAnthropology(text);
-        const bool isPolitics = recordMatchesPolitics(text);
-        const bool isFiction = recordMatchesFiction(text);
-        const bool isNonfiction = recordMatchesNonfiction(text, source, journal);
+        // Classification is stable per row; cache the regex sweep by source row so a no-query
+        // rebuild (downrank/finished re-sort) doesn't re-run ~10 heuristics over 18k rows (~3s).
+        bool isBook, isTextbook, isMedicine, isPsychiatry, isWork, isAnthropology, isPolitics, isFiction, isNonfiction,
+            isTextbookShelf;
+        quint16 classBits = 0;
+        const auto cachedClass = m_classifyCache.constFind(row);
+        if (cachedClass != m_classifyCache.cend()) {
+            classBits = cachedClass.value(); // L1: this model already classified this row
+        } else {
+            // L2: another sectioned model or library tab may already have swept this slug. Reusing
+            // it avoids re-running ~10 regex heuristics over the whole corpus for every new tab.
+            const QString slug = index.data(PaperLibraryModel::SlugRole).toString();
+            const auto shared = slug.isEmpty() ? sharedClassifyCache().cend() : sharedClassifyCache().constFind(slug);
+            if (shared != sharedClassifyCache().cend()) {
+                classBits = shared.value();
+            } else {
+                isBook = recordIsBook(recordKind, genre, text, source, journal);
+                isTextbook = recordMatchesTextbook(text, source);
+                isMedicine = recordMatchesMedicine(text);
+                isPsychiatry = recordMatchesPsychiatry(text);
+                isWork = recordMatchesBeyondBayes(text, source, journal) || recordMatchesPeerReview(text, source);
+                isAnthropology = recordMatchesAnthropology(text);
+                isPolitics = recordMatchesPolitics(text);
+                const bool genreShelf = genreDrivesShelves(genre);
+                // isBook gates BOTH branches: Fiction and Non-fiction are book shelves,
+                // and the fallback text match otherwise admits academic papers (a journal
+                // named "...Anthropology" matches, as does a title containing "fiction").
+                isFiction = genreShelf ? (isBook && genre.compare(QLatin1String("Fiction"), Qt::CaseInsensitive) == 0)
+                                       : (isBook && recordMatchesFiction(text));
+                isNonfiction = genreShelf ? (isBook && isNonfictionBookGenre(genre))
+                                          : (isBook && recordMatchesNonfiction(text, source, journal));
+                // The Textbooks shelf gets its own flag. isTextbook stays the raw heuristic
+                // because Medicine composes it (isMedicine && isTextbook); binding the genre
+                // into it would quietly redefine the Medicine shelf too.
+                isTextbookShelf = genreShelf
+                    ? (isBook && genre.compare(QLatin1String("Textbook"), Qt::CaseInsensitive) == 0)
+                    : recordMatchesTextbook(text, source);
+                classBits = quint16((isBook ? 0x1 : 0) | (isTextbook ? 0x2 : 0) | (isMedicine ? 0x4 : 0)
+                                    | (isPsychiatry ? 0x8 : 0) | (isWork ? 0x10 : 0) | (isAnthropology ? 0x20 : 0)
+                                    | (isPolitics ? 0x40 : 0) | (isFiction ? 0x80 : 0) | (isNonfiction ? 0x100 : 0)
+                                    | (isTextbookShelf ? 0x200 : 0));
+                if (!slug.isEmpty()) {
+                    sharedClassifyCache().insert(slug, classBits);
+                }
+            }
+            m_classifyCache.insert(row, classBits);
+        }
+        isBook = classBits & 0x1; isTextbook = classBits & 0x2; isMedicine = classBits & 0x4; isPsychiatry = classBits & 0x8;
+        isWork = classBits & 0x10; isAnthropology = classBits & 0x20; isPolitics = classBits & 0x40;
+        isFiction = classBits & 0x80; isNonfiction = classBits & 0x100; isTextbookShelf = classBits & 0x200;
         const bool isDownranked = sourceRowDownranked(row);
+        // A finished book belongs on the Finished shelf, not the "what to read" shelves.
+        if ((m_smartFilter == Books || m_smartFilter == Fiction || m_smartFilter == Nonfiction
+             || m_smartFilter == Textbooks)
+            && sourceRowFinished(row)) {
+            continue;
+        }
         switch (m_smartFilter) {
         case Papers:
             if (isBook) {
@@ -3892,12 +4955,20 @@ void PaperLibrarySectionedModel::rebuild()
             }
             break;
         case Books:
-            if (!isBook) {
+            // "Books" is the general reading shelf (fiction + trade non-fiction). Medical science,
+            // textbooks, and psychiatry have their own shelves (Medicine / Textbooks), so keep them
+            // -- and the medical papers the isBook heuristic occasionally admits -- off Books.
+            if (!isBook || isMedicine || isTextbookShelf || isPsychiatry) {
+                continue;
+            }
+            break;
+        case Finished:
+            if (!sourceRowFinished(row)) {
                 continue;
             }
             break;
         case Textbooks:
-            if (!isTextbook) {
+            if (!isTextbookShelf) {
                 continue;
             }
             break;
@@ -4100,7 +5171,8 @@ void PaperLibrarySectionedModel::rebuild()
             if (emittedSourceRows.contains(sourceRow)) {
                 continue;
             }
-            const QString bookTitleKey = duplicateBookTitleKey(m_source->index(sourceRow).data(Qt::DisplayRole).toString());
+            const QString bookTitleKey = duplicateBookTitleKey(m_source->index(sourceRow).data(Qt::DisplayRole).toString(),
+                                                               m_source->index(sourceRow).data(PaperLibraryModel::AuthorsRole).toString());
             if (!bookTitleKey.isEmpty() && emittedBookTitleKeys.contains(bookTitleKey)) {
                 continue;
             }
@@ -4134,6 +5206,12 @@ void PaperLibrarySectionedModel::rebuild()
     }
 
     m_allRows = m_rows;
+    // Each distinct search query caches a full row list; bound it so a long typing session
+    // doesn't grow the cache without limit (the classification cache below makes a cache miss
+    // cheap now anyway). 48 covers the section-mode + a healthy run of recent queries.
+    if (m_rowCache.size() >= 48) {
+        m_rowCache.clear();
+    }
     m_rowCache.insert(key, m_allRows);
     resetVisibleRows();
     rebuildPathIndex();

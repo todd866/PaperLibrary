@@ -13,13 +13,16 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLayout>
 #include <QListView>
 #include <QLineEdit>
 #include <QPainter>
 #include <QScrollBar>
+#include <QSet>
 #include <QSignalSpy>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyleOptionViewItem>
 #include <QTabBar>
@@ -51,6 +54,27 @@ QByteArray corpusRecordLine()
     object.insert(QStringLiteral("journal"), QStringLiteral("Journal of Synthetic Neurology"));
     object.insert(QStringLiteral("bytes"), 98765);
     object.insert(QStringLiteral("source"), QStringLiteral("md-project-review-set"));
+    object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-04-01T00:00:00+00:00"));
+    return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/** A corpus row the librarian marked a book. The Books shelf must show it even when the
+    reader also has local EPUBs -- owning one import used to hide the whole corpus. */
+QByteArray corpusBookRecordLine()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("slug"), QStringLiteral("md5-synthetic-corpus-novel"));
+    object.insert(QStringLiteral("doi"), QString());
+    object.insert(QStringLiteral("md5"), QStringLiteral("0123456789abcdef0123456789abcdef"));
+    object.insert(QStringLiteral("pmid"), QString());
+    object.insert(QStringLiteral("title"), QStringLiteral("A Synthetic Corpus Novel"));
+    object.insert(QStringLiteral("authors"), QStringLiteral("Nadia Novelist"));
+    object.insert(QStringLiteral("year"), QStringLiteral("1931"));
+    object.insert(QStringLiteral("journal"), QString());
+    object.insert(QStringLiteral("bytes"), 4242);
+    object.insert(QStringLiteral("source"), QStringLiteral("book:gutenberg"));
+    object.insert(QStringLiteral("record_kind"), QStringLiteral("book"));
+    object.insert(QStringLiteral("genre"), QStringLiteral("Fiction"));
     object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-04-01T00:00:00+00:00"));
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
 }
@@ -107,6 +131,29 @@ QByteArray biosystemsFalsePositiveRecordLine()
     object.insert(QStringLiteral("source"), QStringLiteral("aa_fast_download"));
     object.insert(QStringLiteral("added_ts"), QStringLiteral("2026-05-03T00:00:00+00:00"));
     return QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+}
+
+void writeDegradedCorpusHealth(const QString &corpusDir,
+                               const QStringList &issues = {QStringLiteral("full-text index is stale (2/5 rows)"),
+                                                            QStringLiteral("semantic graph is stale (1/5 embedding rows)")})
+{
+    QJsonObject artifacts;
+    artifacts.insert(QStringLiteral("search"), QJsonObject{{QStringLiteral("fresh"), false}});
+    artifacts.insert(QStringLiteral("graph"), QJsonObject{{QStringLiteral("fresh"), false}});
+    QJsonObject state;
+    state.insert(QStringLiteral("schema_version"), 1);
+    state.insert(QStringLiteral("generated_at"), QStringLiteral("2026-07-10T00:00:00Z"));
+    state.insert(QStringLiteral("healthy"), false);
+    state.insert(QStringLiteral("issues"), QJsonArray::fromStringList(issues));
+    state.insert(QStringLiteral("warnings"), QJsonArray());
+    // Must equal the number of lines initTestCase() writes to catalog.jsonl, or the model
+    // reports a coverage mismatch instead of the staleness this test is about.
+    state.insert(QStringLiteral("catalog"), QJsonObject{{QStringLiteral("rows"), 5}});
+    state.insert(QStringLiteral("artifacts"), artifacts);
+    QFile file(QDir(corpusDir).filePath(QStringLiteral("corpus_state.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(file.write(QJsonDocument(state).toJson(QJsonDocument::Compact)) > 0);
+    file.close();
 }
 
 void writeMndFocusManifest(const QString &corpusDir)
@@ -282,6 +329,8 @@ private Q_SLOTS:
     void testExtractedCorpusThumbnailOverridesLocalPdfRender();
     void testGeneratedCorpusCoverKeepsSemanticThumbnail();
     void testBooksShelfStaysWithLocalEbooks();
+    void testBooksShelfShowsCorpusBooksBesideLocalImports();
+    void testLibraryTabsShareOneCorpusModelInsteadOfReparsing();
     void testBooksShelfFetchesMoreRowsOnScroll();
     void testFinishedReadingShelfKeepsCompletedBooksOutOfActiveFeeds();
     void testLocalBookClassificationIgnoresStaleTags();
@@ -290,12 +339,15 @@ private Q_SLOTS:
     void testTilesSelectOnClickAndOpenOnDoubleClick();
     void testDraggingTileDownDownranksLocalBook();
     void testCorpusActivationStoresCuratedMetadata();
+    void testCorpusActivationAppendsPrivateUsageEvent();
+    void testCorpusHealthIsNotSurfacedToTheReader();
     void testStarterPackEmptySetupTile();
     void testStarterPackInstalledMetadataTooltip();
     void testCorpusShelfPrebuildsBeforeFirstSwitch();
     void testCorpusSelectionDoesNotShowPersistentContextStrip();
     void testEmptyCorpusShelfUsesTile();
     void testRapidCorpusShelfSwitchingDoesNotReload();
+    void testGridViewEmitsCurrentTileChangedOnNavigation();
 
 private:
     std::unique_ptr<QTemporaryDir> m_dir;
@@ -313,10 +365,12 @@ void LibraryViewTest::init()
 
     const QString configPath = m_dir->filePath(QStringLiteral("paperlibraryrc"));
     qputenv("PAPERLIBRARY_CONFIG_PATH", QFile::encodeName(configPath));
+    qputenv("PAPERLIBRARY_USAGE_EVENTS_PATH", QFile::encodeName(m_dir->filePath(QStringLiteral("events/usage-events.jsonl"))));
 
     QFile catalog(m_dir->filePath(QStringLiteral("catalog.jsonl")));
     QVERIFY(catalog.open(QIODevice::WriteOnly));
     catalog.write(corpusRecordLine());
+    catalog.write(corpusBookRecordLine());
     catalog.write(workCorpusRecordLine());
     catalog.write(bayesianFalsePositiveRecordLine());
     catalog.write(biosystemsFalsePositiveRecordLine());
@@ -423,7 +477,12 @@ void LibraryViewTest::testDomainShelvesRequireFocusManifest()
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Work")) >= 0);
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Starter Pack")) >= 0);
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Papers")) >= 0);
-    QCOMPARE(tabIndexForText(shelves, QStringLiteral("Textbooks")), -1);
+    // Textbooks is a corpus smart shelf, not a domain shelf. It used to be gated on
+    // focus/Textbooks/manifest.json, which the backend never generates and which
+    // focusManifestShelfName() has no case for anyway -- so the tab simply never appeared
+    // and the 178 rows the librarian marked "Textbook" had no shelf at all.
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Textbooks")) >= 0);
+    // Medicine and MND remain genuinely manifest-driven: their curation IS the manifest.
     QCOMPARE(tabIndexForText(shelves, QStringLiteral("Medicine")), -1);
     QCOMPARE(tabIndexForText(shelves, QStringLiteral("MND")), -1);
 }
@@ -467,8 +526,10 @@ void LibraryViewTest::testWorkShelfGeneratedCardsAreVisible()
     option.rect = QRect(QPoint(0, 0), tileSize);
     option.font = grid->font();
     option.fontMetrics = QFontMetrics(grid->font());
-    QVERIFY(tileSize.width() >= 220);
-    QVERIFY(tileSize.height() >= 280);
+    // A sanity floor that a card tile is substantial enough to paint. The corpus tile was tightened
+    // toward Apple-Books density (narrower, shorter cover band) to pack more per row: ~212x225 now.
+    QVERIFY(tileSize.width() >= 200);
+    QVERIFY(tileSize.height() >= 200);
 
     QPixmap tile(tileSize);
     const QColor base = view.palette().color(QPalette::Base);
@@ -793,6 +854,71 @@ void LibraryViewTest::testBooksShelfStaysWithLocalEbooks()
 
     shelves->setCurrentIndex(mndTab);
     QTRY_COMPARE(grid->model()->rowCount(), 1);
+}
+
+void LibraryViewTest::testLibraryTabsShareOneCorpusModelInsteadOfReparsing()
+{
+    // Every library tab used to build its own PaperLibraryModel and re-parse the catalog on show;
+    // telemetry recorded 2.5s rising to 4.6s as tabs accumulated. When the Shell supplies a shared
+    // model, a second tab must attach to the already-loaded model and NOT parse again.
+    LibraryStore store(m_dir->filePath(QStringLiteral("shared-paperlibraryrc")));
+    PaperLibraryModel shared;
+    QSignalSpy loadedSpy(&shared, &PaperLibraryModel::loaded);
+
+    LibraryView first(&store, nullptr, false, &shared);
+    first.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&first));
+    QTRY_VERIFY(shared.isLoaded());
+    const int loadsAfterFirst = loadedSpy.count();
+    QVERIFY(loadsAfterFirst >= 1);
+
+    // A second tab over the same shared model.
+    LibraryView second(&store, nullptr, false, &shared);
+    second.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&second));
+    QTest::qWait(400); // give any stray load a chance to fire, so a regression would show
+
+    QCOMPARE(loadedSpy.count(), loadsAfterFirst); // the catalog was not parsed a second time
+    QVERIFY(shared.isLoaded());                    // ...and the second tab sees a ready model
+}
+
+void LibraryViewTest::testBooksShelfShowsCorpusBooksBesideLocalImports()
+{
+    // Owning one imported EPUB used to route the Books shelf to LibraryStore and hide every
+    // corpus book behind it: a 687-book corpus rendered as six tiles. The corpus must win,
+    // and an import the catalog has never heard of must still appear.
+    LibraryStore store(m_dir->filePath(QStringLiteral("union-paperlibraryrc")));
+    const QString path = m_dir->filePath(QStringLiteral("union/An Imported Only Book.epub"));
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("not a real epub; enough for a local fixture path\n");
+    file.close();
+    const QUrl url = QUrl::fromLocalFile(path);
+    store.setTitle(url, QStringLiteral("An Imported Only Book"));
+    store.setTags(url, {QStringLiteral("Book")});
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    QListView *grid = view.findChild<QListView *>();
+    QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
+    QVERIFY(booksTab >= 0);
+    shelves->setCurrentIndex(booksTab);
+    QTRY_VERIFY(grid->model());
+
+    QSet<QString> shown;
+    QTRY_VERIFY(grid->model()->rowCount() >= 2);
+    for (int row = 0; row < grid->model()->rowCount(); ++row) {
+        shown.insert(grid->model()->index(row, 0).data(Qt::DisplayRole).toString());
+    }
+    QVERIFY2(shown.contains(QStringLiteral("A Synthetic Corpus Novel")),
+             "the corpus book vanished: a local import is shadowing the catalog again");
+    QVERIFY2(shown.contains(QStringLiteral("An Imported Only Book")),
+             "the local-only import vanished: preferring the corpus must not drop the reader's books");
 }
 
 void LibraryViewTest::testBooksShelfFetchesMoreRowsOnScroll()
@@ -1343,6 +1469,86 @@ void LibraryViewTest::testCorpusActivationStoresCuratedMetadata()
     QVERIFY(metadata.description.contains(QStringLiteral("Adjacent:")));
 }
 
+void LibraryViewTest::testCorpusActivationAppendsPrivateUsageEvent()
+{
+    writeMndFocusManifest(m_dir->path());
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    QListView *grid = view.findChild<QListView *>();
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(grid);
+    QVERIFY(shelves);
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+
+    const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
+    QVERIFY(mndTab >= 0);
+    shelves->setCurrentIndex(mndTab);
+    QTRY_COMPARE(grid->model()->rowCount(), 1);
+    const QModelIndex index = grid->model()->index(0, 0);
+    QVERIFY(index.isValid());
+    QSignalSpy activatedSpy(&view, &LibraryView::itemActivated);
+    QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
+    QVERIFY(QMetaObject::invokeMethod(grid, "doubleClicked", Qt::DirectConnection, Q_ARG(QModelIndex, index)));
+    QCOMPARE(activatedSpy.count(), 2);
+
+    const QString eventPath = m_dir->filePath(QStringLiteral("events/usage-events.jsonl"));
+    QFile events(eventPath);
+    QVERIFY(events.open(QIODevice::ReadOnly));
+    QList<QByteArray> lines = events.readAll().split('\n');
+    lines.removeAll(QByteArray());
+    QCOMPARE(lines.size(), 2);
+
+    QSet<QString> eventIds;
+    for (const QByteArray &line : lines) {
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(line, &error);
+        QCOMPARE(error.error, QJsonParseError::NoError);
+        QVERIFY(document.isObject());
+        const QJsonObject event = document.object();
+        QCOMPARE(event.value(QStringLiteral("schema_version")).toInt(), 1);
+        QCOMPARE(event.value(QStringLiteral("slug")).toString(), QStringLiteral("10-9999-synthetic-mnd-tiles"));
+        QCOMPARE(event.value(QStringLiteral("type")).toString(), QStringLiteral("open"));
+        QVERIFY(QDateTime::fromString(event.value(QStringLiteral("timestamp")).toString(), Qt::ISODateWithMs).isValid());
+        const QString eventId = event.value(QStringLiteral("event_id")).toString();
+        QVERIFY(!eventId.isEmpty());
+        eventIds.insert(eventId);
+    }
+    QCOMPARE(eventIds.size(), 2);
+
+    const QFileDevice::Permissions permissions = QFileInfo(eventPath).permissions();
+    QVERIFY(permissions.testFlag(QFileDevice::ReadOwner));
+    QVERIFY(permissions.testFlag(QFileDevice::WriteOwner));
+    const QFileDevice::Permissions forbidden = QFileDevice::ExeOwner | QFileDevice::ReadGroup | QFileDevice::WriteGroup
+        | QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+    QVERIFY(!(permissions & forbidden));
+}
+
+void LibraryViewTest::testCorpusHealthIsNotSurfacedToTheReader()
+{
+    // Corpus maintenance is the backend's job; the reader is never nagged about it, least of all
+    // with a command to run. Even on a corpus shelf with a degraded state file, the notice stays
+    // hidden. (This replaced the "catalog changed; run python3 maintain.py" banner.)
+    writeDegradedCorpusHealth(m_dir->path(),
+                              {QStringLiteral("catalog changed; run python3 maintain.py"),
+                               QStringLiteral("full-text index is stale (2/5 rows)")});
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, false);
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QLabel *notice = view.findChild<QLabel *>(QStringLiteral("corpusHealthNotice"));
+    QVERIFY(paperModel && shelves && notice);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QCOMPARE(paperModel->corpusHealth().status, PaperLibraryModel::CorpusHealth::Degraded);
+
+    shelves->setCurrentIndex(tabIndexForText(shelves, QStringLiteral("Papers")));
+    QTest::qWait(50);
+    QVERIFY2(notice->isHidden(), "corpus health must never be surfaced to the reader");
+}
+
 void LibraryViewTest::testStarterPackEmptySetupTile()
 {
     const QString starterDir = m_dir->filePath(QStringLiteral("starter-empty"));
@@ -1515,6 +1721,45 @@ void LibraryViewTest::testRapidCorpusShelfSwitchingDoesNotReload()
     QCOMPARE(loadedSpy.count(), 0);
     QVERIFY(grid->model());
     QCOMPARE(grid->viewMode(), QListView::IconMode);
+}
+
+void LibraryViewTest::testGridViewEmitsCurrentTileChangedOnNavigation()
+{
+    // The detail rail follows the current tile via LibraryGridView::currentTileChanged. It must fire
+    // on BOTH a programmatic current change (the click/select path) and real keyboard navigation --
+    // the latter through the keyPressEvent override, which does not depend on the view's selection
+    // model connection (that connection can be orphaned by a shelf's model swap).
+    // The offscreen test platform can't activate a window for real key delivery, so drive the
+    // protected keyPressEvent override directly through a friend subclass -- the same path Qt takes
+    // for a real arrow key.
+    struct TestableGrid : LibraryGridView {
+        void pressKey(Qt::Key key)
+        {
+            QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+            keyPressEvent(&event);
+        }
+    };
+    TestableGrid grid;
+    QStandardItemModel model;
+    for (int i = 0; i < 6; ++i) {
+        model.appendRow(new QStandardItem(QStringLiteral("row %1").arg(i)));
+    }
+    grid.setModel(&model);
+    grid.resize(400, 300);
+    grid.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&grid));
+    QSignalSpy spy(&grid, &LibraryGridView::currentTileChanged);
+
+    // Programmatic current change (the click / selectFirstTile path).
+    grid.setCurrentIndex(model.index(2, 0));
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.takeFirst().at(0).value<QModelIndex>().row(), 2);
+
+    // Keyboard navigation via the override -- independent of the selection-model connection.
+    spy.clear();
+    grid.pressKey(Qt::Key_Down);
+    QVERIFY2(spy.count() >= 1, "arrow-key navigation did not emit currentTileChanged");
+    QVERIFY(grid.currentIndex().row() != 2); // the key actually moved the current tile
 }
 
 QTEST_MAIN(LibraryViewTest)

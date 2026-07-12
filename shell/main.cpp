@@ -9,6 +9,7 @@
 */
 
 #include "shell.h"
+#include "telemetry.h"
 
 #include "macosscrolldebug.h"
 #include "paperlibrary_main.h"
@@ -24,6 +25,7 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QObject>
 #include <QStringList>
@@ -169,8 +171,19 @@ int main(int argc, char **argv)
     // Visible identity (menu bar app name, About, caption suffixes) is
     // PaperLibrary is the application identity and config/XMLGui component.
     QGuiApplication::setApplicationDisplayName(aboutData.displayName());
-    // set icon for shells which do not use desktop file metadata
-    QIcon appIcon(QStringLiteral(":/shell/icons/paperlibrary.svg"));
+    // set icon for shells which do not use desktop file metadata. On macOS, prefer the
+    // bundle's rendered .icns (crisp at every Dock size, and reliable when the app is
+    // launched straight out of a build tree rather than /Applications) over the SVG.
+    QIcon appIcon;
+#ifdef Q_OS_MACOS
+    const QString icnsPath = QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/PaperLibrary.icns");
+    if (QFileInfo::exists(icnsPath)) {
+        appIcon = QIcon(icnsPath);
+    }
+#endif
+    if (appIcon.isNull()) {
+        appIcon = QIcon(QStringLiteral(":/shell/icons/paperlibrary.svg"));
+    }
     if (appIcon.isNull()) {
         appIcon = QIcon::fromTheme(QStringLiteral("paperlibrary"));
     }
@@ -216,6 +229,14 @@ int main(int argc, char **argv)
             break;
         }
     }
+
+    // Local incident log: reconcile a previous crash, then watch this session's UI thread for
+    // hangs. stop() on clean exit writes session_end; its absence is how the next start knows a
+    // session crashed. Nothing leaves the machine.
+    Telemetry::instance().start();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        Telemetry::instance().stop();
+    });
 
     return app.exec();
 }

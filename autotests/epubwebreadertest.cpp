@@ -48,6 +48,7 @@ private Q_SLOTS:
     void testEpub3NavDocument();
     void testWeakNcxUsesInBookContentsLinks();
     void testFallbackNavigationFromSpineHeadings();
+    void testOversizedMarkupEntryIsNotRead();
     void testReportedReaderPositionTitle();
 };
 
@@ -205,6 +206,19 @@ void EpubWebReaderTest::testFallbackNavigationFromSpineHeadings()
     QCOMPARE(inspection.navigation.at(0).spineIndex, 0);
     QCOMPARE(inspection.navigation.at(1).title, QStringLiteral("Title Two"));
     QCOMPARE(inspection.navigation.at(1).spineIndex, 1);
+}
+
+void EpubWebReaderTest::testOversizedMarkupEntryIsNotRead()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = writeEpub(&dir, {
+                                             {QStringLiteral("large.xhtml"), QByteArray(8 * 1024 * 1024 + 1, 'x')},
+                                         });
+    KZip zip(path);
+    QVERIFY(zip.open(QIODevice::ReadOnly));
+    QVERIFY(readArchiveFile(zip, QStringLiteral("large.xhtml")).isEmpty());
+    QCOMPARE(readArchiveFile(zip, QStringLiteral("large.xhtml"), 9 * 1024 * 1024).size(), 8 * 1024 * 1024 + 1);
 }
 
 void EpubWebReaderTest::testReportedReaderPositionTitle()

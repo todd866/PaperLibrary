@@ -5,6 +5,8 @@
 */
 
 #include "epubwebreader.h"
+#include "telemetry.h"
+#include "readingprogress.h"
 
 #include <KArchiveDirectory>
 #include <KArchiveFile>
@@ -76,6 +78,11 @@ namespace EpubWebReaderCore
 constexpr double MaxStoredScrollOffset = 1000000000.0;
 constexpr int MinFontScaleStep = -5;
 constexpr int MaxFontScaleStep = 7;
+constexpr qint64 MaxArchiveEntryBytes = 128LL * 1024 * 1024;
+constexpr qint64 MaxArchiveTotalBytes = 1024LL * 1024 * 1024;
+[[maybe_unused]] constexpr qint64 MaxServedResourceBytes = 64LL * 1024 * 1024;
+constexpr int MaxArchiveFiles = 20000;
+constexpr int MaxArchiveDepth = 64;
 constexpr QLatin1StringView ReportedReaderPositionTitlePrefix("__paperlibrary_epub_position__|");
 
 QString cleanArchivePath(const QString &path)
@@ -220,10 +227,42 @@ const KArchiveFile *fileEntry(const KZip &zip, const QString &path)
     return entry && entry->isFile() ? static_cast<const KArchiveFile *>(entry) : nullptr;
 }
 
-QByteArray readArchiveFile(const KZip &zip, const QString &path)
+QByteArray readArchiveFile(const KZip &zip, const QString &path, qint64 maxBytes)
 {
     const KArchiveFile *file = fileEntry(zip, path);
-    return file ? file->data() : QByteArray();
+    return file && file->size() >= 0 && file->size() <= maxBytes ? file->data() : QByteArray();
+}
+
+bool archiveWithinResourceLimits(const KArchiveDirectory *directory, int depth, int *files, qint64 *bytes)
+{
+    if (!directory || depth > MaxArchiveDepth) {
+        return false;
+    }
+    for (const QString &name : directory->entries()) {
+        const KArchiveEntry *entry = directory->entry(name);
+        if (!entry) {
+            return false;
+        }
+        if (entry->isDirectory()) {
+            if (!archiveWithinResourceLimits(static_cast<const KArchiveDirectory *>(entry), depth + 1, files, bytes)) {
+                return false;
+            }
+            continue;
+        }
+        if (!entry->isFile()) {
+            continue;
+        }
+        const qint64 size = static_cast<const KArchiveFile *>(entry)->size();
+        if (size < 0 || size > MaxArchiveEntryBytes) {
+            return false;
+        }
+        ++(*files);
+        *bytes += size;
+        if (*files > MaxArchiveFiles || *bytes > MaxArchiveTotalBytes) {
+            return false;
+        }
+    }
+    return true;
 }
 
 QString firstContainerRootfile(const QByteArray &containerXml)
@@ -671,7 +710,7 @@ QList<EpubNavigationEntry> fallbackNavigationFromSpine(const KZip &zip, const QS
     return entries;
 }
 
-EpubInspection inspectEpub(const QString &path)
+static EpubInspection inspectEpubUncached(const QString &path)
 {
     EpubInspection result;
 
@@ -680,8 +719,14 @@ EpubInspection inspectEpub(const QString &path)
         return result;
     }
 
+    int archiveFiles = 0;
+    qint64 archiveBytes = 0;
+    if (!archiveWithinResourceLimits(zip.directory(), 0, &archiveFiles, &archiveBytes)) {
+        return result;
+    }
+
     const KArchiveFile *mimetype = fileEntry(zip, QStringLiteral("mimetype"));
-    const QByteArray mimetypeBytes = mimetype ? mimetype->data().trimmed() : QByteArray();
+    const QByteArray mimetypeBytes = mimetype && mimetype->size() <= 256 ? mimetype->data().trimmed() : QByteArray();
     result.isEpub = mimetypeBytes == QByteArrayLiteral("application/epub+zip") || QFileInfo(path).suffix().compare(QLatin1String("epub"), Qt::CaseInsensitive) == 0;
     if (!result.isEpub) {
         return result;
@@ -837,6 +882,36 @@ EpubInspection inspectEpub(const QString &path)
     }
 
     return result;
+}
+
+EpubInspection inspectEpub(const QString &path)
+{
+    // Opening one EPUB inspects it 2-3 times: canOpen() to route the file, then open(), plus the
+    // openUrl fallthrough. Each inspection re-opens the ZIP and, for a weak-navigation book, reads
+    // and parses every spine document -- seconds on a large book, paid several times over. The file
+    // does not change between those calls, so cache the last few by path + mtime + size. Main-thread
+    // only (canOpen/open), so no lock is needed.
+    struct CacheEntry {
+        QString path;
+        qint64 mtimeMs = 0;
+        qint64 size = 0;
+        EpubInspection inspection;
+    };
+    static QList<CacheEntry> cache;
+    const QFileInfo info(path);
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 size = info.size();
+    for (const CacheEntry &entry : cache) {
+        if (entry.path == path && entry.mtimeMs == mtimeMs && entry.size == size) {
+            return entry.inspection;
+        }
+    }
+    EpubInspection inspection = inspectEpubUncached(path);
+    cache.prepend({path, mtimeMs, size, inspection});
+    while (cache.size() > 4) { // a couple of books' worth; the redundant calls are back-to-back
+        cache.removeLast();
+    }
+    return inspection;
 }
 
 QString contentTypeForPath(const QString &path, const QString &manifestMediaType)
@@ -1224,6 +1299,12 @@ public:
             return;
         }
 
+        if (lookup.file->size() < 0 || lookup.file->size() > MaxServedResourceBytes) {
+            logRequest(job, lookup, false, QString(), lookup.file->size(), QStringLiteral("denied: resource exceeds size limit"));
+            job->fail(QWebEngineUrlRequestJob::RequestDenied);
+            return;
+        }
+
         const QByteArray data = lookup.file->data();
         const QString contentType = contentTypeForPath(lookup.zipEntry, m_manifestMediaTypesByPath.value(lookup.zipEntry));
         QMultiMap<QByteArray, QByteArray> headers;
@@ -1563,6 +1644,7 @@ void EpubWebReader::setReaderMotionEnabled(bool enabled)
 
 bool EpubWebReader::open(const QUrl &url)
 {
+    TelemetryScope op(QStringLiteral("epub_open")); // profile/view construction + inspect, ~2s cold
     if (!url.isLocalFile()) {
         return false;
     }
@@ -1638,6 +1720,13 @@ bool EpubWebReader::open(const QUrl &url)
     m_pendingScrollOffset = restoredPosition.scrollOffset;
     m_havePendingScrollOffset = restoredPosition.scrollOffset > 0.0;
     restoreHistoryStack();
+    // Record percent-read from the just-restored position, not only on the next save. A book last
+    // read before the ReadingProgress store existed saved a spine position but no percentage; this
+    // lets it light up its progress the moment it is reopened, instead of waiting for a page turn.
+    if (!m_spine.isEmpty()) {
+        ReadingProgress::record(QUrl::fromLocalFile(m_epubPath), m_bookTitle,
+                                ReadingProgress::fractionFromCounts(m_spineIndex + 1, m_spine.size()));
+    }
     epubReaderLog(QStringLiteral("restorePosition key=%1 saved=%2 status=%3 restored-spine-index=%4 restored-scroll-offset=%5")
                       .arg(key,
                            saved.join(QLatin1Char(',')),
@@ -1882,6 +1971,10 @@ void EpubWebReader::saveReadingPosition()
     const QString key = positionKey(m_epubPath);
     group.writeEntry(key, QStringList{QString::number(m_spineIndex), QString::number(m_pendingScrollOffset, 'f', 0)});
     group.sync();
+    // Percent-read for the tiles. An EPUB is reflowable, so this is chapter-coarse -- how far
+    // through the spine -- not a within-page fraction, but it tracks progress well enough to show.
+    ReadingProgress::record(QUrl::fromLocalFile(m_epubPath), m_bookTitle,
+                            ReadingProgress::fractionFromCounts(m_spineIndex + 1, m_spine.size()));
     epubReaderLog(QStringLiteral("savePosition key=%1 spine-index=%2 scroll-offset=%3")
                       .arg(key, QString::number(m_spineIndex), QString::number(m_pendingScrollOffset, 'f', 0)));
 }

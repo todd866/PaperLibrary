@@ -100,10 +100,13 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
     void leaveEvent(QEvent *event) override;
     void tabLayoutChange() override;
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void tabInserted(int index) override;
+    void tabRemoved(int index) override;
 
 private:
     bool closeGlyphVisible(int index) const;
@@ -111,6 +114,9 @@ private:
     void setHoveredTab(int tab);
     void updateNewTabButton();
     void refreshNewTabIcon();
+    int uniformTabWidth(int tabCount) const;
+    void relayoutTabs();
+    void thawTabWidths();
 
     QToolButton *m_newTabButton = nullptr;
     QVariantAnimation *m_hoverAnimation = nullptr;
@@ -125,6 +131,8 @@ private:
     bool m_dragCandidate = false;        // a press landed on bare strip; a drag would move the window
     bool m_windowDragEnabled = false;    // bare strip drags/zooms only when it is the titlebar
     bool m_suppressNextDblClick = false; // a close-glyph release must not let the paired double-click zoom
+    bool m_pointerInStrip = false;       // while true, a close must not reflow the tabs under the pointer
+    int m_frozenTabWidth = 0;            // 0 == not frozen; else the width every tab keeps
     QPoint m_pressPos;
 };
 

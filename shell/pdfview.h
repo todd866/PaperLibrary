@@ -9,6 +9,7 @@
 
 #include <QList>
 #include <QPointF>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -45,6 +46,27 @@ public:
         int pageOneBased = 0;
         int level = 1;
     };
+
+    /** Where the reader is within the current chapter -- "push through or stop?" made answerable. */
+    struct ChapterProgress {
+        bool valid = false;        /**< false when the document has no usable outline */
+        QString title;             /**< the current chapter's title */
+        int chapterIndex = 0;      /**< 1-based position among chapters */
+        int chapterCount = 0;
+        int pagesLeftInChapter = 0; /**< pages from the current one until the next chapter begins */
+        double fraction = 0.0;     /**< 0..1 through the current chapter */
+    };
+
+    /**
+     * Locate the current page within its chapter. Chapters are the level-1 outline entries (a
+     * chapter ends where the next one begins); if the outline is flat, every entry is a chapter.
+     * Pure and static so the arithmetic can be tested without a rendered document.
+     */
+    static ChapterProgress computeChapterProgress(const QList<AiNavigationEntry> &entries,
+                                                  int currentPageOneBased, int pageCount);
+
+    /** The current chapter position, from the live outline and page. */
+    ChapterProgress currentChapterProgress() const;
 
     explicit PdfView(QWidget *parent = nullptr);
     ~PdfView() override;
@@ -93,6 +115,7 @@ Q_SIGNALS:
     void loadFinished(bool ok);
     void errorOccurred(const QString &message);
     void pageStateChanged(int currentPage, int pageCount);
+    void chapterStateChanged(const PdfView::ChapterProgress &chapter);
     void zoomStateChanged(qreal zoomFactor, bool fitWidthMode);
     void outlineAvailableChanged(bool available);
     void relatedPapersRequested(const QString &query, const QString &label);
@@ -145,7 +168,11 @@ private:
     QWidget *m_findBar = nullptr;
     QLineEdit *m_findField = nullptr;
     QLabel *m_findStatusLabel = nullptr;
-    QWidget *m_outlineWidget = nullptr;
+    // QPointer: the outline is reparented into the shell sidebar's stacked widget when shown, so
+    // on shutdown the sidebar may delete it before ~PdfView runs. QPointer auto-nulls then, so the
+    // destructor's delete never double-frees; it still deletes it after a tab-close removeWidget()
+    // (which leaves it parentless).
+    QPointer<QWidget> m_outlineWidget;
     QLabel *m_outlineTitle = nullptr;
     QTreeView *m_outlineView = nullptr;
     QAction *m_aiNavigationAction = nullptr;

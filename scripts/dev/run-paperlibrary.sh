@@ -15,6 +15,22 @@ BUILD="${BUILD:-$REPO/build}"
 APP_BIN="$BUILD/bin/PaperLibrary.app/Contents/MacOS/PaperLibrary"
 [ -f "$HOME/CraftRoot/craft/craftenv.sh" ] || { echo "TOOLCHAIN MISSING — run scripts/dev/rebuild-toolchain.sh"; exit 1; }
 [ -f "$APP_BIN" ] || { echo "App not built: $APP_BIN — build target paperlibrary first"; exit 1; }
+
+# Refuse to launch a binary older than the source it was built from. A stale bundle
+# reproduces bugs that are already fixed on disk -- a crash was chased for an evening
+# because the running app predated its own fix, and because this script defaults to
+# $REPO/build while the test gate builds $REPO/build-paperlibrary-clean.
+# Checked before the pkill below, so a stale run never takes down a good instance.
+STALE=$(find "$REPO/shell" "$REPO/CMakeLists.txt" -newer "$APP_BIN" -print 2>/dev/null | head -1)
+if [ -n "$STALE" ]; then
+    echo "STALE BUILD: $APP_BIN"
+    echo "  is older than: $STALE"
+    echo "  rebuild:  cmake --build \"$BUILD\" --target paperlibrary -j 8"
+    echo "  or pick a tree:  BUILD=\"$REPO/build-paperlibrary-clean\" $0 $@"
+    echo "  or override:     FORCE=1 $0 $@"
+    [ "${FORCE:-0}" = "1" ] || exit 1
+    echo "  FORCE=1 set; launching the stale bundle anyway"
+fi
 # craftenv provides the Qt/DYLD runtime env; it changes CWD and may touch
 # unset vars, so guard it and never run under set -u.
 source "$HOME/CraftRoot/craft/craftenv.sh" >/dev/null 2>&1 || true

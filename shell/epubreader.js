@@ -181,8 +181,46 @@
         return Number.isFinite(lastScrollTarget) ? clamp(lastScrollTarget, 0, maxScrollLeft()) : scrollOffset();
     }
 
+    function pageMetricsFor(offset) {
+        // Which page of the current chapter, and how many, in paginated mode. A "page" is one
+        // column pitch; the chapter's page count is lastPageIndex + 1. Meaningless while scrolling.
+        const max = maxScrollLeft();
+        const step = pageStep();
+        if (!isPaginated() || !(step > 0)) {
+            return { page: 0, pages: 0 };
+        }
+        const last = lastPageIndex(max, step);
+        const clamped = clamp(finiteNumber(offset), 0, max);
+        // At (or within a boundary tolerance of) the end, we are on the last page even when the
+        // final column is partial and would otherwise round down -- matches snappedOffset's snap.
+        const index = clamped >= max - boundaryTolerance(step) ? last : clamp(Math.round(clamped / step), 0, last);
+        return { page: index + 1, pages: last + 1 };
+    }
+
+    function updatePageIndicator(page, pages) {
+        const show = isPaginated() && pages > 1 && page >= 1;
+        let element = document.getElementById("paperlibrary-page-indicator");
+        if (!element) {
+            if (!show) {
+                return;
+            }
+            element = document.createElement("div");
+            element.id = "paperlibrary-page-indicator";
+            element.setAttribute("aria-hidden", "true");
+            (document.documentElement || document.body).appendChild(element);
+        }
+        if (show) {
+            element.textContent = page + " / " + pages;
+            element.style.display = "";
+        } else {
+            element.style.display = "none";
+        }
+    }
+
     function reportPosition(offset) {
         positionReportSequence += 1;
+        const metrics = pageMetricsFor(offset);
+        updatePageIndicator(metrics.page, metrics.pages);
         document.title = positionTitlePrefix + positionReportSequence + "|" + Math.round(clamp(finiteNumber(offset), 0, maxScrollLeft()));
     }
 
@@ -200,6 +238,52 @@
         }, smoothScrollMs + 80);
     }
 
+    let scrollRaf = 0;
+    function setAxisScroll(element, value) {
+        if (isPaginated()) {
+            element.scrollLeft = value;
+            if (document.documentElement) { document.documentElement.scrollLeft = value; }
+            if (document.body) { document.body.scrollLeft = value; }
+        } else {
+            element.scrollTop = value;
+            if (document.documentElement) { document.documentElement.scrollTop = value; }
+            if (document.body) { document.body.scrollTop = value; }
+        }
+    }
+
+    // A custom eased scroll (ease-out cubic over ~smoothScrollMs). The native behavior:"smooth" on a
+    // full-page column jump is near-instant and gives no sense of motion; this animates the turn so a
+    // page flip actually reads as a flip. Reduced-motion (readerMotion off) jumps.
+    function animateScrollTo(element, target) {
+        window.cancelAnimationFrame(scrollRaf);
+        if (typeof window.requestAnimationFrame !== "function" || !readerMotion) {
+            setAxisScroll(element, target);
+            return;
+        }
+        const start = isPaginated() ? (element.scrollLeft || 0) : (element.scrollTop || 0);
+        const dist = target - start;
+        if (Math.abs(dist) < 0.5) {
+            setAxisScroll(element, target);
+            return;
+        }
+        const dur = Math.max(180, smoothScrollMs);
+        const clock = (window.performance && window.performance.now)
+            ? function () { return window.performance.now(); }
+            : function () { return Date.now(); };
+        const t0 = clock();
+        function frame() {
+            const p = Math.min(1, (clock() - t0) / dur);
+            const eased = 1 - Math.pow(1 - p, 3);
+            setAxisScroll(element, start + dist * eased);
+            if (p < 1) {
+                scrollRaf = window.requestAnimationFrame(frame);
+            } else {
+                setAxisScroll(element, target);
+            }
+        }
+        scrollRaf = window.requestAnimationFrame(frame);
+    }
+
     function setScrollOffset(offset, options) {
         const element = scroller();
         if (!element) {
@@ -215,15 +299,7 @@
         if (smooth) {
             lastScrollTarget = target;
             clearLastScrollTargetSoon();
-            if (typeof element.scrollTo === "function") {
-                element.scrollTo({ left: isPaginated() ? target : 0, top: isPaginated() ? 0 : target, behavior: "smooth" });
-            } else {
-                if (isPaginated()) {
-                    element.scrollLeft = target;
-                } else {
-                    element.scrollTop = target;
-                }
-            }
+            animateScrollTo(element, target); // eased page-turn animation (see above)
             reportPosition(target);
             schedulePositionReport(smoothScrollMs + 40);
         } else {

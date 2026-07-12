@@ -84,7 +84,7 @@ QStringList resolvePackageHrefCandidates(const QString &opfDir, const QString &h
 EpubInspection inspectEpub(const QString &path);
 QString contentTypeForPath(const QString &path, const QString &manifestMediaType = QString());
 ArchiveLookup lookupArchivePath(const KZip &zip, const QString &requestPath, const QString &opfDir, const QHash<QString, QString> &manifestPathsByHref);
-QByteArray readArchiveFile(const KZip &zip, const QString &path);
+QByteArray readArchiveFile(const KZip &zip, const QString &path, qint64 maxBytes = 8 * 1024 * 1024);
 QString positionKey(const QString &epubPath);
 double cleanRestoredScrollOffset(double scrollOffset);
 bool isRestorableScrollOffset(double scrollOffset);

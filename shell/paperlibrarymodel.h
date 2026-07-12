@@ -14,6 +14,7 @@
 #include <QSet>
 #include <QSortFilterProxyModel>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 
 class QThread;
@@ -26,10 +27,11 @@ class QThread;
  * loaded().
  *
  * Strictly read-only towards the corpus: catalog.jsonl is only ever read,
- * catalog.db (when present and readable) is opened immutable/read-only for
+ * catalog.db (when present and readable) is opened WAL-aware/read-only for
  * the pdf_path/pdf_evicted enrichment, and no corpus script is ever
- * invoked. Record fields are opaque display strings — the model stores and
- * shows them, nothing more.
+ * invoked. corpus_state.json is the read-only backend contract for derived
+ * index freshness. Record fields are opaque display strings — the model
+ * stores and shows them, nothing more.
  */
 class PaperLibraryModel : public QAbstractListModel
 {
@@ -50,6 +52,12 @@ public:
         PinnedRole,
         CitedByCountRole,
         RelatedCountRole,
+        GenreRole, /**< librarian genre; drives shelf classification when present */
+        RecordKindRole, /**< 'book'/'paper' from the librarian; authoritative book flag */
+        DescriptionRole, /**< librarian synopsis/description */
+        TopicsRole, /**< librarian topic strings */
+        ReadingLevelRole, /**< librarian audience/reading level */
+        SubgenreRole, /**< librarian content subtype */
         HaystackRole, /**< case-folded searchable text for the filter */
         MissingRole,  /**< true when the catalog knows the PDF is not local */
         ResolvedPathRole, /**< load-time local PDF path, no fresh filesystem check */
@@ -62,6 +70,27 @@ public:
         Unknown,   /**< no database to ask; resolution deferred to activation */
     };
 
+    /** Freshness contract published by the backend in corpus_state.json. */
+    struct CorpusHealth {
+        enum Status {
+            UnknownStatus, /**< state file is missing, malformed, or unsupported */
+            Healthy,
+            Degraded,
+        };
+
+        Status status = UnknownStatus;
+        QString generatedAt;
+        QStringList issues;
+        QStringList warnings;
+        int catalogRows = -1;
+        QString catalogRevision;
+        QString manifestSha256;
+        QString manifestSourceRevision;
+        bool manifestFresh = false;
+        bool searchFresh = false;
+        bool graphFresh = false;
+    };
+
     struct Record {
         QString slug;
         QString doi;
@@ -72,6 +101,12 @@ public:
         QString year;
         QString journal;
         QString source;
+        QString genre; /**< librarian genre from catalog.jsonl; authoritative for shelves when non-empty */
+        QString recordKind; /**< 'book'/'paper' from the librarian; authoritative book flag when non-empty */
+        QString description;
+        QStringList topics;
+        QString readingLevel;
+        QString subgenre;
         QString addedTs;
         qint64 bytes = 0;
         QString pdfPath; /**< resolved local path; empty when none was found */
@@ -97,6 +132,15 @@ public:
 
     /** Parse @p corpusDir's catalog off the UI thread; emits loaded(). */
     void load(const QString &corpusDir);
+    /**
+     * Books the reader imported locally, which the corpus does not know about.
+     *
+     * Nothing in the shell writes catalog.jsonl, so an imported EPUB never reaches the
+     * corpus. Merging them here lets the book shelves show the whole collection instead
+     * of choosing between the corpus and the reader's own imports. A local book whose
+     * title already exists in the catalog is dropped -- the catalog row is richer.
+     */
+    void setLocalBooks(const QList<Record> &books);
     /** Re-load, but only when catalog.jsonl's mtime moved since the last load. */
     void reloadIfChanged();
     bool isLoaded() const;
@@ -113,8 +157,18 @@ public:
     int rowForLookupSlug(const QString &slug) const;
     int rowForLookupDoi(const QString &doi) const;
     int rowForLookupPath(const QString &path) const;
+    /** Best-effort match of a display title to a catalog row, so a local-shelf tile can borrow the
+        librarian blurb/topics of its corpus twin. Returns -1 when no confident match exists. */
+    int rowForLookupTitle(const QString &title) const;
+    /** Like rowForLookupTitle but over ALL rows (no blurb requirement): used to find the corpus twin
+        of a file-backed feed book so marking it finished can land it on the Finished shelf. */
+    int rowForAnyTitle(const QString &title) const;
+    CorpusHealth corpusHealth() const;
     bool hasFullTextSearchIndex() const;
     bool hasSemanticGraph() const;
+    /** True only when the artifact exists and corpus_state.json says it matches this catalog. */
+    bool hasFreshFullTextSearchIndex() const;
+    bool hasFreshSemanticGraph() const;
     QList<int> fullTextSearchRows(const QString &query, int limit = 600) const;
     QList<int> relatedRowsForSlug(const QString &slug, int limit = 120) const;
 
@@ -125,7 +179,7 @@ public:
     static void sortRecords(QList<Record> &records);
     /**
      * Fill pdfPath/availability: catalog.db's pdf_path when the database is
-     * readable (opened read-only and immutable), the derived
+     * readable (opened WAL-aware and read-only), the derived
      * pdfs/<slug>.pdf as fallback — either only counts when the file
      * actually exists. Without a readable database unresolved records stay
      * Unknown instead of Missing.
@@ -136,20 +190,33 @@ Q_SIGNALS:
     void loaded(int count);
 
 private:
-    void finishLoad(const QList<Record> &records);
+    void finishLoad(QList<Record> records, CorpusHealth health, quint64 generation);
     void rebuildLookupRows();
+    /** m_records := catalog rows, then any local book the catalog does not already hold. */
+    void rebuildRecords();
 
     friend class PaperLibraryModelTest;
 
     QString m_corpusDir;
     QDateTime m_catalogMtime;
+    QDateTime m_manifestMtime;
+    QDateTime m_healthMtime;
     QThread *m_worker = nullptr;
+    QSet<QThread *> m_workers;
+    quint64 m_loadGeneration = 0;
     bool m_loading = false;
     bool m_loaded = false;
-    QList<Record> m_records;
+    QList<Record> m_records;      /**< what the view sees: catalog rows + local-only books */
+    QList<Record> m_catalogRecords; /**< catalog.jsonl alone; a reload replaces only this */
+    QList<Record> m_localBooks;   /**< the reader's imports; survive a corpus reload */
+    QByteArray m_localBooksSignature; /**< identity of the last set, to skip a no-op reset */
+    bool m_localBooksSet = false;
+    CorpusHealth m_corpusHealth;
     QHash<QString, int> m_rowsByLookupSlug;
     QHash<QString, int> m_rowsByLookupDoi;
     QHash<QString, int> m_rowsByLookupPath;
+    QHash<QString, int> m_rowsByLookupTitle;
+    QHash<QString, int> m_rowsByAnyTitle;
 };
 
 /**
@@ -204,6 +271,7 @@ public:
         Politics,
         Fiction,
         Nonfiction,
+        Finished, /**< cross-cutting: any record the user marked finished, book or paper */
     };
 
     enum SectionMode {
@@ -230,23 +298,28 @@ public:
         RelationHintRole,
         PriorityHintRole,
         PdfPathRole,
+        ReadingProgressRole, /**< 0..1 percent-read from ReadingProgress, or <0 when none */
         CoverPixmapRole,
         GeneratedCoverRole,
         DownrankedRole,
+        FinishedRole,
     };
 
     explicit PaperLibrarySectionedModel(QObject *parent = nullptr);
+    ~PaperLibrarySectionedModel() override;
 
     void setSourceModel(PaperLibraryModel *model);
     void setShelf(SmartFilter filter, SectionMode mode);
     void setSmartFilter(SmartFilter filter);
     void setSectionMode(SectionMode mode);
     void setQuery(const QString &query);
-    void setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText = QString());
+    void setExplicitSourceRows(const QList<int> &sourceRows, const QString &label, const QString &emptyText = QString(), bool bypassShelfFilter = false);
     void clearExplicitSourceRows();
     bool hasExplicitSourceRows() const;
     void setCoverForPath(const QString &path, const QVariant &cover, bool generated);
     void setDownranked(const QModelIndex &index, bool downranked);
+    void setFinished(const QModelIndex &index, bool finished);
+    void reloadFinishedSlugs(); // pick up finished marks made on another shelf's model (shared via config)
 
     SmartFilter smartFilter() const;
     SectionMode sectionMode() const;
@@ -287,13 +360,20 @@ private:
     QString storedPathForSourceRow(int sourceRow) const;
     bool acceptsSourceRow(int sourceRow) const;
     bool sourceRowDownranked(int sourceRow) const;
-    void saveDownrankedSlugs() const;
+    QSet<QString> readDownrankedSlugs() const;
+    void saveDownrankedSlugs(const QSet<QString> &slugs) const;
+    void applyDownrankedSlugs(const QSet<QString> &slugs);
+    void broadcastDownrankedSlugs(const QSet<QString> &slugs);
+    bool sourceRowFinished(int sourceRow) const;
+    bool titleIsFinished(const QString &title) const;
+    void saveFinishedSlugs() const;
 
     PaperLibraryModel *m_source = nullptr;
     SmartFilter m_smartFilter = Papers;
     SectionMode m_sectionMode = ReadNext;
     QString m_query;
     bool m_explicitRowsActive = false;
+    bool m_explicitBypassFilter = false; /**< explicit rows (e.g. adjacent) ignore the shelf smart-filter */
     QList<int> m_explicitSourceRows;
     QString m_explicitRowsLabel;
     QString m_explicitRowsEmptyText;
@@ -303,7 +383,16 @@ private:
     QHash<QString, QList<int>> m_rowsByPath;
     QHash<QString, QVariant> m_coverPixmaps;
     QSet<QString> m_generatedCoverPaths;
+    QString m_feedConfigPath;
     QSet<QString> m_downrankedSlugs;
+    QSet<QString> m_finishedSlugs;
+    QSet<QString> m_finishedTitles; /**< normalised titles of finished books, so all duplicate rows count */
+    void rebuildFinishedTitles();
+    // Per-source-row shelf classification (isBook/isTextbook/... as a bitfield). Stable per row —
+    // depends only on the row's own text+genre, not on query/downrank/finished — so it survives
+    // clearRowCache() and spares rebuild() the ~18k-row regex sweep (the downrank/finished hang).
+    // Cleared only when the source data itself changes.
+    QHash<int, quint16> m_classifyCache;
 };
 
 #endif

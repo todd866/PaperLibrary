@@ -217,7 +217,7 @@ Status main(const QStringList &paths, const QString &serializedOptions)
         return Error;
     }
 
-    // try to attach to existing session, unique or not
+    // try to attach to existing session, unique or not.
     if (attachUniqueInstance(paths, serializedOptions) || attachExistingInstance(paths, serializedOptions)) {
         return AttachedOtherProcess;
     }

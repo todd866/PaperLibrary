@@ -59,6 +59,8 @@ private Q_SLOTS:
     void testDirectoryBundleEncryptedCoverFallsBack();
     void testDirectoryBundleFallbackLargestImage();
     void testDirectoryBundleHrefCannotEscape();
+    void testArchiveDepthBudgetRejectsCoverExtraction();
+    void testDirectoryDepthBudgetRejectsCoverExtraction();
 
 private:
     QString writeEpub(const QList<QPair<QString, QByteArray>> &files);
@@ -417,6 +419,48 @@ void EpubCoverTest::testDirectoryBundleHrefCannotEscape()
     QVERIFY(!root.isEmpty());
 
     QVERIFY(EpubCover::extract(root).isNull());
+}
+
+void EpubCoverTest::testArchiveDepthBudgetRejectsCoverExtraction()
+{
+    const char *opf = R"(<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata/><manifest><item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/></manifest>
+</package>)";
+    QString deepPath;
+    for (int depth = 0; depth < 66; ++depth) {
+        deepPath += QStringLiteral("d/");
+    }
+    deepPath += QStringLiteral("sentinel.txt");
+    const QString path = writeEpub({
+        {QStringLiteral("META-INF/container.xml"), containerXml},
+        {QStringLiteral("OEBPS/content.opf"), opf},
+        {QStringLiteral("OEBPS/cover.png"), pngBytes(Qt::red, QSize(12, 12))},
+        {deepPath, QByteArrayLiteral("x")},
+    });
+    QVERIFY(!path.isEmpty());
+    QVERIFY(EpubCover::extract(path).isNull());
+    QVERIFY(EpubCover::metadata(path).title.isEmpty());
+}
+
+void EpubCoverTest::testDirectoryDepthBudgetRejectsCoverExtraction()
+{
+    const char *opf = R"(<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata/><manifest><item id="cover" href="cover.png" media-type="image/png" properties="cover-image"/></manifest>
+</package>)";
+    QString deepPath;
+    for (int depth = 0; depth < 66; ++depth) {
+        deepPath += QStringLiteral("d/");
+    }
+    deepPath += QStringLiteral("sentinel.txt");
+    const QString root = writeEpubDir({
+        {QStringLiteral("META-INF/container.xml"), containerXml},
+        {QStringLiteral("OEBPS/content.opf"), opf},
+        {QStringLiteral("OEBPS/cover.png"), pngBytes(Qt::blue, QSize(12, 12))},
+        {deepPath, QByteArrayLiteral("x")},
+    });
+    QVERIFY(!root.isEmpty());
+    QVERIFY(EpubCover::extract(root).isNull());
+    QVERIFY(EpubCover::metadata(root).title.isEmpty());
 }
 
 QTEST_MAIN(EpubCoverTest)

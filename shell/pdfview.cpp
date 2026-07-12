@@ -5,6 +5,8 @@
 */
 
 #include "pdfview.h"
+#include "telemetry.h"
+#include "readingprogress.h"
 
 #include "claudeprocesshelper.h"
 
@@ -1744,9 +1746,49 @@ PdfView::PdfView(QWidget *parent)
 
 PdfView::~PdfView()
 {
+    // QPdfDocument::close() resets QPdfView's scroll bars/page navigator and the models attached
+    // to the document. QObject's automatic receiver disconnection happens in ~QObject, which is
+    // too late for a PdfView slot: by then this derived subobject has already been destroyed. Tear
+    // down the complete QtPdf dependency graph now, while `this` is still a valid PdfView.
     cancelAiNavigationRun();
+
+    if (m_view) {
+        if (QPdfPageNavigator *const navigator = m_view->pageNavigator()) {
+            navigator->disconnect(this);
+        }
+        m_view->disconnect(this);
+    }
+    if (m_searchModel) {
+        m_searchModel->disconnect(this);
+    }
+    if (m_bookmarkModel) {
+        m_bookmarkModel->disconnect(this);
+    }
+    if (m_document) {
+        m_document->disconnect(this);
+    }
+
+    // The outline can be reparented into the Shell sidebar. Delete it before its proxy/model,
+    // unless the sidebar already did so (QPointer then auto-nulls m_outlineWidget).
     if (m_outlineWidget) {
         delete m_outlineWidget;
+    }
+
+    // Do not leave the ordering to QObject child destruction. Destroy every document consumer
+    // while its QPdfDocument is still valid; only then close and destroy the document itself.
+    delete m_view;
+    m_view = nullptr;
+    m_pageTransitionOverlay = nullptr;
+    delete m_bookmarkTitleModel;
+    m_bookmarkTitleModel = nullptr;
+    delete m_bookmarkModel;
+    m_bookmarkModel = nullptr;
+    delete m_searchModel;
+    m_searchModel = nullptr;
+    if (m_document) {
+        m_document->close();
+        delete m_document;
+        m_document = nullptr;
     }
 }
 
@@ -1780,6 +1822,7 @@ void PdfView::setReaderMotionEnabled(bool enabled)
 
 bool PdfView::open(const QUrl &url)
 {
+    TelemetryScope op(QStringLiteral("pdf_open"));
     if (!canOpen(url)) {
         return false;
     }
@@ -2120,6 +2163,9 @@ void PdfView::saveReadingPosition()
                          fitWidthMode() ? QStringLiteral("FitToWidth") : QStringLiteral("Custom"),
                      });
     group.sync();
+    // The tiles want a percent-read, which the position above can't give without the total. Here we
+    // have both, so record the fraction for the library to show.
+    ReadingProgress::record(m_url, ReadingProgress::fractionFromCounts(currentPageOneBased(), pageCount()));
 }
 
 void PdfView::closeEvent(QCloseEvent *event)
@@ -2767,9 +2813,74 @@ void PdfView::setupFindBar()
     connect(closeButton, &QToolButton::clicked, this, &PdfView::closeFindBar);
 }
 
+PdfView::ChapterProgress PdfView::computeChapterProgress(const QList<AiNavigationEntry> &entries,
+                                                         int currentPageOneBased, int pageCount)
+{
+    ChapterProgress progress;
+    if (entries.isEmpty() || pageCount <= 0 || currentPageOneBased < 1) {
+        return progress; // invalid: nothing to anchor a chapter to
+    }
+
+    // Chapters are the top-level (level-1) outline entries -- a subsection is not a chapter end.
+    // A flat outline with no level-1 entries falls back to treating every entry as a chapter.
+    QList<AiNavigationEntry> chapters;
+    for (const AiNavigationEntry &entry : entries) {
+        if (entry.level <= 1) {
+            chapters.append(entry);
+        }
+    }
+    if (chapters.isEmpty()) {
+        chapters = entries;
+    }
+    std::sort(chapters.begin(), chapters.end(),
+              [](const AiNavigationEntry &a, const AiNavigationEntry &b) { return a.pageOneBased < b.pageOneBased; });
+
+    progress.valid = true;
+    progress.chapterCount = int(chapters.size());
+
+    // The current chapter is the last one that begins at or before the current page.
+    int index = -1;
+    for (int i = 0; i < chapters.size(); ++i) {
+        if (chapters[i].pageOneBased <= currentPageOneBased) {
+            index = i;
+        } else {
+            break;
+        }
+    }
+
+    if (index < 0) {
+        // Before the first chapter: front matter, which runs from page 1 to that chapter.
+        progress.chapterIndex = 0;
+        progress.title = QObject::tr("Front matter");
+        const int start = 1;
+        const int end = chapters.first().pageOneBased; // exclusive
+        progress.pagesLeftInChapter = qMax(1, end - currentPageOneBased);
+        const int span = qMax(1, end - start);
+        progress.fraction = qBound(0.0, double(currentPageOneBased - start) / span, 1.0);
+        return progress;
+    }
+
+    const int start = chapters[index].pageOneBased;
+    // The chapter ends where the next one begins; the last chapter ends one past the last page.
+    const int end = (index + 1 < chapters.size()) ? chapters[index + 1].pageOneBased : pageCount + 1;
+    progress.chapterIndex = index + 1;
+    progress.title = chapters[index].title;
+    progress.pagesLeftInChapter = qMax(0, end - currentPageOneBased);
+    const int span = qMax(1, end - start);
+    progress.fraction = qBound(0.0, double(currentPageOneBased - start) / span, 1.0);
+    return progress;
+}
+
+PdfView::ChapterProgress PdfView::currentChapterProgress() const
+{
+    return computeChapterProgress(m_aiNavigationEntries, currentPageOneBased(), pageCount());
+}
+
 void PdfView::emitPageState()
 {
     Q_EMIT pageStateChanged(currentPageOneBased(), pageCount());
+    const ChapterProgress chapter = currentChapterProgress();
+    Q_EMIT chapterStateChanged(chapter);
 }
 
 void PdfView::emitZoomState()

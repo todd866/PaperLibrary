@@ -12,20 +12,26 @@ ecm_add_test(librarystoretest.cpp ../shell/librarystore.cpp ../shell/applebooksp
     LINK_LIBRARIES Qt6::Test Qt6::Sql KF6::ConfigCore
 )
 
-ecm_add_test(libraryautotaggertest.cpp ../shell/libraryautotagger.cpp ../shell/claudeprocesshelper.cpp ../shell/librarystore.cpp ../shell/paperlibrarymodel.cpp
+ecm_add_test(libraryautotaggertest.cpp ../shell/libraryautotagger.cpp ../shell/claudeprocesshelper.cpp ../shell/librarystore.cpp ../shell/paperlibrarymodel.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/telemetry.cpp
     TEST_NAME "libraryautotaggertest"
     LINK_LIBRARIES Qt6::Test Qt6::Sql KF6::ConfigCore
 )
 
-ecm_add_test(paperlibrarymodeltest.cpp ../shell/paperlibrarymodel.cpp
+ecm_add_test(paperlibrarymodeltest.cpp ../shell/paperlibrarymodel.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/telemetry.cpp
     TEST_NAME "paperlibrarymodeltest"
     LINK_LIBRARIES Qt6::Test Qt6::Sql KF6::ConfigCore
 )
 
+ecm_add_test(pdfviewlifecycletest.cpp ../shell/pdfview.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/claudeprocesshelper.cpp ../shell/shell.qrc
+    TEST_NAME "pdfviewlifecycletest"
+    LINK_LIBRARIES Qt6::Test Qt6::Widgets Qt6::PdfWidgets KF6::ConfigCore KF6::I18n
+)
+set_tests_properties(pdfviewlifecycletest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 ecm_add_test(libraryviewtest.cpp
     ../shell/libraryview.cpp
     ../shell/librarystore.cpp
-    ../shell/paperlibrarymodel.cpp
+    ../shell/paperlibrarymodel.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/telemetry.cpp
     ../shell/coverheuristic.cpp
     ../shell/covergenerator.cpp
     ../shell/epubcover.cpp
@@ -55,15 +61,15 @@ ecm_add_test(epubimportertest.cpp ../shell/epubimporter.cpp ../shell/applebooksp
     LINK_LIBRARIES Qt6::Test Qt6::Gui Qt6::Sql KF6::Archive
 )
 
-ecm_add_test(epubwebreadertest.cpp ../shell/epubwebreader.cpp
+ecm_add_test(epubwebreadertest.cpp ../shell/epubwebreader.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/telemetry.cpp
     TEST_NAME "epubwebreadertest"
-    LINK_LIBRARIES Qt6::Test Qt6::Xml KF6::Archive
+    LINK_LIBRARIES Qt6::Test Qt6::Xml KF6::Archive KF6::ConfigCore
 )
 target_compile_definitions(epubwebreadertest PRIVATE PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY)
 
-ecm_add_test(epubreadercorpustest.cpp ../shell/epubwebreader.cpp
+ecm_add_test(epubreadercorpustest.cpp ../shell/epubwebreader.cpp ../shell/telemetry.cpp ../shell/readingprogress.cpp ../shell/telemetry.cpp
     TEST_NAME "epubreadercorpustest"
-    LINK_LIBRARIES Qt6::Core Qt6::Xml KF6::Archive
+    LINK_LIBRARIES Qt6::Core Qt6::Xml KF6::Archive KF6::ConfigCore
 )
 target_compile_definitions(epubreadercorpustest PRIVATE PAPERLIBRARY_EPUBWEBREADER_CORE_ONLY)
 
@@ -78,6 +84,16 @@ endif()
 ecm_add_test(chromestriptest.cpp ../shell/chrometabbar.cpp ${_shell_mac_srcs}
     TEST_NAME "chromestriptest"
     LINK_LIBRARIES Qt6::Test Qt6::Widgets KF6::WidgetsAddons KF6::I18n KF6::ConfigCore
+)
+
+ecm_add_test(telemetrytest.cpp ../shell/telemetry.cpp
+    TEST_NAME "telemetrytest"
+    LINK_LIBRARIES Qt6::Test Qt6::Core
+)
+
+ecm_add_test(readingprogresstest.cpp ../shell/readingprogress.cpp
+    TEST_NAME "readingprogresstest"
+    LINK_LIBRARIES Qt6::Test Qt6::Core KF6::ConfigCore
 )
 if(APPLE)
     target_link_libraries(chromestriptest "-framework AppKit" "-framework Foundation")

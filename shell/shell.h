@@ -14,6 +14,7 @@
 
 #include "config-paperlibrary.h"
 #include <QAction>
+#include <QHash>
 #include <QList>
 #include <QMetaObject>
 #include <QMimeDatabase>
@@ -22,6 +23,7 @@
 #include <KXmlGuiWindow>
 
 class QWindow;
+class QProcess;
 
 #if HAVE_DBUS
 #include <QDBusAbstractAdaptor> // for Q_NOREPLY
@@ -34,6 +36,7 @@ class EpubWebReader;
 class LibraryAutoTagger;
 class LibraryStore;
 class LibraryView;
+class PaperLibraryModel;
 class PdfView;
 class Sidebar;
 class KRecentFilesAction;
@@ -197,6 +200,7 @@ private:
 
     KRecentFilesAction *m_recent;
     LibraryStore *m_libraryStore = nullptr;
+    PaperLibraryModel *m_sharedPaperModel = nullptr; /**< one corpus model for all library tabs */
     LibraryAutoTagger *m_libraryAutoTagger = nullptr;
     QAction *m_printAction;
     QAction *m_closeAction;
@@ -266,6 +270,7 @@ private:
     QAction *m_epubBookUseGlobalAction = nullptr;
     QAction *m_epubBookPaginatedAction = nullptr;
     QAction *m_epubBookContinuousAction = nullptr;
+    QAction *m_epubToggleScrollAction = nullptr;
     QAction *m_epubBackAction = nullptr;
     QAction *m_epubForwardAction = nullptr;
     QAction *m_scanAppleBooksAction = nullptr;

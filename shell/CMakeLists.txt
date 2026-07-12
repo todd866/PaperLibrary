@@ -26,6 +26,8 @@ set(paperlibrary_SRCS
    claudeprocesshelper.cpp
    libraryautotagger.cpp
    applebooksprogress.cpp
+   telemetry.cpp
+   readingprogress.cpp
 
    shell.qrc
 )
@@ -49,6 +51,23 @@ else()
 endif()
 
 add_executable(paperlibrary ${paperlibrary_SRCS})
+
+# Stamp the build into telemetry so a logged regression can be blamed on a commit. Captured at
+# configure time; re-run cmake (or touch this file) after committing to refresh. telemetrytest
+# compiles telemetry.cpp without these and falls back to "unknown", which is fine for the test.
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE PAPERLIBRARY_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT PAPERLIBRARY_GIT_COMMIT)
+    set(PAPERLIBRARY_GIT_COMMIT "unknown")
+endif()
+string(TIMESTAMP PAPERLIBRARY_BUILD_TS "%Y-%m-%dT%H:%M:%SZ" UTC)
+target_compile_definitions(paperlibrary PRIVATE
+    "PAPERLIBRARY_GIT_COMMIT=\"${PAPERLIBRARY_GIT_COMMIT}\""
+    "PAPERLIBRARY_BUILD_TS=\"${PAPERLIBRARY_BUILD_TS}\"")
 
 target_link_libraries(paperlibrary
     KF6::Archive

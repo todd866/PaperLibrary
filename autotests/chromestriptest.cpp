@@ -33,6 +33,7 @@ private Q_SLOTS:
     void testStripHeightPropagates();
     void testHitTestClassification();
     void testConfigFallback();
+    void testTabsHoldTheirWidthWhileClosingUnderTheCursor();
 };
 
 void ChromeStripTest::testComputeEffectiveInset()
@@ -128,6 +129,39 @@ void ChromeStripTest::testConfigFallback()
 
     general.writeEntry("TitlebarTabs", true);
     QVERIFY(chromeTitlebarTabsEnabled(general));
+}
+
+void ChromeStripTest::testTabsHoldTheirWidthWhileClosingUnderTheCursor()
+{
+    // Closing several tabs in a row slid the [x] out from under the pointer: every
+    // close divided the strip among one fewer tab, so the survivors grew and the next
+    // close glyph moved. Chrome freezes the tab width until the pointer leaves.
+    ChromeTabStrip strip;
+    ChromeTabBar *const bar = strip.tabBar();
+    for (int i = 0; i < 6; ++i) {
+        bar->addTab(QStringLiteral("Tab %1").arg(i));
+    }
+    strip.resize(800, 40);
+    strip.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&strip));
+
+    const int frozen = bar->tabRect(0).width();
+
+    // Enter/Leave rather than QTest::mouseMove: the offscreen platform delivers no
+    // synthetic move events, and pointer presence is what the freeze keys on anyway --
+    // clicking [x] repeatedly without shifting the mouse produces no moves either.
+    const QPoint over = bar->tabRect(3).center();
+    QEnterEvent enter(over, over, bar->mapToGlobal(over));
+    QCoreApplication::sendEvent(bar, &enter);
+
+    bar->removeTab(3);
+    QCOMPARE(bar->tabRect(0).width(), frozen);
+
+    // Lifting the freeze must actually widen them -- otherwise the tabs were pinned at
+    // TabMaxWidth all along and the assertion above proved nothing.
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(bar, &leave);
+    QVERIFY2(bar->tabRect(0).width() > frozen, "the freeze must lift when the pointer leaves the strip");
 }
 
 int main(int argc, char *argv[])

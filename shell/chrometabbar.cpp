@@ -229,16 +229,73 @@ QString ChromeTabBar::displayText(int index) const
     return text;
 }
 
-QSize ChromeTabBar::tabSizeHint(int index) const
+/** The width each of @p tabCount tabs gets: equal shares of the strip, floor to cap. */
+int ChromeTabBar::uniformTabWidth(int tabCount) const
 {
-    Q_UNUSED(index);
     // Chrome sizes every tab equally — never text-sized: full width up to
     // TabMaxWidth, squeezed uniformly as tabs accumulate, stopping at
     // TabMinWidth. Room is held back so the "+" button keeps its seat.
     const int reserve = m_newTabButton ? m_newTabButton->width() + 2 * NewTabGap : 0;
     const int available = qMax(0, width() - reserve);
-    const int uniform = count() > 0 ? available / count() : TabMaxWidth;
-    return QSize(qBound(TabMinWidth, uniform, TabMaxWidth), m_stripHeight);
+    const int uniform = tabCount > 0 ? available / tabCount : TabMaxWidth;
+    return qBound(TabMinWidth, uniform, TabMaxWidth);
+}
+
+QSize ChromeTabBar::tabSizeHint(int index) const
+{
+    Q_UNUSED(index);
+    if (m_frozenTabWidth > 0) {
+        return QSize(m_frozenTabWidth, m_stripHeight);
+    }
+    return QSize(uniformTabWidth(count()), m_stripHeight);
+}
+
+/** Force QTabBar to re-ask tabSizeHint(). updateGeometry() alone leaves its rects cached,
+    and QTabBar exposes no other way to mark the strip's layout dirty. */
+void ChromeTabBar::relayoutTabs()
+{
+    if (count() > 0) {
+        setTabText(0, tabText(0)); // cheapest public call that refreshes the layout
+    }
+    updateGeometry();
+    updateNewTabButton();
+    update();
+}
+
+/** Let the tabs resume filling the strip, and lay them out at the new width. */
+void ChromeTabBar::thawTabWidths()
+{
+    if (m_frozenTabWidth == 0) {
+        return;
+    }
+    m_frozenTabWidth = 0;
+    relayoutTabs();
+}
+
+void ChromeTabBar::tabInserted(int index)
+{
+    QTabBar::tabInserted(index);
+    // A frozen width was sized for a strip with fewer tabs; keeping it would overflow.
+    thawTabWidths();
+}
+
+void ChromeTabBar::tabRemoved(int index)
+{
+    QTabBar::tabRemoved(index);
+    // Chrome holds the tab width while you close a run of tabs, so the next [x] stays
+    // under the pointer; the strip only reflows once the pointer leaves. Freeze at the
+    // width the tabs had a moment ago -- before this removal -- and keep that width for
+    // the rest of the streak.
+    if (m_pointerInStrip && m_frozenTabWidth == 0 && count() > 0) {
+        m_frozenTabWidth = uniformTabWidth(count() + 1);
+        // QTabBar::removeTab() lays the strip out *before* it calls tabRemoved(), so the
+        // tabs have already grown by the time we get here; the width must be re-applied.
+        relayoutTabs();
+        return;
+    } else if (count() == 0) {
+        m_frozenTabWidth = 0;
+    }
+    updateNewTabButton();
 }
 
 QSize ChromeTabBar::minimumTabSizeHint(int index) const
@@ -500,10 +557,18 @@ void ChromeTabBar::mouseMoveEvent(QMouseEvent *event)
     QTabBar::mouseMoveEvent(event);
 }
 
+void ChromeTabBar::enterEvent(QEnterEvent *event)
+{
+    m_pointerInStrip = true;
+    QTabBar::enterEvent(event);
+}
+
 void ChromeTabBar::leaveEvent(QEvent *event)
 {
     setHoveredTab(-1);
     m_closeHovered = false;
+    m_pointerInStrip = false;
+    thawTabWidths();
     QTabBar::leaveEvent(event);
 }
 

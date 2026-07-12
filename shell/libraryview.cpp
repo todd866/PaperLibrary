@@ -27,6 +27,7 @@
 #include <QGraphicsOpacityEffect>
 #include <QImage>
 #include <QItemSelectionModel>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -43,13 +44,18 @@
 #include <QPdfDocumentRenderOptions>
 #include <QPointer>
 #include <QProcess>
+#include <QLayout>
+#include <QProgressBar>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
+#include <QWheelEvent>
 #include <QShortcut>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
@@ -58,10 +64,18 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+
+#if defined(Q_OS_UNIX)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #if !defined(Q_OS_MACOS)
 #include <KIO/OpenFileManagerWindowJob>
@@ -75,27 +89,162 @@
 #include "epubimporter.h"
 #include "librarystore.h"
 #include "paperlibrarymodel.h"
+#include "readingprogress.h"
 
 // Tile geometry: comfortable grid metrics around a book-cover sized thumbnail
 static constexpr int TileWidth = 172;
-static constexpr int CorpusTileWidth = 226;
-static constexpr int TilePadding = 12;
+static constexpr int CorpusTileWidth = 208;
+static constexpr int TilePadding = 10;
 static constexpr int CoverWidth = TileWidth - 2 * TilePadding;
 static constexpr int CorpusCoverWidth = CorpusTileWidth - 2 * TilePadding;
 static constexpr int CoverHeight = 178;
-static constexpr int CoverRadius = 6;
-static constexpr int TitleGap = 8;
-static constexpr int TitleLines = 3;
-static constexpr int MetadataLines = 2;
+static constexpr int CoverRadius = 3;
+static constexpr int TitleGap = 6;
+static constexpr int TitleLines = 2;
+static constexpr int MetadataLines = 1;
 static constexpr int TagGap = 2;
-static constexpr int ProgressGap = 7;
+static constexpr int ProgressGap = 5;
 static constexpr int ProgressBarHeight = 4;
-static constexpr int GridSpacing = 12;
-static constexpr int CorpusCoverHeight = 198;
+static constexpr int GridSpacing = 4;
+// Cover BOX heights are sized so a portrait book (~0.66 w:h) fills the box WIDTH rather than being
+// shrunk to fit a too-wide box (which left ~20% side whitespace). CorpusCoverWidth is 188, so a box
+// ~285 tall matches book proportions; papers (~0.77) fill it too. Bigger covers, minimal whitespace.
+static constexpr int CorpusCoverHeight = 240;
+// Book shelves show the cover alone (title is on the artwork), so they drop the under-cover title/
+// tag rows and spend that height on a taller, Apple-Books-sized cover.
+static constexpr int BookCoverHeight = 288;
+static constexpr int ColGap = 2;
+static constexpr int RowGap = 22;
 static constexpr int DownrankDragDistance = 48;
 static constexpr int InitialDocumentShelfRows = 96;
 static constexpr int DocumentShelfFetchBatchRows = 96;
 static constexpr int DocumentShelfFetchThresholdPx = 900;
+
+// A minimal wrapping layout so the detail rail's topic tags flow onto as many lines as they need,
+// like the chip rows in Apple Books. (Qt ships no flow layout; this is the canonical small one.)
+class FlowLayout : public QLayout
+{
+public:
+    explicit FlowLayout(QWidget *parent, int spacing = 6)
+        : QLayout(parent)
+    {
+        setContentsMargins(0, 0, 0, 0);
+        setSpacing(spacing);
+    }
+    ~FlowLayout() override
+    {
+        while (QLayoutItem *item = takeAt(0)) {
+            delete item;
+        }
+    }
+    void addItem(QLayoutItem *item) override { m_items.append(item); }
+    int count() const override { return m_items.size(); }
+    QLayoutItem *itemAt(int i) const override { return m_items.value(i); }
+    QLayoutItem *takeAt(int i) override { return (i >= 0 && i < m_items.size()) ? m_items.takeAt(i) : nullptr; }
+    Qt::Orientations expandingDirections() const override { return {}; }
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int width) const override { return doLayout(QRect(0, 0, width, 0), true); }
+    void setGeometry(const QRect &rect) override
+    {
+        QLayout::setGeometry(rect);
+        doLayout(rect, false);
+    }
+    QSize sizeHint() const override { return minimumSize(); }
+    QSize minimumSize() const override
+    {
+        QSize size;
+        for (const QLayoutItem *item : m_items) {
+            size = size.expandedTo(item->minimumSize());
+        }
+        return size + QSize(2 * margin(), 2 * margin());
+    }
+
+private:
+    int margin() const { return contentsMargins().left(); }
+    int doLayout(const QRect &rect, bool testOnly) const
+    {
+        int x = rect.x();
+        int y = rect.y();
+        int lineHeight = 0;
+        const int sp = spacing();
+        for (QLayoutItem *item : m_items) {
+            const QSize hint = item->sizeHint();
+            int nextX = x + hint.width() + sp;
+            if (nextX - sp > rect.right() && lineHeight > 0) {
+                x = rect.x();
+                y = y + lineHeight + sp;
+                nextX = x + hint.width() + sp;
+                lineHeight = 0;
+            }
+            if (!testOnly) {
+                item->setGeometry(QRect(QPoint(x, y), hint));
+            }
+            x = nextX;
+            lineHeight = qMax(lineHeight, hint.height());
+        }
+        return y + lineHeight - rect.y();
+    }
+    QList<QLayoutItem *> m_items;
+};
+
+static QString paperLibraryUsageEventsPath()
+{
+    const QString overridePath = qEnvironmentVariable("PAPERLIBRARY_USAGE_EVENTS_PATH").trimmed();
+    if (!overridePath.isEmpty()) {
+        return overridePath;
+    }
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+        .filePath(QStringLiteral("PaperLibrary/usage-events.jsonl"));
+}
+
+/** Append one complete JSONL record with O_APPEND; the corpus database remains read-only. */
+static bool appendCorpusOpenUsageEvent(const QString &slug)
+{
+    const QString normalizedSlug = slug.trimmed();
+    if (normalizedSlug.isEmpty()) {
+        return false;
+    }
+
+    QJsonObject event;
+    event.insert(QStringLiteral("schema_version"), 1);
+    event.insert(QStringLiteral("event_id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+    event.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    event.insert(QStringLiteral("slug"), normalizedSlug);
+    event.insert(QStringLiteral("type"), QStringLiteral("open"));
+    const QByteArray line = QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n';
+
+    const QString path = paperLibraryUsageEventsPath();
+    if (path.isEmpty() || !QDir().mkpath(QFileInfo(path).absolutePath())) {
+        return false;
+    }
+
+#if defined(Q_OS_UNIX)
+    const QByteArray nativePath = QFile::encodeName(path);
+    int openFlags = O_WRONLY | O_CREAT | O_APPEND;
+#if defined(O_CLOEXEC)
+    openFlags |= O_CLOEXEC;
+#endif
+    const int descriptor = ::open(nativePath.constData(), openFlags, S_IRUSR | S_IWUSR);
+    if (descriptor < 0) {
+        return false;
+    }
+    // Repair permissions on an existing file before exposing another event through it.
+    const bool privateMode = ::fchmod(descriptor, S_IRUSR | S_IWUSR) == 0;
+    ssize_t written = -1;
+    do {
+        written = ::write(descriptor, line.constData(), static_cast<size_t>(line.size()));
+    } while (written < 0 && errno == EINTR);
+    const bool closed = ::close(descriptor) == 0;
+    return privateMode && written == line.size() && closed;
+#else
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        return false;
+    }
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    return file.write(line) == line.size() && file.flush();
+#endif
+}
 
 /**
  * Renders cover thumbnails asynchronously into a disk cache keyed by
@@ -159,20 +308,15 @@ public:
         if (m_pending.contains(filePath)) {
             return;
         }
-        if (filePath.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) {
-            // An epub carries its cover in its own zip: extract it directly
-            // and avoid sending it through the PDF renderer.
-            if (m_failed.contains(filePath) || !extractEpubCover(filePath)) {
-                m_failed.insert(filePath); // no embedded image; don't reparse
-                generateTypographic(filePath, spec);
-            }
-            return;
-        }
         if (m_failed.contains(filePath)) {
-            // Failed on this file before: straight to the typographic card.
+            // Failed on this file before (unrenderable PDF, or an epub with no embedded cover):
+            // straight to the typographic card.
             generateTypographic(filePath, spec);
             return;
         }
+        // Both PDF page renders AND epub cover extraction run on the render thread (startRender):
+        // epub extraction used to run synchronously here on the UI thread, which froze the library
+        // whenever a shelf drew epub tiles with uncached covers (the "hang past Finished" report).
         m_pending.insert(filePath);
         m_specs.insert(filePath, spec);
         m_queue.append(filePath);
@@ -233,28 +377,6 @@ private:
         return true;
     }
 
-    /** Extract and cache an epub's embedded cover; false when it has none. */
-    bool extractEpubCover(const QString &filePath)
-    {
-        const QString target = coverPath(filePath);
-        if (!QFileInfo::exists(target)) {
-            QImage cover = EpubCover::extract(filePath);
-            if (cover.isNull()) {
-                return false;
-            }
-            if (cover.width() > 512 || cover.height() > 512) {
-                // Match the PDF render cache budget so warmup stays bounded.
-                cover = cover.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            }
-            if (!cover.save(target)) {
-                return false;
-            }
-        }
-        // Queued: a tile may request its cover before it is in the model
-        QMetaObject::invokeMethod(this, [this, filePath, target] { Q_EMIT coverReady(filePath, target); }, Qt::QueuedConnection);
-        return true;
-    }
-
     void startNext()
     {
         while (m_running < 2 && !m_queue.isEmpty()) {
@@ -266,24 +388,42 @@ private:
     {
         ++m_running;
         const QString target = coverPath(filePath);
+        const bool isEpub = filePath.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive);
         QPointer<CoverLoader> guard(this);
-        QThread *thread = QThread::create([guard, filePath, target]() {
+        QThread *thread = QThread::create([guard, filePath, target, isEpub]() {
             QString readyPath;
-            QPdfDocument document;
-            if (document.load(filePath) == QPdfDocument::Error::None && document.status() == QPdfDocument::Status::Ready && document.pageCount() > 0) {
-                QSizeF pageSize = document.pagePointSize(0);
-                if (pageSize.isEmpty()) {
-                    pageSize = QSizeF(612, 792);
-                }
-                QSize renderSize = pageSize.toSize().scaled(QSize(512, 512), Qt::KeepAspectRatio);
-                renderSize = renderSize.expandedTo(QSize(96, 96));
-                QPdfDocumentRenderOptions options;
-                options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
-                const QImage image = document.render(0, renderSize, options);
-                if (!image.isNull()) {
+            if (isEpub) {
+                // An epub keeps its cover inside its own zip; extracting + decoding it is I/O-bound.
+                // Done here on the render thread (not synchronously on the UI thread as before) so a
+                // shelf full of epub tiles never freezes the library.
+                QImage cover = EpubCover::extract(filePath);
+                if (!cover.isNull()) {
+                    if (cover.width() > 512 || cover.height() > 512) {
+                        // Match the PDF render cache budget so warmup stays bounded.
+                        cover = cover.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    }
                     QFile::remove(target);
-                    if (image.save(target)) {
+                    if (cover.save(target)) {
                         readyPath = target;
+                    }
+                }
+            } else {
+                QPdfDocument document;
+                if (document.load(filePath) == QPdfDocument::Error::None && document.status() == QPdfDocument::Status::Ready && document.pageCount() > 0) {
+                    QSizeF pageSize = document.pagePointSize(0);
+                    if (pageSize.isEmpty()) {
+                        pageSize = QSizeF(612, 792);
+                    }
+                    QSize renderSize = pageSize.toSize().scaled(QSize(512, 512), Qt::KeepAspectRatio);
+                    renderSize = renderSize.expandedTo(QSize(96, 96));
+                    QPdfDocumentRenderOptions options;
+                    options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+                    const QImage image = document.render(0, renderSize, options);
+                    if (!image.isNull()) {
+                        QFile::remove(target);
+                        if (image.save(target)) {
+                            readyPath = target;
+                        }
                     }
                 }
             }
@@ -296,7 +436,7 @@ private:
             }
         });
         thread->setParent(this);
-        thread->setObjectName(QStringLiteral("PaperLibraryPdfCoverRender"));
+        thread->setObjectName(QStringLiteral("PaperLibraryCoverRender"));
         connect(thread, &QThread::finished, thread, &QObject::deleteLater);
         thread->start();
     }
@@ -469,10 +609,16 @@ static PaperLibrarySectionedModel::SmartFilter paperFilterForShelf(LibraryView::
         return PaperLibrarySectionedModel::Fiction;
     case LibraryView::NonfictionShelf:
         return PaperLibrarySectionedModel::Nonfiction;
+    case LibraryView::BooksShelf:
+        // "Books" is the browse-everything shelf: all books, every genre. Keyed on the
+        // authoritative librarian record_kind so it shows the whole collection, not the
+        // papers-only default it used to fall through to.
+        return PaperLibrarySectionedModel::Books;
+    case LibraryView::FinishedShelf:
+        // Cross-cutting: whatever the user marked finished (book or paper).
+        return PaperLibrarySectionedModel::Finished;
     case LibraryView::PapersShelf:
     case LibraryView::StarterPackShelf:
-    case LibraryView::FinishedShelf:
-    case LibraryView::BooksShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -1028,7 +1174,8 @@ static bool thumbnailSourceOverridesLocalRender(const QString &source)
     }
     return folded.contains(QLatin1String("file-extracted")) || folded.contains(QLatin1String("pdf-page"))
         || folded.contains(QLatin1String("figure")) || folded.contains(QLatin1String("manual"))
-        || folded.contains(QLatin1String("curated")) || folded.contains(QLatin1String("corpus-thumbnail"));
+        || folded.contains(QLatin1String("ai-generated")) || folded.contains(QLatin1String("curated"))
+        || folded.contains(QLatin1String("corpus-thumbnail"));
 }
 
 static bool installThumbnailCover(PaperLibrarySectionedModel *sections, const QModelIndex &index, const QString &coverKey)
@@ -1377,14 +1524,17 @@ public:
         }
 
         const bool corpusTile = isCorpusTile(index);
-        const int coverHeight = corpusTile ? CorpusCoverHeight : CoverHeight;
+        const bool bookShelf = reservesProgressRow(index);
+        const int coverHeight = bookShelf ? BookCoverHeight : (corpusTile ? CorpusCoverHeight : CoverHeight);
         const int tileWidth = corpusTile ? CorpusTileWidth : TileWidth;
         int height = TilePadding + coverHeight;
-        if (reservesProgressRow(index)) {
+        if (bookShelf) {
+            // The cover carries the title; below it sits only the small percent-read row.
             height += ProgressGap + QFontMetrics(smallerFont(option.font)).height();
+        } else {
+            height += TitleGap + TitleLines * option.fontMetrics.height();
+            height += TagGap + QFontMetrics(smallerFont(option.font)).height(); // tag row, reserved even when untagged
         }
-        height += TitleGap + TitleLines * option.fontMetrics.height();
-        height += TagGap + QFontMetrics(smallerFont(option.font)).height(); // tag row, reserved even when untagged
         height += TilePadding;
         return QSize(tileWidth, height);
     }
@@ -1412,17 +1562,19 @@ public:
             return;
         }
 
-        // Hover/selection: a subtle rounded highlight behind the whole tile
+        // Hover/selection: a quiet, tight rounded wash -- inset so it hugs the tile content instead
+        // of drawing a heavy box out to the padding, and low-alpha so the cover stays the hero.
         if (option.state & (QStyle::State_MouseOver | QStyle::State_Selected)) {
             QColor highlight = palette.color(QPalette::Text);
-            highlight.setAlphaF((option.state & QStyle::State_Selected) ? 0.12 : 0.06);
+            highlight.setAlphaF((option.state & QStyle::State_Selected) ? 0.07 : 0.035);
             painter->setPen(Qt::NoPen);
             painter->setBrush(highlight);
-            painter->drawRoundedRect(option.rect, 8, 8);
+            painter->drawRoundedRect(option.rect.adjusted(4, 4, -4, -4), 10, 10);
         }
 
         const bool corpusTile = isCorpusTile(index);
-        const int coverHeight = corpusTile ? CorpusCoverHeight : CoverHeight;
+        const bool bookShelf = reservesProgressRow(index);
+        const int coverHeight = bookShelf ? BookCoverHeight : (corpusTile ? CorpusCoverHeight : CoverHeight);
         const int coverWidth = corpusTile ? CorpusCoverWidth : CoverWidth;
         const QRect coverBox(option.rect.left() + TilePadding, option.rect.top() + TilePadding, coverWidth, coverHeight);
 
@@ -1440,15 +1592,26 @@ public:
             // visual thumbnail.
             cover = QPixmap();
         }
+        // A book presents its title on the cover (an EPUB, or any real cover on a book shelf), so it
+        // earns the full physical-book treatment: soft lift shadow, spine/edge modelling, no caption.
+        // A paper/document render does not -- it gets a flatter shadow and keeps its caption.
+        const QString kindStr = corpusTile
+            ? index.data(PaperLibrarySectionedModel::KindRole).toString()
+            : index.data(LibraryView::FormatRole).toString();
+        const bool bookCoverTile = !cover.isNull()
+            && (reservesProgressRow(index) || kindStr.compare(QLatin1String("EPUB"), Qt::CaseInsensitive) == 0);
+
         QRect coverRect;
         if (!cover.isNull()) {
             const QSize scaled = cover.size().scaled(coverBox.size(), Qt::KeepAspectRatio);
-            coverRect = QRect(QPoint(coverBox.center().x() - scaled.width() / 2 + 1, coverBox.bottom() - scaled.height() + 1), scaled);
+            // Whole-pixel centred + bottom-aligned so a row of covers shares an exact shelf baseline.
+            const int cx = coverBox.left() + (coverBox.width() - scaled.width()) / 2;
+            coverRect = QRect(QPoint(cx, coverBox.bottom() - scaled.height() + 1), scaled);
         } else {
             coverRect = coverBox.adjusted(8, 0, -8, 0);
         }
 
-        drawCoverShadow(painter, coverRect);
+        drawCoverShadow(painter, coverRect, bookCoverTile);
 
         QPainterPath coverClip;
         coverClip.addRoundedRect(coverRect, CoverRadius, CoverRadius);
@@ -1456,6 +1619,23 @@ public:
             painter->save();
             painter->setClipPath(coverClip);
             painter->drawPixmap(coverRect, cover);
+            if (bookCoverTile) {
+                // Physical modelling, clipped to the cover: a spine shadow down the left edge, a faint
+                // bright page edge on the right, and a soft top sheen -- all low-alpha so artwork and
+                // any title-on-cover stay readable. Stops are fractional so they track the cover width.
+                QLinearGradient edges(coverRect.left(), 0, coverRect.right(), 0);
+                edges.setColorAt(0.00, QColor(0, 0, 0, 58));
+                edges.setColorAt(0.05, QColor(0, 0, 0, 20));
+                edges.setColorAt(0.11, QColor(0, 0, 0, 0));
+                edges.setColorAt(0.965, QColor(255, 255, 255, 0));
+                edges.setColorAt(0.99, QColor(255, 255, 255, 32));
+                edges.setColorAt(1.00, QColor(255, 255, 255, 12));
+                painter->fillRect(coverRect, edges);
+                QLinearGradient sheen(coverRect.topLeft(), QPointF(coverRect.left(), coverRect.top() + 16));
+                sheen.setColorAt(0.0, QColor(255, 255, 255, 24));
+                sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
+                painter->fillRect(coverRect, sheen);
+            }
             painter->restore();
         } else if (corpusTile) {
             drawCorpusCard(painter, coverRect, index, option, palette);
@@ -1463,9 +1643,9 @@ public:
             drawDocumentCard(painter, coverRect, index, option, palette);
         }
 
-        // Translucent outline so white covers keep a soft edge (the page
-        // view draws the same kind of rim around pages)
-        painter->setPen(QColor(0, 0, 0, 40));
+        // A faint rim so white covers keep an edge. Kept light (and thin) so it doesn't double the
+        // spine darkening or wash out the right-edge page highlight on book covers.
+        painter->setPen(QPen(QColor(0, 0, 0, bookCoverTile ? 28 : 40), 0.75));
         painter->setBrush(Qt::NoBrush);
         painter->drawRoundedRect(QRectF(coverRect).adjusted(0.5, 0.5, -0.5, -0.5), CoverRadius, CoverRadius);
 
@@ -1493,16 +1673,15 @@ public:
             painter->setPen(QPen(palette.color(QPalette::Base), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             painter->drawPath(arrow);
         }
-        const QVariant relatedValue = corpusTile ? index.data(PaperLibraryModel::RelatedCountRole) : QVariant();
-        if (relatedValue.isValid() && relatedValue.toInt() >= 0) {
-            drawConnectionBadge(painter, coverRect, relatedValue.toInt(), option, palette);
-        }
-
         int titleTop = coverBox.bottom() + 1;
         if (reservesProgressRow(index)) {
             const QFont progressFont = smallerFont(option.font);
             const QFontMetrics progressMetrics(progressFont);
-            const double progress = index.data(LibraryView::ProgressRole).toDouble();
+            // Local tiles carry progress from Apple Books; corpus tiles from ReadingProgress, which
+            // the PDF/EPUB readers record on save. Same percent-read, either source.
+            const double progress = isCorpusTile(index)
+                ? index.data(PaperLibrarySectionedModel::ReadingProgressRole).toDouble()
+                : index.data(LibraryView::ProgressRole).toDouble();
             if (progress >= 0.0) {
                 const QString label = i18nc("Apple Books reading progress on a library tile", "%1%", qRound(progress * 100));
                 const int labelWidth = progressMetrics.horizontalAdvance(label);
@@ -1532,8 +1711,13 @@ public:
         const int textLeft = option.rect.left() + 6;
         const int textWidth = option.rect.width() - 12;
 
-        const LibraryView::TileCaption caption = LibraryView::tileCaption(index);
-        if (caption.secondary) {
+        // Book shelves are cover-only (the title is on the artwork), Apple-Books style: no title/tag
+        // rows below. Every other shelf keeps its caption -- a paper's page-render has no title on it.
+        const LibraryView::TileCaption caption = bookShelf ? LibraryView::TileCaption{}
+                                                           : LibraryView::tileCaption(index);
+        if (bookShelf) {
+            // nothing under the cover but the percent-read row already drawn above
+        } else if (caption.secondary) {
             // A generated card already displays the title as its artwork;
             // the caption slot carries the description or tag line instead,
             // muted, up to two lines (same slot, so heights stay uniform)
@@ -1616,42 +1800,6 @@ private:
             }
         }
         return false;
-    }
-
-    static void drawConnectionBadge(QPainter *painter, const QRect &coverRect, int relatedCount, const QStyleOptionViewItem &option, const QPalette &palette)
-    {
-        const QString label = relatedCount > 99 ? QStringLiteral("99+") : QString::number(relatedCount);
-        QFont badgeFont = smallerFont(option.font);
-        badgeFont.setBold(true);
-        const QFontMetrics metrics(badgeFont);
-        const int width = qMax(34, metrics.horizontalAdvance(label) + 26);
-        const QRectF badgeRect(coverRect.right() - width - 7, coverRect.bottom() - 25, width, 18);
-
-        QColor fill = relatedCount > 0 ? palette.color(QPalette::Highlight) : palette.color(QPalette::Text);
-        fill.setAlphaF(relatedCount > 0 ? 0.82 : 0.24);
-        QColor stroke = relatedCount > 0 ? palette.color(QPalette::HighlightedText) : palette.color(QPalette::Base);
-        stroke.setAlphaF(relatedCount > 0 ? 0.92 : 0.86);
-
-        painter->save();
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(fill);
-        painter->drawRoundedRect(badgeRect, 8, 8);
-
-        const QPointF a(badgeRect.left() + 9, badgeRect.center().y() + 2);
-        const QPointF b(badgeRect.left() + 15, badgeRect.center().y() - 4);
-        const QPointF c(badgeRect.left() + 21, badgeRect.center().y() + 3);
-        painter->setPen(QPen(stroke, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter->drawLine(a, b);
-        painter->drawLine(b, c);
-        painter->setBrush(stroke);
-        painter->drawEllipse(a, 2.0, 2.0);
-        painter->drawEllipse(b, 2.0, 2.0);
-        painter->drawEllipse(c, 2.0, 2.0);
-
-        painter->setFont(badgeFont);
-        painter->setPen(stroke);
-        painter->drawText(badgeRect.adjusted(24, 0, -5, 0), Qt::AlignVCenter | Qt::AlignRight, label);
-        painter->restore();
     }
 
     static QString visualKeyForCorpusCard(const QModelIndex &index)
@@ -2303,7 +2451,8 @@ private:
         muted.setAlphaF(0.50);
         painter->setFont(kindFont);
         painter->setPen(muted);
-        const QString topLabel = paperTopic.isEmpty() ? (!focus.isEmpty() && focus != kind ? focus : kind) : paperTopic;
+        const QString topLabel = !tags.isEmpty() ? tags.constFirst()
+                                                 : (paperTopic.isEmpty() ? (!focus.isEmpty() && focus != kind ? focus : kind) : paperTopic);
         painter->drawText(coverRect.adjusted(10, 10, -10, -10), Qt::AlignLeft | Qt::AlignTop, QFontMetrics(kindFont).elidedText(topLabel, Qt::ElideRight, coverRect.width() - 20));
 
         QFont titleFont = option.font;
@@ -2326,7 +2475,9 @@ private:
         painter->setFont(metaFont);
         painter->setPen(metaColor);
         const int metaTop = y + 4;
-        QString meta = paperThesis.isEmpty() ? (paperSummary.isEmpty() ? intent : paperSummary) : paperThesis;
+        // ShelfIntentRole now prefers backend-authored description (and explicit focus curation)
+        // before heuristics, so let it lead the card when present.
+        QString meta = intent.isEmpty() ? (paperThesis.isEmpty() ? paperSummary : paperThesis) : intent;
         if (!priority.isEmpty() && priority != intent && priority != detail) {
             const QString priorityTopic = corpusPaperTopicLabelForKey(priority.toCaseFolded());
             if (priorityTopic.isEmpty() && priority != topLabel) {
@@ -2446,23 +2597,117 @@ private:
         painter->drawRoundedRect(QRectF(coverRect).adjusted(0.7, 0.7, -0.7, -0.7), CoverRadius, CoverRadius);
     }
 
-    static void drawCoverShadow(QPainter *painter, const QRect &coverRect)
+    // A soft, blurred cover-sized shadow stamp, built once per distinct cover size and cached.
+    // uniformItemSizes + KeepAspectRatio means only a handful of sizes ever occur. The blur is a
+    // draw-small-then-smooth-upscale (bilinear) penumbra -- gaussian enough, and far cheaper than a
+    // real convolution on the paint path.
+    static QPixmap softCoverShadow(const QSize &sz)
     {
-        // Ambient shadow in the page view's language: translucent black,
-        // wider than dark, slightly heavier below the cover
-        painter->setPen(Qt::NoPen);
-        for (int i = 4; i >= 1; --i) {
-            QColor shadow(0, 0, 0, 20 - 4 * i);
-            painter->setBrush(shadow);
-            painter->drawRoundedRect(QRectF(coverRect).adjusted(-i, -i + 1.5, i, i + 1.5), CoverRadius + i, CoverRadius + i);
+        static QHash<quint32, QPixmap> cache;
+        const quint32 key = (quint32(sz.width()) << 16) | quint32(sz.height() & 0xffff);
+        const auto cached = cache.constFind(key);
+        if (cached != cache.constEnd()) {
+            return *cached;
         }
+        constexpr int Blur = 9;
+        constexpr int Scale = 3;
+        const int margin = Blur + 4;
+        const QSize full(sz.width() + 2 * margin, sz.height() + 2 * margin);
+        QImage small(full / Scale, QImage::Format_ARGB32_Premultiplied);
+        small.fill(Qt::transparent);
+        {
+            QPainter p(&small);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0, 0, 0, 255));
+            p.drawRoundedRect(QRectF(double(margin) / Scale, double(margin) / Scale,
+                                     double(sz.width()) / Scale, double(sz.height()) / Scale),
+                              double(CoverRadius) / Scale, double(CoverRadius) / Scale);
+        }
+        QPixmap pm = QPixmap::fromImage(small.scaled(full, Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+        cache.insert(key, pm);
+        return pm;
+    }
+
+    // Light from the upper-left: a soft ambient shadow cast down-and-right, plus a tight contact
+    // core hugging the bottom edge so the cover looks like a physical book on a shelf. Real book
+    // covers get the full lift; a flat document/paper render gets only the tight contact shadow.
+    static void drawCoverShadow(QPainter *painter, const QRect &coverRect, bool book)
+    {
+        constexpr int Blur = 9;
+        const int margin = Blur + 4;
+        if (book) {
+            painter->save();
+            painter->setOpacity(0.30);
+            painter->drawPixmap(coverRect.left() - margin + 1, coverRect.top() - margin + 3,
+                                softCoverShadow(coverRect.size()));
+            painter->restore();
+        }
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(0, 0, 0, book ? 40 : 26));
+        painter->drawRoundedRect(QRectF(coverRect).adjusted(0.5, 1.4, 0.5, book ? 2.6 : 1.4), CoverRadius, CoverRadius);
     }
 };
 
-LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitialRefresh)
+void LibraryGridView::currentChanged(const QModelIndex &current, const QModelIndex &previous)
+{
+    QListView::currentChanged(current, previous);
+    Q_EMIT currentTileChanged(current);
+}
+
+void LibraryGridView::keyPressEvent(QKeyEvent *event)
+{
+    // Hand activation (Enter), detail (Space) and flagging (f) to the LibraryView. Crucially this
+    // also stops QListView's type-ahead search from swallowing "f" (it would jump to an item
+    // starting with 'f' instead). Ignoring lets the event propagate up to LibraryView::keyPressEvent.
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space
+        || (event->key() == Qt::Key_F && event->modifiers() == Qt::NoModifier)) {
+        event->ignore();
+        return;
+    }
+    // Drive the current-tile signal straight off keyboard navigation. currentChanged() alone is
+    // unreliable here -- a shelf switch can leave the view's selection model disconnected from it --
+    // so compare the current index across the base handler and emit when the keys actually moved it.
+    const QModelIndex before = currentIndex();
+    QListView::keyPressEvent(event);
+    const QModelIndex after = currentIndex();
+    if (after != before) {
+        Q_EMIT currentTileChanged(after);
+    }
+}
+
+void LibraryGridView::wheelEvent(QWheelEvent *event)
+{
+    QScrollBar *const bar = verticalScrollBar();
+    if (!bar || (event->modifiers() & Qt::ControlModifier)) {
+        QListView::wheelEvent(event); // no bar, or Ctrl+wheel: leave to the base
+        return;
+    }
+    // QListView in IconMode uses a large per-notch step, so the library scrolled much faster than the
+    // PDF view (which is per-pixel). Honour a trackpad's pixel delta nearly 1:1 (already smooth) and
+    // give a classic mouse-wheel notch a gentle fixed amount, so both feel controlled and calm.
+    const int pixelDy = event->pixelDelta().y();
+    const int angleDy = event->angleDelta().y();
+    int dy = 0;
+    if (pixelDy != 0) {
+        dy = qRound(pixelDy * 0.9);
+    } else if (angleDy != 0) {
+        dy = qRound(angleDy / 120.0 * 64.0); // ~64px per wheel notch
+    }
+    if (dy != 0) {
+        bar->setValue(bar->value() - dy);
+        event->accept();
+        return;
+    }
+    QListView::wheelEvent(event);
+}
+
+LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitialRefresh,
+                         PaperLibraryModel *sharedCorpusModel)
     : QWidget(parent)
     , m_store(store)
     , m_deferInitialRefresh(deferInitialRefresh)
+    , m_sharedCorpusModel(sharedCorpusModel)
 {
     setAcceptDrops(true); // the shell's event filter opens dropped files
     setAutoFillBackground(true);
@@ -2522,6 +2767,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_viewModeButton->setMenu(viewModeMenu);
 
     m_paperSectionButton = new QToolButton(this);
+    m_paperSectionButton->setObjectName(QStringLiteral("paperSectionModeButton"));
     m_paperSectionButton->setAutoRaise(true);
     m_paperSectionButton->setPopupMode(QToolButton::InstantPopup);
     m_paperSectionButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -2538,6 +2784,12 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
                                         i18nc("@item:inmenu corpus arrangement", "Years"),
                                         i18nc("@item:inmenu corpus arrangement", "Journals")};
     for (int mode = PaperLibrarySectionedModel::ReadNext; mode <= PaperLibrarySectionedModel::ByJournal; ++mode) {
+        // Sources and Journals are niche for a personal library; prune them to declutter the
+        // grouping menu. paperSectionMode() coerces any stale saved value back to a default.
+        if (mode == PaperLibrarySectionedModel::BySource || mode == PaperLibrarySectionedModel::ByJournal) {
+            m_paperSectionActions[mode] = nullptr;
+            continue;
+        }
         QAction *action = paperSectionMenu->addAction(sectionModeNames[mode]);
         action->setCheckable(true);
         action->setActionGroup(paperSectionGroup);
@@ -2558,7 +2810,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_corpusSearchButton->hide();
     QMenu *corpusSearchMenu = new QMenu(m_corpusSearchButton);
     QActionGroup *corpusSearchGroup = new QActionGroup(corpusSearchMenu);
-    const QString corpusSearchNames[] = {i18nc("@item:inmenu corpus search mode", "Shelf"), i18nc("@item:inmenu corpus search mode", "Full text")};
+    const QString corpusSearchNames[] = {i18nc("@item:inmenu corpus search scope — only the current shelf", "This shelf"), i18nc("@item:inmenu corpus search scope — the whole corpus, full text", "Everything")};
     for (int mode = ShelfMetadataSearch; mode <= FullTextSearch; ++mode) {
         QAction *action = corpusSearchMenu->addAction(corpusSearchNames[mode]);
         action->setCheckable(true);
@@ -2584,6 +2836,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     // focuses it while the library is showing (a widget-local shortcut, so
     // the part's find action keeps ⌘F while reading)
     m_searchField = new QLineEdit(this);
+    m_searchField->setObjectName(QStringLiteral("librarySearchField"));
     m_searchField->setPlaceholderText(i18nc("@info:placeholder in the library's search field", "Search library"));
     m_searchField->setClearButtonEnabled(true);
     m_searchField->setMaximumWidth(220);
@@ -2639,7 +2892,14 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_starterPackModel->setProperty("booksShelf", true);
     m_finishedModel->setProperty("booksShelf", true);
 
-    m_grid = new QListView(this);
+    auto *gridView = new LibraryGridView(this);
+    m_grid = gridView;
+    // View-level current-tile signal: reliably drives the detail rail on arrow-key navigation,
+    // clicks, and programmatic selection, where a selection-model connection would be orphaned.
+    connect(gridView, &LibraryGridView::currentTileChanged, this, [this](const QModelIndex &current) {
+        updateSelectedTileContext(current);
+        updateDetailRail(current);
+    });
     m_grid->setSelectionMode(QAbstractItemView::SingleSelection);
     m_grid->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_grid->setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -2661,7 +2921,23 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_gridFadeAnimation = new QPropertyAnimation(m_gridFadeEffect, "opacity", this);
     m_gridFadeAnimation->setDuration(230);
     m_gridFadeAnimation->setEasingCurve(QEasingCurve::OutCubic);
-    mainLayout->addWidget(m_grid, 1);
+
+    // Left detail rail: the selected tile's cover, metadata, blurb, topics and actions. A
+    // persistent, collapsible panel beside the grid; the grid reflows to fill the freed width.
+    buildDetailRail();
+    m_shelfSplitter = new QSplitter(Qt::Horizontal, this);
+    m_shelfSplitter->setChildrenCollapsible(false);
+    m_shelfSplitter->setHandleWidth(1);
+    m_shelfSplitter->addWidget(m_detailRail);
+    m_shelfSplitter->addWidget(m_grid);
+    m_shelfSplitter->setStretchFactor(0, 0);
+    m_shelfSplitter->setStretchFactor(1, 1);
+    m_shelfSplitter->setSizes({285, 1000}); // a comfortable rail width; the grid takes the rest
+    mainLayout->addWidget(m_shelfSplitter, 1);
+    // Single click reveals a tile's detail; the rail starts in whatever state the reader left it.
+    connect(m_grid, &QAbstractItemView::clicked, this, &LibraryView::updateDetailRail);
+    setDetailRailCollapsed(partGeneralConfig().readEntry("DetailRailCollapsed", false));
+    refreshDetailRail();
 
     // The PaperLibrary corpus earns its shelf only when it is actually there
     m_paperCorpusDir = PaperLibraryModel::configuredCorpusDir();
@@ -2828,8 +3104,10 @@ void LibraryView::configureTileGrid()
     m_grid->setMovement(QListView::Static);
     m_grid->setFlow(QListView::LeftToRight);
     m_grid->setWrapping(true);
-    m_grid->setSpacing(GridSpacing);
-    m_grid->setGridSize(QSize(tileWidth + GridSpacing, tileHeight + GridSpacing));
+    // Tight columns, generous rows -- the Apple-Books rhythm. Bake both gaps into the grid cell and
+    // leave setSpacing at zero so the horizontal and vertical gutters can differ.
+    m_grid->setSpacing(0);
+    m_grid->setGridSize(QSize(tileWidth + ColGap, tileHeight + RowGap));
     m_grid->setUniformItemSizes(true);
 }
 
@@ -2880,13 +3158,18 @@ void LibraryView::refresh()
     QHash<QString, double> progressByPath;
     QHash<QString, QString> booksTitleByPath;
     const bool mirrorAppleBooks = !bookEntries.isEmpty();
+    QHash<QString, double> appleProgressByTitle;
     for (const AppleBooksProgress::BookEntry &book : bookEntries) {
         const QString canonical = QFileInfo(book.path).canonicalFilePath();
         if (!canonical.isEmpty()) {
             progressByPath.insert(canonical, book.progress);
             booksTitleByPath.insert(canonical, book.title);
         }
+        // Also key by title, so a corpus book the reader opens in Apple Books shows its percent
+        // even though the corpus copy lives at a different path.
+        appleProgressByTitle.insert(ReadingProgress::titleKey(book.title), book.progress);
     }
+    ReadingProgress::syncFromAppleBooks(appleProgressByTitle);
 
     QList<ShelfEntry> books;
     QList<ShelfEntry> finishedBooks;
@@ -2986,9 +3269,19 @@ void LibraryView::refresh()
     std::stable_sort(finishedBooks.begin(), finishedBooks.end(), entryLikelyBefore);
     m_shelfEntries[BooksShelf] = books;
     m_shelfEntries[FinishedShelf] = finishedBooks;
+    publishLocalBooksToCorpus();
 
     const QList<ShelfEntry> allDocuments = pdfs + books;
-    QList<ShelfEntry> recent = allDocuments;
+    // The Recent tab is a curated "what to read next" feed, so a thumbs-down
+    // takes the item out of it entirely (it still lives in its genre shelf,
+    // demoted, and stays findable via search to undo the thumbs-down).
+    QList<ShelfEntry> recent;
+    recent.reserve(allDocuments.size());
+    for (const ShelfEntry &entry : allDocuments) {
+        if (!entry.downranked) {
+            recent.append(entry);
+        }
+    }
     std::stable_sort(recent.begin(), recent.end(), entryLikelyBefore);
     m_shelfEntries[PdfShelf] = recent;
 
@@ -3025,14 +3318,21 @@ void LibraryView::refresh()
     m_shelfEntries[FictionShelf] = fiction;
     m_shelfEntries[NonfictionShelf] = nonfiction;
     m_shelfEntries[StarterPackShelf] = loadStarterPackEntries();
+    // Tile layout is chosen by CONTENT TYPE, not by whether a shelf happens to hold an in-progress
+    // book. Gating on reading progress made tabs jump between the big cover-only "Apple Books" look
+    // and the small captioned look depending on what you'd started reading — the size/layout
+    // variation the reader noticed. Audited top-screen composition: Books/Fiction/Non-fiction/
+    // Textbooks/Medicine are ~all books (cover-only, covers carry the title); Work/MND are ~all
+    // papers (keep captions so page-render tiles stay legible). Every book shelf now renders
+    // identically, and every paper shelf renders identically.
     m_finishedModel->setProperty("booksShelf", true);
-    m_textbooksModel->setProperty("booksShelf", shelfHasReadingProgress(textbooks));
-    m_medicineModel->setProperty("booksShelf", shelfHasReadingProgress(medicine));
-    m_mndModel->setProperty("booksShelf", shelfHasReadingProgress(mnd));
-    m_workModel->setProperty("booksShelf", shelfHasReadingProgress(work));
-    m_fictionModel->setProperty("booksShelf", shelfHasReadingProgress(fiction));
-    m_nonfictionModel->setProperty("booksShelf", shelfHasReadingProgress(nonfiction));
-    m_starterPackModel->setProperty("booksShelf", shelfHasReadingProgress(m_shelfEntries[StarterPackShelf]));
+    m_textbooksModel->setProperty("booksShelf", true);
+    m_medicineModel->setProperty("booksShelf", true);
+    m_fictionModel->setProperty("booksShelf", true);
+    m_nonfictionModel->setProperty("booksShelf", true);
+    m_starterPackModel->setProperty("booksShelf", true);
+    m_mndModel->setProperty("booksShelf", false);
+    m_workModel->setProperty("booksShelf", false);
 
     for (QList<ShelfEntry> *smartShelf : {&m_shelfEntries[TextbooksShelf], &m_shelfEntries[MedicineShelf], &m_shelfEntries[MndShelf], &m_shelfEntries[WorkShelf], &m_shelfEntries[FictionShelf], &m_shelfEntries[NonfictionShelf]}) {
         std::stable_sort(smartShelf->begin(), smartShelf->end(), entryLikelyBefore);
@@ -3837,7 +4137,13 @@ QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
         entry.title = object.value(QLatin1String("title")).toString().trimmed();
         const QString authors = object.value(QLatin1String("authors")).toString().trimmed();
         const QString year = object.value(QLatin1String("year")).toString().trimmed();
-        entry.description = authors.isEmpty() ? year : (year.isEmpty() ? authors : authors + QStringLiteral(" · ") + year);
+        const QString byline = authors.isEmpty() ? year : (year.isEmpty() ? authors : authors + QStringLiteral(" · ") + year);
+        // Prefer a real blurb (so the detail rail matches other shelves); fall back to the byline.
+        const QString blurb = object.value(QLatin1String("description")).toString().trimmed();
+        entry.description = blurb.isEmpty() ? byline : blurb;
+        if (!blurb.isEmpty() && !byline.isEmpty()) {
+            entry.detailLines.append(byline);
+        }
         entry.format = QStringLiteral("EPUB");
         entry.lastOpened = QDateTime::fromString(object.value(QLatin1String("added_ts")).toString(), Qt::ISODate);
         entry.tags = {QStringLiteral("Starter Pack"), QStringLiteral("Public Domain")};
@@ -4121,20 +4427,24 @@ void LibraryView::applySearch()
     cancelContentSearch(); // whatever was in flight answers a stale query
     rebuildShelves();
     const QString query = searchQuery();
+    syncCorpusSearchButton(); // the scope toggle appears/disappears as the query gains/loses text
     const bool activeCorpus = usesCorpusList(activeShelf());
     const bool fullTextCorpusSearch = activeCorpus && corpusSearchMode() == FullTextSearch && !query.isEmpty();
     if (!fullTextCorpusSearch && !query.isEmpty()) {
         clearCorpusResultMode();
     }
 
+    // Clear stale explicit rows everywhere (cheap — a no-op unless a section actually holds
+    // adjacent/full-text results), but only re-filter the ACTIVE shelf's section. The other
+    // seven are off-screen and are brought up to date when shown (attachCorpusShelf), so a
+    // keystroke rebuilds one section over the corpus instead of eight.
     for (PaperLibrarySectionedModel *sections : m_paperSections) {
-        if (!sections) {
-            continue;
-        }
-        if (sections->hasExplicitSourceRows()) {
+        if (sections && sections->hasExplicitSourceRows()) {
             sections->clearExplicitSourceRows();
         }
-        sections->setQuery(fullTextCorpusSearch ? QString() : query);
+    }
+    if (PaperLibrarySectionedModel *active = activePaperSections()) {
+        active->setQuery(fullTextCorpusSearch ? QString() : query);
     }
 
     if (fullTextCorpusSearch) {
@@ -4142,8 +4452,8 @@ void LibraryView::applySearch()
         if (!sections || !m_paperModel || !m_paperModel->isLoaded()) {
             return;
         }
-        if (!m_paperModel->hasFullTextSearchIndex()) {
-            showPaperNotice(i18nc("@info when full-text search is selected but not built", "Full-text index missing — run the PaperLibrary search indexer"), true);
+        if (!m_paperModel->hasFreshFullTextSearchIndex()) {
+            showPaperNotice(i18nc("@info when full-text search is selected but missing or stale", "Full-text index is missing or stale — run PaperLibrary maintenance"), true);
             return;
         }
         const QList<int> resultRows = m_paperModel->fullTextSearchRows(query, 720);
@@ -4324,6 +4634,7 @@ QStandardItem *LibraryView::makeTileItem(const ShelfEntry &entry)
     QStandardItem *item = new QStandardItem(displayEntry.title);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     item->setData(displayEntry.url, UrlRole);
+    item->setData(displayEntry.url.toLocalFile(), LocalFileRole); // cheap match key for coverArrived
     item->setData(displayEntry.pinned, PinnedRole);
     item->setData(displayEntry.downranked, DownrankedRole);
     item->setData(displayEntry.finishedReading, FinishedReadingRole);
@@ -4419,13 +4730,13 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         const QString intent = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString();
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString();
         if (sections && sections->smartFilter() == PaperLibrarySectionedModel::Papers) {
+            if (!intent.isEmpty()) {
+                return {intent, true};
+            }
             const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
             const QString rationale = joinCompact({paperThesis, paperSummary == paperThesis ? QString() : paperSummary, relation});
             if (!rationale.isEmpty()) {
                 return {rationale, true};
-            }
-            if (!intent.isEmpty()) {
-                return {intent, true};
             }
         }
         const QString paperSummary = corpusPaperSummaryForKey(corpusPaperKeyForIndex(index));
@@ -4456,12 +4767,17 @@ LibraryView::TileCaption LibraryView::tileCaption(const QModelIndex &index)
         }
         return {QStringList(index.data(PaperLibrarySectionedModel::TopicTagsRole).toStringList().mid(0, 2)).join(QStringLiteral(" · ")), true};
     }
-    // Only a tile actually showing a generated card gives up its title
-    // caption — the card displays the title as the artwork already
+    // A tile showing a generated card normally gives up its title caption -- the card displays the
+    // title as artwork. But a local document with a clean CITATION title (DisplayTitleRole, e.g.
+    // "Clinician 2026") distinct from its long raw title still shows that citation: it is far tidier
+    // under the tile than the raw title on the card, and matches how corpus papers are captioned.
+    const QString displayTitle = index.data(DisplayTitleRole).toString().trimmed();
     const bool generatedCardShowing = index.data(GeneratedCoverRole).toBool() && !index.data(CoverRole).value<QPixmap>().isNull();
     if (!generatedCardShowing) {
-        const QString displayTitle = index.data(DisplayTitleRole).toString().trimmed();
         return {displayTitle.isEmpty() ? index.data(Qt::DisplayRole).toString() : displayTitle, false};
+    }
+    if (!displayTitle.isEmpty() && displayTitle != index.data(Qt::DisplayRole).toString().trimmed()) {
+        return {displayTitle, false};
     }
     const QString description = index.data(DescriptionRole).toString();
     if (!description.isEmpty()) {
@@ -4526,9 +4842,11 @@ const EpubCover::Metadata &LibraryView::epubMetadataFor(const QString &filePath)
 
 void LibraryView::setupPapersShelf()
 {
-    if (focusManifestExists(m_paperCorpusDir, QStringLiteral("Textbooks"))) {
-        addShelfTab(TextbooksShelf, i18nc("library smart shelf with textbook documents", "Textbooks"));
-    }
+    // Textbooks is a corpus smart shelf like Fiction and Non-fiction, not a focus-manifest
+    // shelf like Medicine and MND. It was gated on focus/Textbooks/manifest.json, which the
+    // backend does not generate -- so the tab never appeared at all and 178 rows the librarian
+    // marked "Textbook" had no shelf anywhere.
+    addShelfTab(TextbooksShelf, i18nc("library smart shelf with textbook documents", "Textbooks"));
     if (focusManifestExists(m_paperCorpusDir, QStringLiteral("Medicine"))) {
         addShelfTab(MedicineShelf, i18nc("library smart shelf for medicine documents", "Medicine"));
     }
@@ -4537,10 +4855,19 @@ void LibraryView::setupPapersShelf()
     }
     addShelfTab(PapersShelf, i18nc("library shelf listing the PaperLibrary corpus", "Papers"));
 
-    m_paperModel = new PaperLibraryModel(this);
-    for (Shelf shelf : {TextbooksShelf, MedicineShelf, MndShelf, WorkShelf, FictionShelf, NonfictionShelf, PapersShelf}) {
+    // One corpus model shared across every library tab when the Shell supplies it: the catalog is
+    // parsed and classified once, ever, and a new tab only builds its own lightweight sectioned
+    // proxies. Without sharing, each tab re-parsed 21k rows and rebuilt on show -- telemetry logged
+    // 2.5s at one tab rising to 4.6s at nine. The shared model is owned by the Shell, so it must not
+    // be parented to (and destroyed with) this view.
+    m_paperModel = m_sharedCorpusModel ? m_sharedCorpusModel : new PaperLibraryModel(this);
+    for (Shelf shelf : {BooksShelf, TextbooksShelf, MedicineShelf, MndShelf, WorkShelf, FictionShelf, NonfictionShelf, FinishedShelf, PapersShelf}) {
         auto *sections = new PaperLibrarySectionedModel(this);
         sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+        // Book shelves reserve the progress row and show the percent-read; papers/projects do not.
+        if (shelf == BooksShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == TextbooksShelf) {
+            sections->setProperty("booksShelf", true);
+        }
         m_paperSections[shelf] = sections;
         connect(sections, &QAbstractItemModel::modelReset, this, [this, sections]() {
             QTimer::singleShot(0, this, [this, sections]() {
@@ -4553,12 +4880,26 @@ void LibraryView::setupPapersShelf()
     }
     connect(m_paperModel, &PaperLibraryModel::loaded, this, [this]() {
         syncCorpusSearchButton();
-        refresh();
-        prebuildCorpusShelves();
+        backfillReadingProgressTitles(); // bridge already-recorded path progress to titles, once
+        refresh(); // builds and paints the ACTIVE shelf (renderShelf -> configureCorpusShelf)
+        // NOT prebuildCorpusShelves() here: it attached all ~9 corpus shelves synchronously on this
+        // turn -- eight full 21k-row rebuilds the user never sees yet -- and that was the ~2.5s
+        // first-tab freeze telemetry recorded. scheduleCorpusPrewarm() below builds the same shelves
+        // off the first-paint path (active shelf first, then the rest on a 45ms stagger).
+        updateCorpusHealthNotice();
         showShelfGuide();
         requestCorpusCovers();
         scheduleCorpusPrewarm();
     });
+
+    // Persistent backend health is deliberately separate from the transient action notice below:
+    // a five-second "moved lower" message must never erase a stale-index warning.
+    m_corpusHealthNotice = new QLabel(this);
+    m_corpusHealthNotice->setObjectName(QStringLiteral("corpusHealthNotice"));
+    m_corpusHealthNotice->setMargin(8);
+    m_corpusHealthNotice->setTextFormat(Qt::PlainText);
+    m_corpusHealthNotice->setWordWrap(true);
+    m_corpusHealthNotice->hide();
 
     // The non-modal notice slot under the header ("Loading catalog…",
     // "PDF not local — …"); most of the time it is hidden
@@ -4572,8 +4913,41 @@ void LibraryView::setupPapersShelf()
     m_paperNoticeTimer->setInterval(5000);
     connect(m_paperNoticeTimer, &QTimer::timeout, m_paperNotice, &QWidget::hide);
 
-    QVBoxLayout *mainLayout = qobject_cast<QVBoxLayout *>(layout());
-    mainLayout->insertWidget(1, m_paperNotice); // right under the header row
+    // The notices float OVER the grid, they are not in the layout: a notice that reflowed the
+    // grid down every time it appeared -- especially the transient "marked as finished" toast on
+    // every action -- was jarring. Health pins to the top of the grid, the action toast is a
+    // bottom snackbar. Both are children of the view, raised above the grid, positioned by
+    // positionOverlayNotices() on show and on resize.
+    // Transparent for mouse so a floating notice never steals a click from the tile beneath it.
+    m_corpusHealthNotice->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_paperNotice->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_corpusHealthNotice->raise();
+    m_paperNotice->raise();
+}
+
+void LibraryView::positionOverlayNotices()
+{
+    if (!m_grid) {
+        return;
+    }
+    const QRect area = m_grid->geometry();
+    const int margin = 8;
+    if (m_corpusHealthNotice && !m_corpusHealthNotice->isHidden()) {
+        // Content-sized in the top-right corner, not a full-width banner: it appears only for a
+        // genuine problem now, and even then it should sit quietly out of the way.
+        const QSize hint = m_corpusHealthNotice->sizeHint();
+        const int w = qMin(hint.width(), area.width() - 2 * margin);
+        m_corpusHealthNotice->setGeometry(area.right() - w - margin, area.top() + margin, w, hint.height());
+        m_corpusHealthNotice->raise();
+    }
+    if (m_paperNotice && !m_paperNotice->isHidden()) {
+        const int wanted = m_paperNotice->sizeHint().width();
+        const int w = qMin(wanted, area.width() - 2 * margin);
+        const int h = m_paperNotice->sizeHint().height();
+        m_paperNotice->setGeometry(area.left() + (area.width() - w) / 2,
+                                   area.bottom() - h - margin, w, h);
+        m_paperNotice->raise();
+    }
 }
 
 void LibraryView::shelfChanged(int index)
@@ -4588,8 +4962,12 @@ void LibraryView::shelfChanged(int index)
     m_grid->setVisible(true);
     if (corpus) {
         syncPaperSectionButton();
+        updateCorpusHealthNotice();
     } else {
         syncViewModeButton();
+        if (m_corpusHealthNotice) {
+            m_corpusHealthNotice->hide();
+        }
         if (m_paperNotice) {
             m_paperNotice->hide();
         }
@@ -4618,43 +4996,74 @@ void LibraryView::renderPendingShelf()
 
 void LibraryView::renderShelf(Shelf shelf, bool animate)
 {
+    // Returning to the library (e.g. after opening a book in a new tab) re-renders the SAME shelf.
+    // The scrollToTop()/selectFirstTile() below would then yank the scroll to the top and change the
+    // selected tile — the reported annoyance. Save the scroll + current row and restore them for a
+    // same-shelf refresh; only reset on a genuine shelf switch.
+    const int savedScroll = m_grid->verticalScrollBar() ? m_grid->verticalScrollBar()->value() : 0;
+    const int savedRow = m_grid->currentIndex().isValid() ? m_grid->currentIndex().row() : -1;
+    bool sameShelf = false;
     const bool corpus = usesCorpusList(shelf);
     const bool wasUpdatesEnabled = m_grid->updatesEnabled();
     m_grid->setUpdatesEnabled(false);
     if (corpus) {
         configureCorpusShelf(shelf);
         PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
+        sameShelf = (m_grid->model() == sections);
         QItemSelectionModel *oldSelection = nullptr;
-        if (m_grid->model() != sections) {
+        if (!sameShelf) {
             oldSelection = m_grid->selectionModel();
             m_grid->setModel(sections);
         }
         configureTileGrid();
-        m_grid->scrollToTop();
+        if (!sameShelf) {
+            m_grid->scrollToTop();
+        }
         delete oldSelection;
         connectGridSelectionContext();
         ensurePapersFresh();
+        updateCorpusHealthNotice();
         showShelfGuide();
         requestCorpusCovers();
     } else {
         QAbstractItemModel *const shelfModel = modelForShelf(shelf);
+        sameShelf = (m_grid->model() == shelfModel);
         QItemSelectionModel *oldSelection = nullptr;
-        if (m_grid->model() != shelfModel) {
+        if (!sameShelf) {
             oldSelection = m_grid->selectionModel();
             m_grid->setModel(shelfModel);
         }
         configureTileGrid();
-        m_grid->scrollToTop();
+        if (!sameShelf) {
+            m_grid->scrollToTop();
+        }
         delete oldSelection;
         connectGridSelectionContext();
         syncViewModeButton(); // the arrangement is a per-shelf choice
+        if (m_corpusHealthNotice) {
+            m_corpusHealthNotice->hide();
+        }
         if (m_paperNotice) {
             m_paperNotice->hide();
         }
     }
-    selectFirstTile();
+    if (sameShelf) {
+        // Restore the reader's place. currentIndex/scroll are cleared by the model rebuild, so
+        // reselect the saved row and restore the scroll after layout settles (singleShot).
+        if (savedRow >= 0 && m_grid->model() && savedRow < m_grid->model()->rowCount()) {
+            m_grid->setCurrentIndex(m_grid->model()->index(savedRow, 0));
+        }
+        const int scroll = savedScroll;
+        QTimer::singleShot(0, this, [this, scroll]() {
+            if (m_grid && m_grid->verticalScrollBar()) {
+                m_grid->verticalScrollBar()->setValue(scroll);
+            }
+        });
+    } else {
+        selectFirstTile();
+    }
     updateSelectedTileContext(m_grid->currentIndex());
-    if (animate) {
+    if (animate && !sameShelf) { // don't flash a fade when merely refreshing the current shelf
         animateGridIn();
     } else if (m_gridFadeAnimation && m_gridFadeEffect) {
         m_gridFadeAnimation->stop();
@@ -4667,8 +5076,48 @@ void LibraryView::renderShelf(Shelf shelf, bool animate)
     m_grid->viewport()->update();
 }
 
+/** Hand the reader's imported books to the corpus model, so the book shelves show both. */
+void LibraryView::publishLocalBooksToCorpus()
+{
+    if (!m_paperModel) {
+        return;
+    }
+    QList<PaperLibraryModel::Record> records;
+    records.reserve(m_shelfEntries[BooksShelf].size());
+    for (const ShelfEntry &entry : std::as_const(m_shelfEntries[BooksShelf])) {
+        if (!entry.url.isLocalFile()) {
+            continue;
+        }
+        PaperLibraryModel::Record record;
+        record.title = entry.title;
+        record.pdfPath = entry.url.toLocalFile();
+        record.slug = QStringLiteral("local-") + QString::number(qHash(record.pdfPath), 16);
+        // recordKind is what recordIsBook() trusts first; these are books by construction --
+        // they came off the Books shelf, which LibraryStore fills from EPUBs.
+        record.recordKind = QStringLiteral("book");
+        record.source = QStringLiteral("book:imported");
+        record.description = entry.description;
+        record.pinned = entry.pinned;
+        record.accessCount = entry.openCount;
+        record.haystack = smartShelfHaystack(entry);
+        records.append(record);
+    }
+    m_paperModel->setLocalBooks(records);
+}
+
 bool LibraryView::usesCorpusList(Shelf shelf) const
 {
+    // Books used to drop to the local paged model whenever LibraryStore held a single EPUB, so
+    // owning one imported book hid the corpus's other 687 behind it and "Books" showed six. The
+    // corpus is now always preferred there; the reader's imports are not lost, because
+    // PaperLibraryModel::setLocalBooks() merges the ones the catalog has never heard of.
+    //
+    // Finished still prefers the local list. Its corpus filter keys on CorpusFeed/FinishedSlugs,
+    // and a locally imported book has no corpus slug to put there -- routing it to the corpus
+    // would silently drop every book the reader finished outside the catalog.
+    if (shelf == FinishedShelf && shelf < DocumentShelfCount && !m_shelfEntries[shelf].isEmpty()) {
+        return false;
+    }
     return paperSectionsForShelf(shelf) != nullptr;
 }
 
@@ -4695,7 +5144,12 @@ void LibraryView::attachCorpusShelf(Shelf shelf)
         sections->setSourceModel(m_paperModel);
         m_paperSectionAttached[shelf] = true;
     }
+    sections->reloadFinishedSlugs(); // catch finished marks made on another shelf's model
     sections->setShelf(paperFilterForShelf(shelf), static_cast<PaperLibrarySectionedModel::SectionMode>(paperSectionMode(shelf)));
+    // Bring the shelf we're about to show in sync with the search box. applySearch only
+    // re-filters the active section per keystroke, so a shelf switched to under an active
+    // (or just-cleared) query is caught up here — a no-op via setQuery when already in sync.
+    sections->setQuery(searchQuery());
 }
 
 void LibraryView::configureCorpusShelf(Shelf shelf)
@@ -4729,7 +5183,10 @@ int LibraryView::paperSectionMode(Shelf shelf) const
         return PaperLibrarySectionedModel::ReadNext;
     }
     const int mode = m_paperSectionModes[shelf];
-    if (mode < PaperLibrarySectionedModel::ReadNext || mode > PaperLibrarySectionedModel::ByJournal) {
+    // Out-of-range OR a pruned mode (Sources/Journals, no longer offered) falls back to the
+    // shelf's default so a stale config never selects a mode the menu can't show.
+    if (mode < PaperLibrarySectionedModel::ReadNext || mode > PaperLibrarySectionedModel::ByJournal
+        || mode == PaperLibrarySectionedModel::BySource || mode == PaperLibrarySectionedModel::ByJournal) {
         return defaultPaperSectionModeForShelf(shelf);
     }
     return mode;
@@ -4743,7 +5200,10 @@ void LibraryView::syncPaperSectionButton()
     const int mode = paperSectionMode(activeShelf());
     if (mode >= PaperLibrarySectionedModel::ReadNext && mode <= PaperLibrarySectionedModel::ByJournal && m_paperSectionActions[mode]) {
         m_paperSectionActions[mode]->setChecked(true);
-        m_paperSectionButton->setText(m_paperSectionActions[mode]->text());
+        // Prefix the value with "Group:" so the button reads as a grouping control rather
+        // than a bare, mysterious value like "Topics".
+        m_paperSectionButton->setText(i18nc("@action:button grouping control, %1 is the current grouping",
+                                            "Group: %1", m_paperSectionActions[mode]->text()));
     }
 }
 
@@ -4757,8 +5217,8 @@ void LibraryView::setCorpusSearchMode(CorpusSearchMode mode)
     if (mode < ShelfMetadataSearch || mode > FullTextSearch) {
         return;
     }
-    if (mode == FullTextSearch && m_paperModel && m_paperModel->isLoaded() && !m_paperModel->hasFullTextSearchIndex()) {
-        showPaperNotice(i18nc("@info when the full-text search index is unavailable", "Full-text index missing — run the PaperLibrary search indexer"), true);
+    if (mode == FullTextSearch && m_paperModel && m_paperModel->isLoaded() && !m_paperModel->hasFreshFullTextSearchIndex()) {
+        showPaperNotice(i18nc("@info when the full-text search index is missing or stale", "Full-text index is missing or stale — run PaperLibrary maintenance"), true);
         mode = ShelfMetadataSearch;
     }
     if (m_corpusSearchMode == mode) {
@@ -4779,11 +5239,13 @@ void LibraryView::syncCorpusSearchButton()
         return;
     }
     const bool corpus = usesCorpusList(activeShelf());
-    m_corpusSearchButton->setVisible(corpus);
+    // The scope toggle only means anything while searching, so keep it hidden until the
+    // search box has text — otherwise it reads as a mystery button doing nothing.
+    m_corpusSearchButton->setVisible(corpus && !searchQuery().isEmpty());
     if (!corpus) {
         return;
     }
-    const bool ftsAvailable = m_paperModel && m_paperModel->isLoaded() && m_paperModel->hasFullTextSearchIndex();
+    const bool ftsAvailable = m_paperModel && m_paperModel->isLoaded() && m_paperModel->hasFreshFullTextSearchIndex();
     if (m_corpusSearchActions[FullTextSearch]) {
         m_corpusSearchActions[FullTextSearch]->setEnabled(ftsAvailable);
     }
@@ -4855,6 +5317,7 @@ bool LibraryView::clearActiveCorpusResult()
 
 void LibraryView::showShelfGuide()
 {
+    updateCorpusHealthNotice();
     if (!m_paperNotice) {
         return;
     }
@@ -4947,22 +5410,6 @@ int LibraryView::requestCorpusCoversForSections(PaperLibrarySectionedModel *sect
     return row;
 }
 
-void LibraryView::prebuildCorpusShelves()
-{
-    if (!m_paperModel || !m_paperModel->isLoaded()) {
-        return;
-    }
-
-    for (const Shelf shelf : std::as_const(m_visibleShelves)) {
-        PaperLibrarySectionedModel *sections = paperSectionsForShelf(shelf);
-        if (!sections) {
-            continue;
-        }
-        attachCorpusShelf(shelf);
-        sections->rowCount(); // setSourceModel() already rebuilt rows; keep this path hot before first click.
-    }
-}
-
 void LibraryView::scheduleCorpusPrewarm()
 {
     if (!m_paperModel || !m_paperModel->isLoaded()) {
@@ -5020,6 +5467,19 @@ void LibraryView::ensurePapersFresh()
     }
 }
 
+void LibraryView::updateCorpusHealthNotice()
+{
+    // Corpus health is deliberately NOT surfaced to the reader. Every state this system produces --
+    // stale index, catalog changed, attestation mismatch, inconsistent state -- resolves to the same
+    // thing: the derived indexes need rebuilding, which is the backend's (Claude Code's) job, not a
+    // command the reader should be told to run. The whole point of this project is that the reader
+    // never does backend maintenance. It stays tracked in corpus_state.json for the backend; the UI
+    // says nothing. (This replaced a full-width "run python3 maintain.py" banner.)
+    if (m_corpusHealthNotice) {
+        m_corpusHealthNotice->hide();
+    }
+}
+
 void LibraryView::applyChromePalette()
 {
     if (m_applyingChromePalette) {
@@ -5048,6 +5508,9 @@ void LibraryView::applyChromePalette()
         m_grid->viewport()->setPalette(chrome);
         configureTileGrid();
     }
+    if (m_corpusHealthNotice && m_corpusHealthNotice->isVisible()) {
+        updateCorpusHealthNotice();
+    }
     m_applyingChromePalette = false;
 }
 
@@ -5068,9 +5531,13 @@ void LibraryView::showPaperNotice(const QString &text, bool autoHide)
     chip.setColor(QPalette::WindowText, noticeColor);
     m_paperNotice->setPalette(chip);
     m_paperNotice->setAutoFillBackground(true);
-    const int availableWidth = m_paperNotice->width() - 20;
-    m_paperNotice->setText(availableWidth > 200 ? QFontMetrics(m_paperNotice->font()).elidedText(text, Qt::ElideRight, availableWidth) : text);
+    // The toast floats and sizes to its (short) message; elision against a stale layout width is
+    // no longer needed. Elide only against the grid so an unusually long line can't overflow it.
+    const int cap = m_grid ? m_grid->width() - 40 : 600;
+    m_paperNotice->setText(QFontMetrics(m_paperNotice->font()).elidedText(text, Qt::ElideRight, qMax(200, cap)));
+    m_paperNotice->adjustSize();
     m_paperNotice->show();
+    positionOverlayNotices();
     if (autoHide) {
         m_paperNoticeTimer->start();
     } else {
@@ -5153,6 +5620,8 @@ void LibraryView::connectGridSelectionContext()
     m_gridSelectionConnection = connect(m_grid->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex &current) {
         updateSelectedTileContext(current);
     });
+    // A shelf switch swaps the model; reset the rail to the new shelf's current tile (usually none).
+    updateDetailRail(m_grid->currentIndex());
 }
 
 void LibraryView::updateSelectedTileContext(const QModelIndex &index)
@@ -5249,7 +5718,7 @@ bool LibraryView::showAdjacentDocumentsForIndex(const QModelIndex &index)
     const QString title = index.data(Qt::DisplayRole).toString().trimmed();
     const QString metadata = corpusPaperMetadataLineForIndex(index);
     const QString slug = index.data(PaperLibraryModel::SlugRole).toString().trimmed();
-    if (m_paperModel && m_paperModel->isLoaded() && !slug.isEmpty()) {
+    if (m_paperModel && m_paperModel->isLoaded() && m_paperModel->hasFreshSemanticGraph() && !slug.isEmpty()) {
         const QList<int> relatedRows = m_paperModel->relatedRowsForSlug(slug, 160);
         if (!relatedRows.isEmpty()) {
             PaperLibrarySectionedModel *sections = paperSectionsForShelf(PapersShelf);
@@ -5257,7 +5726,8 @@ bool LibraryView::showAdjacentDocumentsForIndex(const QModelIndex &index)
                 attachCorpusShelf(PapersShelf);
                 sections->setExplicitSourceRows(relatedRows,
                                                 i18nc("@label adjacent corpus result group", "Adjacent documents"),
-                                                i18nc("@title empty adjacent corpus search tile", "No adjacent documents"));
+                                                i18nc("@title empty adjacent corpus search tile", "No adjacent documents"),
+                                                /*bypassShelfFilter=*/true); // keep book neighbours
                 {
                     const QSignalBlocker blocker(m_searchField);
                     m_searchField->clear();
@@ -5307,6 +5777,403 @@ bool LibraryView::showAdjacentDocumentsForCurrentTile()
     return m_grid && showAdjacentDocumentsForIndex(m_grid->currentIndex());
 }
 
+void LibraryView::backfillReadingProgressTitles()
+{
+    // Progress recorded before the title bridge existed is keyed only by the exact file path, so it
+    // is invisible on any tile that shows a different copy of the book. Walk the catalog ONCE, and
+    // for each row whose path already has recorded progress, also write the title key -- so every
+    // already-read book shows across all its copies without the reader having to reopen it.
+    if (m_progressTitlesBackfilled || !m_paperModel) {
+        return;
+    }
+    m_progressTitlesBackfilled = true;
+    const QHash<QString, double> byPathKey = ReadingProgress::recordedByPathKey();
+    if (byPathKey.isEmpty()) {
+        return;
+    }
+    for (int row = 0; row < m_paperModel->rowCount(); ++row) {
+        const QModelIndex ix = m_paperModel->index(row);
+        const QString path = ix.data(PaperLibraryModel::ResolvedPathRole).toString();
+        if (path.isEmpty()) {
+            continue;
+        }
+        const auto it = byPathKey.constFind(ReadingProgress::keyForUrl(QUrl::fromLocalFile(path)));
+        if (it == byPathKey.cend()) {
+            continue;
+        }
+        const QString title = ix.data(Qt::DisplayRole).toString();
+        if (ReadingProgress::fractionForTitle(title) < 0.0) {
+            ReadingProgress::record(QUrl::fromLocalFile(path), title, it.value());
+        }
+    }
+}
+
+void LibraryView::buildDetailRail()
+{
+    m_detailRail = new QWidget(this);
+    m_detailRail->setObjectName(QStringLiteral("detailRail"));
+    QVBoxLayout *railLayout = new QVBoxLayout(m_detailRail);
+    railLayout->setContentsMargins(12, 10, 12, 12);
+    railLayout->setSpacing(8);
+
+    // A chevron that hides/reveals the rail; stays visible when collapsed so it can be reopened.
+    m_detailToggle = new QToolButton(m_detailRail);
+    m_detailToggle->setAutoRaise(true);
+    m_detailToggle->setArrowType(Qt::LeftArrow);
+    m_detailToggle->setToolTip(i18nc("@info:tooltip", "Hide details"));
+    connect(m_detailToggle, &QToolButton::clicked, this, [this]() {
+        setDetailRailCollapsed(!m_detailRailCollapsed);
+    });
+    QHBoxLayout *toggleRow = new QHBoxLayout;
+    toggleRow->setContentsMargins(0, 0, 0, 0);
+    toggleRow->addStretch(1);
+    toggleRow->addWidget(m_detailToggle);
+    railLayout->addLayout(toggleRow);
+
+    // The scrollable detail body; each field hides itself when the selected tile has nothing for it.
+    m_detailScroll = new QScrollArea(m_detailRail);
+    QScrollArea *scroll = m_detailScroll;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_detailBody = new QWidget(scroll);
+    QVBoxLayout *body = new QVBoxLayout(m_detailBody);
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(8);
+
+    m_detailCover = new QLabel(m_detailBody);
+    m_detailCover->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    m_detailCover->setMinimumHeight(200);
+    body->addWidget(m_detailCover);
+
+    m_detailTitle = new QLabel(m_detailBody);
+    m_detailTitle->setObjectName(QStringLiteral("detailTitle"));
+    m_detailTitle->setWordWrap(true);
+    m_detailTitle->setAlignment(Qt::AlignHCenter);
+    m_detailTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    body->addWidget(m_detailTitle);
+
+    m_detailMeta = new QLabel(m_detailBody);
+    m_detailMeta->setObjectName(QStringLiteral("detailMeta"));
+    m_detailMeta->setWordWrap(true);
+    m_detailMeta->setAlignment(Qt::AlignHCenter);
+    body->addWidget(m_detailMeta);
+
+    m_detailProgress = new QProgressBar(m_detailBody);
+    m_detailProgress->setObjectName(QStringLiteral("detailProgress"));
+    m_detailProgress->setRange(0, 100);
+    m_detailProgress->setTextVisible(true);
+    m_detailProgress->setFixedHeight(16);
+    body->addWidget(m_detailProgress);
+
+    m_detailReason = new QLabel(m_detailBody);
+    m_detailReason->setObjectName(QStringLiteral("detailReason"));
+    m_detailReason->setWordWrap(true);
+    body->addWidget(m_detailReason);
+
+    m_detailBlurb = new QLabel(m_detailBody);
+    m_detailBlurb->setObjectName(QStringLiteral("detailBlurb"));
+    m_detailBlurb->setWordWrap(true);
+    m_detailBlurb->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    body->addWidget(m_detailBlurb);
+
+    // Topics render as wrapping chip pills (Apple-Books style) rather than a run-on "·" line.
+    m_detailTopicsBox = new QWidget(m_detailBody);
+    new FlowLayout(m_detailTopicsBox, 6);
+    body->addWidget(m_detailTopicsBox);
+
+    m_detailProvenance = new QLabel(m_detailBody);
+    m_detailProvenance->setWordWrap(true);
+    m_detailProvenance->setEnabled(false);
+    body->addWidget(m_detailProvenance);
+
+    QHBoxLayout *actions = new QHBoxLayout;
+    actions->setContentsMargins(0, 4, 0, 0);
+    m_detailOpen = new QPushButton(i18nc("@action:button open the selected book", "Open"), m_detailBody);
+    connect(m_detailOpen, &QPushButton::clicked, this, [this]() {
+        if (m_detailIndex.isValid()) {
+            tileClicked(m_detailIndex);
+        }
+    });
+    m_detailFinish = new QPushButton(m_detailBody);
+    connect(m_detailFinish, &QPushButton::clicked, this, [this]() {
+        PaperLibrarySectionedModel *sections = activePaperSections();
+        if (!sections || !m_detailIndex.isValid()) {
+            return;
+        }
+        const QModelIndex index = m_detailIndex;
+        const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+        const bool finished = index.data(PaperLibrarySectionedModel::FinishedRole).toBool();
+        sections->setFinished(index, !finished);
+        showPaperNotice(!finished
+                            ? i18nc("@info after marking a corpus tile finished", "Marked “%1” as finished — see the Finished shelf", title)
+                            : i18nc("@info after un-marking a corpus tile", "Marked “%1” as unfinished", title),
+                        false);
+        refreshDetailRail();
+    });
+    actions->addWidget(m_detailOpen);
+    actions->addWidget(m_detailFinish);
+    actions->addStretch(1);
+    body->addLayout(actions);
+    body->addStretch(1);
+
+    scroll->setWidget(m_detailBody);
+    railLayout->addWidget(scroll, 1);
+
+    // Shown instead of the body when nothing is selected, so the rail is never a blank column.
+    m_detailPlaceholder = new QLabel(i18nc("@info detail rail empty state", "Select a book to see its details."), m_detailRail);
+    m_detailPlaceholder->setWordWrap(true);
+    m_detailPlaceholder->setAlignment(Qt::AlignCenter);
+    m_detailPlaceholder->setEnabled(false);
+    railLayout->addWidget(m_detailPlaceholder, 1);
+
+    m_detailRail->setMinimumWidth(250);
+    m_detailRail->setMaximumWidth(360);
+
+    // Quiet, Apple-Books-ish typography: a strong title, muted secondary text, soft chip pills and
+    // a thin progress bar. Palette-relative colours so it reads in both the light and dark chrome.
+    m_detailRail->setStyleSheet(QStringLiteral(
+        "QLabel#detailTitle { font-size: 15px; font-weight: 600; }"
+        "QLabel#detailMeta { color: palette(mid); font-size: 11px; }"
+        "QLabel#detailReason { color: palette(text); font-style: italic; }"
+        "QLabel#detailBlurb { color: palette(text); }"
+        "QLabel#detailChip { background: palette(midlight); border-radius: 9px;"
+        " padding: 2px 9px; color: palette(text); font-size: 11px; }"
+        "QProgressBar#detailProgress { border: none; background: palette(midlight);"
+        " border-radius: 8px; text-align: center; font-size: 10px; }"
+        "QProgressBar#detailProgress::chunk { background: palette(highlight); border-radius: 8px; }"));
+}
+
+void LibraryView::setDetailRailCollapsed(bool collapsed)
+{
+    m_detailRailCollapsed = collapsed;
+    if (!m_detailRail) {
+        return;
+    }
+    if (m_detailScroll) {
+        m_detailScroll->setVisible(!collapsed);
+    }
+    if (m_detailPlaceholder) {
+        m_detailPlaceholder->setVisible(false);
+    }
+    if (m_detailToggle) {
+        m_detailToggle->setArrowType(collapsed ? Qt::RightArrow : Qt::LeftArrow);
+        m_detailToggle->setToolTip(collapsed ? i18nc("@info:tooltip", "Show details") : i18nc("@info:tooltip", "Hide details"));
+    }
+    if (collapsed) {
+        const int spine = m_detailToggle ? m_detailToggle->sizeHint().width() + 20 : 34;
+        m_detailRail->setMinimumWidth(spine);
+        m_detailRail->setMaximumWidth(spine);
+    } else {
+        m_detailRail->setMinimumWidth(250);
+        m_detailRail->setMaximumWidth(360);
+    }
+    partGeneralConfig().writeEntry("DetailRailCollapsed", collapsed);
+    if (!collapsed) {
+        refreshDetailRail();
+    }
+}
+
+void LibraryView::updateDetailRail(const QModelIndex &current)
+{
+    m_detailIndex = QPersistentModelIndex(current);
+    refreshDetailRail();
+}
+
+void LibraryView::refreshDetailRail()
+{
+    if (!m_detailRail || m_detailRailCollapsed) {
+        return;
+    }
+    const QModelIndex index = m_detailIndex;
+    const bool haveSelection = index.isValid()
+        && !index.data(PaperLibrarySectionedModel::SectionHeaderRole).toBool();
+    if (m_detailScroll) {
+        m_detailScroll->setVisible(haveSelection);
+    }
+    if (m_detailPlaceholder) {
+        m_detailPlaceholder->setVisible(!haveSelection);
+    }
+    if (!haveSelection) {
+        return;
+    }
+
+    // Cover: reuse exactly the pixmap the tile delegate paints, so the rail matches the grid.
+    QPixmap cover = index.data(PaperLibrarySectionedModel::CoverPixmapRole).value<QPixmap>();
+    if (cover.isNull()) {
+        cover = index.data(LibraryView::CoverRole).value<QPixmap>();
+    }
+    if (cover.isNull()) {
+        m_detailCover->clear();
+        m_detailCover->setVisible(false);
+    } else {
+        m_detailCover->setVisible(true);
+        m_detailCover->setPixmap(cover.scaledToWidth(qMin(cover.width(), 220), Qt::SmoothTransformation));
+    }
+
+    const auto setOrHide = [](QLabel *label, const QString &text) {
+        label->setText(text);
+        label->setVisible(!text.trimmed().isEmpty());
+    };
+
+    // On a local-file shelf (Recent, etc.) the tile carries no librarian metadata; find its corpus
+    // twin by title and borrow that twin's author, blurb and topics so the rail is as rich there as
+    // on the Books shelf. field()/listField() read the primary tile first, the twin only as fallback.
+    QModelIndex corpusTwin;
+    if (!usesCorpusList(activeShelf()) && m_paperModel) {
+        const int twinRow = m_paperModel->rowForLookupTitle(index.data(Qt::DisplayRole).toString());
+        if (twinRow >= 0) {
+            corpusTwin = m_paperModel->index(twinRow);
+        }
+    }
+    const auto field = [&](int role) -> QString {
+        const QString primary = index.data(role).toString().trimmed();
+        if (!primary.isEmpty() || !corpusTwin.isValid()) {
+            return primary;
+        }
+        return corpusTwin.data(role).toString().trimmed();
+    };
+    const auto listField = [&](int role) -> QStringList {
+        const QStringList primary = index.data(role).toStringList();
+        if (!primary.isEmpty() || !corpusTwin.isValid()) {
+            return primary;
+        }
+        return corpusTwin.data(role).toStringList();
+    };
+
+    setOrHide(m_detailTitle, index.data(Qt::DisplayRole).toString().trimmed());
+
+    // Build the meta line from real fields so placeholders like "(book)" never surface. Journal
+    // only earns a slot when it is a genuine venue (papers), not a "(book)"/bracketed stand-in.
+    QStringList metaBits;
+    const QString authors = field(PaperLibraryModel::AuthorsRole);
+    if (!authors.isEmpty()) {
+        metaBits << authors;
+    }
+    const QString year = field(PaperLibraryModel::YearRole);
+    if (!year.isEmpty() && year != QLatin1String("None")) {
+        metaBits << year;
+    }
+    const QString journal = field(PaperLibraryModel::JournalRole);
+    if (!journal.isEmpty() && !journal.startsWith(QLatin1Char('(')) && !journal.startsWith(QLatin1Char('['))) {
+        metaBits << journal;
+    }
+    const QString kind = index.data(PaperLibrarySectionedModel::KindRole).toString().trimmed();
+    if (!kind.isEmpty()) {
+        metaBits << kind;
+    }
+    setOrHide(m_detailMeta, metaBits.join(QStringLiteral("  ·  ")));
+
+    // Percent-read, resolved from the most authoritative source first: PaperLibrary's OWN reading
+    // (the native store, by path) beats the shelf role -- because Apple Books reports 0.0 for a book
+    // the reader actually read here, and that stale zero must not mask real PL progress. Then the
+    // shelf role (corpus blends path+title; local is Apple Books), then Apple Books by title.
+    // Anything that rounds to 0% is treated as "nothing to show" and the bar hides -- never a bare 0%.
+    double progress = -1.0;
+    QString path = index.data(PaperLibraryModel::ResolvedPathRole).toString();
+    if (path.isEmpty()) {
+        path = index.data(LibraryView::UrlRole).toUrl().toLocalFile();
+    }
+    if (!path.isEmpty()) {
+        progress = ReadingProgress::fractionForPath(path);
+    }
+    // Title bridge BEFORE the shelf role: a book read here lives at a different path than the tile
+    // shows (iCloud vs corpus copy), and the local ProgressRole is Apple Books' 0.0 for a book read
+    // in PaperLibrary -- a valid zero that would otherwise win and mask the real position.
+    if (progress < 0.0) {
+        progress = ReadingProgress::fractionForTitle(index.data(Qt::DisplayRole).toString());
+    }
+    if (progress < 0.0) {
+        const QVariant roleVar = usesCorpusList(activeShelf())
+            ? index.data(PaperLibrarySectionedModel::ReadingProgressRole)
+            : index.data(LibraryView::ProgressRole);
+        if (roleVar.isValid() && roleVar.canConvert<double>()) {
+            progress = roleVar.toDouble();
+        }
+    }
+    const int progressPercent = progress >= 0.0 ? qRound(qBound(0.0, progress, 1.0) * 100.0) : 0;
+    if (progressPercent >= 1) {
+        m_detailProgress->setVisible(true);
+        m_detailProgress->setValue(progressPercent);
+    } else {
+        m_detailProgress->setVisible(false);
+    }
+
+    // "Why it's here" (feed reason) and the librarian blurb are distinct; show whichever exist. The
+    // blurb falls back to the corpus twin so a local-shelf book still gets its synopsis.
+    const QString reason = index.data(PaperLibrarySectionedModel::ShelfIntentRole).toString().trimmed();
+    const QString blurb = field(PaperLibraryModel::DescriptionRole);
+    setOrHide(m_detailReason, reason == blurb ? QString() : reason);
+    setOrHide(m_detailBlurb, blurb);
+
+    // Topic chips: subgenre + librarian topics + reading level, de-duped and capped so the rail
+    // shows a scannable handful rather than a wall of tags.
+    QStringList topicBits;
+    // A subgenre can be a slash-compound ("Psychiatry / psychodynamic psychotherapy"); split it so
+    // each concept is its own chip rather than one chip too wide for the rail.
+    QString subgenre = index.data(PaperLibrarySectionedModel::RelationHintRole).toString().trimmed();
+    if (subgenre.isEmpty() && corpusTwin.isValid()) {
+        subgenre = corpusTwin.data(PaperLibraryModel::SubgenreRole).toString().trimmed();
+    }
+    const QRegularExpression slashSplit(QStringLiteral("\\s*/\\s*"));
+    for (const QString &part : subgenre.split(slashSplit, Qt::SkipEmptyParts)) {
+        topicBits << part.trimmed();
+    }
+    topicBits += listField(PaperLibraryModel::TopicsRole);
+    QString level = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
+    if (level.isEmpty() && corpusTwin.isValid()) {
+        level = corpusTwin.data(PaperLibraryModel::ReadingLevelRole).toString().trimmed();
+    }
+    if (!level.isEmpty()) {
+        topicBits << level;
+    }
+    topicBits.removeAll(QString());
+    // Case-insensitive de-dup so "Biography" and "biography" don't both become chips; keep the first.
+    QStringList uniqueTopics;
+    QSet<QString> seenTopics;
+    for (const QString &tag : std::as_const(topicBits)) {
+        if (!seenTopics.contains(tag.toCaseFolded())) {
+            seenTopics.insert(tag.toCaseFolded());
+            uniqueTopics << tag;
+        }
+    }
+    topicBits = uniqueTopics;
+    constexpr int MaxChips = 8;
+    if (topicBits.size() > MaxChips) {
+        topicBits = topicBits.mid(0, MaxChips);
+    }
+    QLayout *chipLayout = m_detailTopicsBox->layout();
+    while (QLayoutItem *old = chipLayout->takeAt(0)) {
+        delete old->widget();
+        delete old;
+    }
+    const QFontMetrics chipMetrics(m_detailTopicsBox->font());
+    for (const QString &tag : std::as_const(topicBits)) {
+        QLabel *chip = new QLabel(m_detailTopicsBox);
+        chip->setObjectName(QStringLiteral("detailChip"));
+        // Elide so a single long tag can never push a chip past the rail's width.
+        chip->setText(chipMetrics.elidedText(tag, Qt::ElideRight, 180));
+        if (chip->text() != tag) {
+            chip->setToolTip(tag);
+        }
+        chipLayout->addWidget(chip);
+    }
+    m_detailTopicsBox->setVisible(!topicBits.isEmpty());
+
+    // Provenance/caveats live on the book-feed cards (feed/manifest.jsonl), not the Reading focus
+    // manifest this shelf renders, so the model exposes no role for them yet. Keep the widget wired
+    // and hidden; when a provenance role is added it slots in here without touching the layout.
+    m_detailProvenance->setVisible(false);
+
+    // Mark-finished only has a home on the corpus/feed shelves; hide it on local-file shelves so it
+    // is never a button that does nothing. Open stays enabled -- tileClicked handles a missing file.
+    const bool corpusShelf = usesCorpusList(activeShelf());
+    const bool finished = index.data(PaperLibrarySectionedModel::FinishedRole).toBool();
+    m_detailFinish->setText(finished ? i18nc("@action:button", "Mark unfinished") : i18nc("@action:button", "Mark finished"));
+    m_detailFinish->setVisible(corpusShelf);
+    m_detailOpen->setEnabled(true);
+}
+
 void LibraryView::tileClicked(const QModelIndex &index)
 {
     if (!index.isValid() || isLibraryHeaderIndex(index)) {
@@ -5320,6 +6187,7 @@ void LibraryView::tileClicked(const QModelIndex &index)
             return;
         }
         const QUrl url = QUrl::fromLocalFile(pdfPath);
+        const QString slug = index.data(PaperLibraryModel::SlugRole).toString().trimmed();
         const QString title = index.data(Qt::DisplayRole).toString().trimmed();
         const QString detail = index.data(PaperLibraryModel::DetailRole).toString().trimmed();
         const QString priority = index.data(PaperLibrarySectionedModel::PriorityHintRole).toString().trimmed();
@@ -5339,6 +6207,7 @@ void LibraryView::tileClicked(const QModelIndex &index)
         if (!description.isEmpty()) {
             m_store->setDescription(url, description);
         }
+        appendCorpusOpenUsageEvent(slug);
         activate(url, -1.0);
         return;
     }
@@ -5375,6 +6244,83 @@ void LibraryView::selectFirstTile()
     }
 }
 
+void LibraryView::flagBook(const QModelIndex &index, const QString &kind, const QString &note)
+{
+    if (!index.isValid()) {
+        return;
+    }
+    const int sourceRow = index.data(PaperLibrarySectionedModel::SourceRowRole).toInt();
+    QString slug, genre;
+    if (sourceRow >= 0 && m_paperModel) {
+        const QModelIndex src = m_paperModel->index(sourceRow);
+        slug = src.data(PaperLibraryModel::SlugRole).toString();
+        genre = src.data(PaperLibraryModel::GenreRole).toString();
+    }
+    const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+    const QString shelf = m_shelfSwitch && m_shelfSwitch->currentIndex() >= 0
+        ? m_shelfSwitch->tabText(m_shelfSwitch->currentIndex())
+        : QString();
+    QString dir = !m_paperCorpusDir.isEmpty() ? m_paperCorpusDir : (m_paperModel ? m_paperModel->corpusDir() : QString());
+    if (dir.isEmpty()) {
+        return;
+    }
+    QJsonObject record;
+    record.insert(QStringLiteral("slug"), slug);
+    record.insert(QStringLiteral("title"), title);
+    record.insert(QStringLiteral("shelf"), shelf);
+    record.insert(QStringLiteral("genre"), genre);
+    record.insert(QStringLiteral("kind"), kind);
+    if (!note.isEmpty()) {
+        record.insert(QStringLiteral("note"), note);
+    }
+    record.insert(QStringLiteral("ts"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    QFile file(dir + QStringLiteral("/flags.jsonl"));
+    if (file.open(QIODevice::Append | QIODevice::Text)) {
+        file.write(QJsonDocument(record).toJson(QJsonDocument::Compact));
+        file.write("\n");
+        file.close();
+        showPaperNotice(i18nc("@info after flagging a book",
+                              "Flagged “%1” — the next morning check will pick it up", title),
+                        false);
+    } else {
+        showPaperNotice(i18nc("@info flagging failed", "Couldn’t write the flag (%1)", file.errorString()), false);
+    }
+}
+
+void LibraryView::flagCurrentTile()
+{
+    if (!m_grid) {
+        return;
+    }
+    const QModelIndex index = m_grid->currentIndex();
+    if (!index.isValid() || isLibraryHeaderIndex(index)
+        || !index.data(PaperLibrarySectionedModel::SourceRowRole).isValid()) {
+        return;
+    }
+    QMenu menu(this);
+    QAction *shelfAction = menu.addAction(i18nc("@action:inmenu flag reason", "Wrong shelf / genre"));
+    QAction *coverAction = menu.addAction(i18nc("@action:inmenu flag reason", "Bad cover art"));
+    QAction *titleAction = menu.addAction(i18nc("@action:inmenu flag reason", "Bad title"));
+    QAction *otherAction = menu.addAction(i18nc("@action:inmenu flag reason", "Other…"));
+    const QRect rect = m_grid->visualRect(index);
+    const QAction *chosen = menu.exec(m_grid->viewport()->mapToGlobal(rect.center()));
+    if (chosen == shelfAction) {
+        flagBook(index, QStringLiteral("wrong-shelf"));
+    } else if (chosen == coverAction) {
+        flagBook(index, QStringLiteral("bad-cover"));
+    } else if (chosen == titleAction) {
+        flagBook(index, QStringLiteral("bad-title"));
+    } else if (chosen == otherAction) {
+        bool ok = false;
+        const QString note = QInputDialog::getText(this, i18nc("@title:window", "Flag a Problem"),
+                                                   i18nc("@label:textbox", "What’s wrong with this book?"),
+                                                   QLineEdit::Normal, QString(), &ok);
+        if (ok && !note.trimmed().isEmpty()) {
+            flagBook(index, QStringLiteral("other"), note.trimmed());
+        }
+    }
+}
+
 void LibraryView::showContextMenu(const QPoint &pos)
 {
     const QModelIndex index = m_grid->indexAt(pos);
@@ -5387,6 +6333,7 @@ void LibraryView::showContextMenu(const QPoint &pos)
         auto *sections = qobject_cast<PaperLibrarySectionedModel *>(const_cast<QAbstractItemModel *>(index.model()));
         const QString pdfPath = sections ? sections->resolvePath(index) : QString();
         const bool downranked = index.data(PaperLibrarySectionedModel::DownrankedRole).toBool();
+        const bool finished = index.data(PaperLibrarySectionedModel::FinishedRole).toBool();
 
         QMenu menu(this);
         QString relatedLabel = relationHint;
@@ -5398,6 +6345,7 @@ void LibraryView::showContextMenu(const QPoint &pos)
         }
         QAction *relatedAction = menu.addAction(relatedQuery.isEmpty() ? i18nc("@action:inmenu on a corpus tile", "Show Adjacent Documents")
                                                                        : i18nc("@action:inmenu on a corpus tile", "Show Adjacent Documents: %1", relatedLabel));
+        QAction *finishedAction = menu.addAction(finished ? i18nc("@action:inmenu on a corpus tile", "Mark as Unfinished") : i18nc("@action:inmenu on a corpus tile", "Mark as Finished"));
         QAction *downrankAction = menu.addAction(downranked ? i18nc("@action:inmenu on a corpus tile", "Undo Thumbs Down") : i18nc("@action:inmenu on a corpus tile", "Thumbs Down"));
         QAction *clearSearchAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Clear Search"));
         clearSearchAction->setEnabled(!searchQuery().isEmpty() || !m_corpusResultLabel.isEmpty() || !m_corpusResultDetail.isEmpty() || (sections && sections->hasExplicitSourceRows()));
@@ -5408,10 +6356,28 @@ void LibraryView::showContextMenu(const QPoint &pos)
         QAction *revealAction = menu.addAction(i18nc("@action:inmenu on a corpus tile", "Open Containing Folder"));
 #endif
         revealAction->setEnabled(!pdfPath.isEmpty());
+        menu.addSeparator();
+        QMenu *flagMenu = menu.addMenu(i18nc("@action:inmenu on a corpus tile", "Flag a Problem"));
+        QAction *flagShelfAction = flagMenu->addAction(i18nc("@action:inmenu flag reason", "Wrong shelf / genre"));
+        QAction *flagCoverAction = flagMenu->addAction(i18nc("@action:inmenu flag reason", "Bad cover art"));
+        QAction *flagTitleAction = flagMenu->addAction(i18nc("@action:inmenu flag reason", "Bad title"));
+        QAction *flagOtherAction = flagMenu->addAction(i18nc("@action:inmenu flag reason", "Other…"));
 
         const QAction *chosen = menu.exec(m_grid->viewport()->mapToGlobal(pos));
         if (chosen == relatedAction) {
             showAdjacentDocumentsForIndex(index);
+        } else if (chosen == finishedAction) {
+            if (sections) {
+                const QString title = index.data(Qt::DisplayRole).toString().trimmed();
+                sections->setFinished(index, !finished);
+                // Marking no longer rebuilds the current shelf (that was the hang), so give
+                // explicit feedback — otherwise it looks like nothing happened.
+                showPaperNotice(!finished
+                                    ? i18nc("@info after marking a corpus tile finished", "Marked “%1” as finished — see the Finished shelf", title)
+                                    : i18nc("@info after un-marking a corpus tile", "Marked “%1” as unfinished", title),
+                                false);
+                QTimer::singleShot(0, this, &LibraryView::requestCorpusCovers);
+            }
         } else if (chosen == downrankAction) {
             if (sections) {
                 sections->setDownranked(index, !downranked);
@@ -5425,6 +6391,20 @@ void LibraryView::showContextMenu(const QPoint &pos)
 #else
             KIO::highlightInFileManager({QUrl::fromLocalFile(pdfPath)});
 #endif
+        } else if (chosen == flagShelfAction) {
+            flagBook(index, QStringLiteral("wrong-shelf"));
+        } else if (chosen == flagCoverAction) {
+            flagBook(index, QStringLiteral("bad-cover"));
+        } else if (chosen == flagTitleAction) {
+            flagBook(index, QStringLiteral("bad-title"));
+        } else if (chosen == flagOtherAction) {
+            bool ok = false;
+            const QString note = QInputDialog::getText(this, i18nc("@title:window", "Flag a Problem"),
+                                                       i18nc("@label:textbox", "What’s wrong with this book?"),
+                                                       QLineEdit::Normal, QString(), &ok);
+            if (ok && !note.trimmed().isEmpty()) {
+                flagBook(index, QStringLiteral("other"), note.trimmed());
+            }
         }
         return;
     }
@@ -5531,13 +6511,18 @@ void LibraryView::coverArrived(const QString &filePath, const QString &coverPath
     if (cover.isNull()) {
         return;
     }
+    // Hot path: this runs once per completed cover, and a cold tab can request up to the loader's
+    // 160-cover cap in a burst. Match tiles via the cached LocalFileRole string — NOT
+    // data(UrlRole).toUrl().toLocalFile(), which constructed and parsed a QUrl for every row of
+    // every shelf on every cover (the O(covers x rows) freeze when clicking through a fresh tab).
+    const bool generated = CoverLoader::isGeneratedCoverPath(coverPath);
     for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
         QStandardItemModel *const model = modelForShelf(static_cast<Shelf>(shelf));
-        for (int row = 0; row < model->rowCount(); ++row) {
+        for (int row = 0, n = model->rowCount(); row < n; ++row) {
             QStandardItem *item = model->item(row);
-            if (!item->data(HeaderRole).toBool() && item->data(UrlRole).toUrl().toLocalFile() == filePath) {
+            if (item->data(LocalFileRole).toString() == filePath) {
                 item->setData(QVariant::fromValue(cover), CoverRole);
-                item->setData(CoverLoader::isGeneratedCoverPath(coverPath), GeneratedCoverRole);
+                item->setData(generated, GeneratedCoverRole);
             }
         }
     }
@@ -5560,6 +6545,12 @@ void LibraryView::scheduleRefresh(int delayMs)
         m_refreshPending = false;
         refresh();
     });
+}
+
+void LibraryView::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    positionOverlayNotices(); // the floating notices track the grid, they are not in the layout
 }
 
 void LibraryView::showEvent(QShowEvent *event)
@@ -5603,12 +6594,23 @@ void LibraryView::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space) {
-        if (m_grid->hasFocus() || m_grid->viewport()->hasFocus()) {
-            activateCurrentTile();
-            event->accept();
-            return;
-        }
+    const bool gridFocused = m_grid && (m_grid->hasFocus() || m_grid->viewport()->hasFocus());
+    if (gridFocused && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) {
+        activateCurrentTile(); // Enter: open the selected book (the host loads it in a new tab)
+        event->accept();
+        return;
+    }
+    if (gridFocused && event->key() == Qt::Key_Space) {
+        // Space: open more detail on the selection *within this tab* — expand the detail rail.
+        setDetailRailCollapsed(false);
+        updateDetailRail(m_grid->currentIndex());
+        event->accept();
+        return;
+    }
+    if (gridFocused && event->key() == Qt::Key_F && event->modifiers() == Qt::NoModifier) {
+        flagCurrentTile(); // f: flag the selection (wrong shelf / bad cover / bad title / other)
+        event->accept();
+        return;
     }
     QWidget::keyPressEvent(event);
 }
