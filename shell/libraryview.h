@@ -88,9 +88,10 @@ public:
         NonfictionShelf = 7,
         StarterPackShelf = 8,
         FinishedShelf = 9,
-        PapersShelf = 10,
+        KeepReadingShelf = 10,
+        PapersShelf = 11,
     };
-    static constexpr int DocumentShelfCount = 10;
+    static constexpr int DocumentShelfCount = 11;
 
     /** How a shelf arranges its tiles; persisted per shelf. */
     enum ViewMode {
@@ -205,6 +206,7 @@ private:
         double progress = -1.0;
         QString format;
         QStringList detailLines;
+        bool corpusBook = false;
     };
 
     /** An ordered group of tiles; title is sort/context metadata, not a row. */
@@ -235,6 +237,8 @@ private:
     static QStringList displayTagsForTile(const ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
     static void enrichShelfEntry(ShelfEntry &entry, const EpubCover::Metadata *epubMetadata = nullptr);
     static bool shelfHasReadingProgress(const QList<ShelfEntry> &entries);
+    static double effectiveReadingProgress(const ShelfEntry &entry);
+    static bool isKeepReadingEntry(const ShelfEntry &entry);
     static QList<ShelfEntry> loadStarterPackEntries();
     static bool matchesQuery(const ShelfEntry &entry, const QString &query);
     QStandardItemModel *modelForShelf(Shelf shelf) const;
@@ -330,6 +334,7 @@ private:
     void applyContentSearchResults(Shelf shelf, const QString &query, const QStringList &hitPaths);
 
     friend class MainShellTest;
+    friend class LibraryViewTest;
 
     LibraryStore *m_store;
     QTabBar *m_shelfSwitch;
@@ -377,6 +382,7 @@ private:
     QPersistentModelIndex m_detailIndex;
     bool m_detailRailCollapsed = false;
     bool m_progressTitlesBackfilled = false;
+    QStandardItemModel *m_keepReadingModel;
     QStandardItemModel *m_pdfModel;
     QStandardItemModel *m_booksModel;
     QStandardItemModel *m_textbooksModel;

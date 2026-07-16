@@ -16,21 +16,23 @@ requires a hosted AI service to create them.
 
 The public app starts with generic shelves:
 
-- Recent
+- Keep reading
+- History
 - Books
+- Finished
 - Fiction
 - Non-fiction
 - Work
 - Starter Pack
-- Papers, when a corpus exists
+- Textbooks and Papers, when a corpus exists
 
-Domain shelves appear only when the corpus contains a matching focus manifest.
-For example:
+Textbooks is a corpus smart shelf (like Fiction / Non-fiction), shown whenever a
+Papers corpus is configured. Other domain shelves appear only when the corpus
+contains a matching focus manifest. For example:
 
 ```text
 focus/Medicine/manifest.json
 focus/MND/manifest.json
-focus/Textbooks/manifest.json
 ```
 
 This keeps the public app generic while allowing local libraries to grow

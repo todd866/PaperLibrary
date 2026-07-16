@@ -109,7 +109,7 @@ The focus-manifest contract for agent-created shelves lives in:
 docs/contracts/focus-manifest-v1.md
 ```
 
-The current readiness audit against those rules lives in:
+A point-in-time readiness audit against those rules (with a dated update note) lives in:
 
 ```text
 docs/public-release-audit.md

@@ -23,7 +23,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CORPUS = Path(os.environ.get("PAPERLIBRARY_CORPUS", str(Path.home() / "PaperLibrary")))
+DEFAULT_CORPUS = Path(os.environ.get("PAPERLIBRARY_CORPUS", str(Path.home() / "Projects" / "PaperLibrary")))
 DEFAULT_REPORT_DIR = REPO_ROOT / "build" / "reports"
 
 SHELVES = (

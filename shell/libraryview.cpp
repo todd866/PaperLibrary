@@ -497,6 +497,8 @@ static const char *viewModeConfigKey(LibraryView::Shelf shelf)
         return "LibraryViewModeStarterPack";
     case LibraryView::FinishedShelf:
         return "LibraryViewModeFinished";
+    case LibraryView::KeepReadingShelf:
+        return "LibraryViewModeKeepReading";
     case LibraryView::PdfShelf:
         return "LibraryViewModeRecent";
     case LibraryView::PapersShelf:
@@ -567,6 +569,7 @@ static const char *paperSectionModeConfigKey(LibraryView::Shelf shelf)
         return "PaperSectionModePapers";
     case LibraryView::FinishedShelf:
     case LibraryView::StarterPackShelf:
+    case LibraryView::KeepReadingShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -588,6 +591,7 @@ static int defaultPaperSectionModeForShelf(LibraryView::Shelf shelf)
     case LibraryView::PapersShelf:
     case LibraryView::FinishedShelf:
     case LibraryView::StarterPackShelf:
+    case LibraryView::KeepReadingShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -619,6 +623,7 @@ static PaperLibrarySectionedModel::SmartFilter paperFilterForShelf(LibraryView::
         return PaperLibrarySectionedModel::Finished;
     case LibraryView::PapersShelf:
     case LibraryView::StarterPackShelf:
+    case LibraryView::KeepReadingShelf:
     case LibraryView::PdfShelf:
         break;
     }
@@ -2729,7 +2734,8 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_shelfSwitch->setExpanding(false);
     m_shelfSwitch->setDrawBase(false);
     m_shelfSwitch->setFocusPolicy(Qt::NoFocus);
-    addShelfTab(PdfShelf, i18nc("library shelf with recently opened documents", "Recent"));
+    addShelfTab(KeepReadingShelf, i18nc("library shelf for resuming long-form reading", "Keep reading"));
+    addShelfTab(PdfShelf, i18nc("library shelf of everything recently opened", "History"));
     addShelfTab(BooksShelf, i18nc("library shelf with current long-form EPUB reading", "Books"));
     addShelfTab(FinishedShelf, i18nc("library shelf with completed long-form reading", "Finished"));
     addShelfTab(FictionShelf, i18nc("library smart shelf for fiction books", "Fiction"));
@@ -2878,6 +2884,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     headerLayout->addWidget(m_openButton);
     mainLayout->addLayout(headerLayout);
 
+    m_keepReadingModel = new QStandardItemModel(this);
     m_pdfModel = new QStandardItemModel(this);
     m_booksModel = new QStandardItemModel(this);
     m_textbooksModel = new QStandardItemModel(this);
@@ -2888,6 +2895,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_nonfictionModel = new QStandardItemModel(this);
     m_starterPackModel = new QStandardItemModel(this);
     m_finishedModel = new QStandardItemModel(this);
+    m_keepReadingModel->setProperty("booksShelf", true);
     m_booksModel->setProperty("booksShelf", true);
     m_starterPackModel->setProperty("booksShelf", true);
     m_finishedModel->setProperty("booksShelf", true);
@@ -2913,7 +2921,7 @@ LibraryView::LibraryView(LibraryStore *store, QWidget *parent, bool deferInitial
     m_grid->viewport()->installEventFilter(this);
     m_grid->setItemDelegate(new LibraryTileDelegate(m_grid));
     configureTileGrid();
-    m_grid->setModel(modelForShelf(PdfShelf));
+    m_grid->setModel(modelForShelf(KeepReadingShelf));
     m_grid->setContextMenuPolicy(Qt::CustomContextMenu);
     m_gridFadeEffect = new QGraphicsOpacityEffect(m_grid);
     m_gridFadeEffect->setOpacity(1.0);
@@ -3060,20 +3068,20 @@ void LibraryView::animateGridIn()
 
 void LibraryView::showStartupPlaceholder()
 {
-    if (!m_pdfModel) {
+    if (!m_keepReadingModel) {
         return;
     }
 
-    m_pdfModel->clear();
+    m_keepReadingModel->clear();
     ShelfEntry entry;
     entry.title = i18nc("@title startup tile while library opens", "Opening PaperLibrary");
     entry.description = i18nc("@info startup tile while library opens", "Preparing shelves, metadata, and thumbnails");
     entry.tags = {i18nc("@label startup tile", "Startup")};
     entry.format = i18nc("@label generated tile cover", "OPENING");
     entry.detailLines = {i18nc("@info startup tile detail", "Local files stay on this device.")};
-    m_pdfModel->appendRow(makeTileItem(entry));
-    if (activeShelf() == PdfShelf && m_grid) {
-        m_grid->setModel(m_pdfModel);
+    m_keepReadingModel->appendRow(makeTileItem(entry));
+    if (activeShelf() == KeepReadingShelf && m_grid) {
+        m_grid->setModel(m_keepReadingModel);
         configureTileGrid();
         selectFirstTile();
     }
@@ -3146,6 +3154,7 @@ void LibraryView::refresh()
         const QString title = cleanedLocalTitle(entry.title.isEmpty() ? cleanedFilenameTitle(entry.url) : entry.title, entry.url);
         ShelfEntry shelfEntry{entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.finishedReading, entry.openCount, entry.lastOpened, -1.0, QStringLiteral("PDF"), {}};
         enrichShelfEntryFromCorpus(shelfEntry);
+        shelfEntry.progress = effectiveReadingProgress(shelfEntry);
         enrichShelfEntry(shelfEntry);
         persistCorrectedTags(entry, shelfEntry);
         pdfs.append(shelfEntry);
@@ -3203,6 +3212,7 @@ void LibraryView::refresh()
         ShelfEntry shelfEntry{
             entry.url, title, entry.tags, entry.description, entry.keywords, entry.pinned, entry.downranked, entry.finishedReading, entry.openCount, entry.lastOpened, progressByPath.value(canonical, -1.0), QStringLiteral("EPUB"), {}};
         enrichShelfEntryFromCorpus(shelfEntry);
+        shelfEntry.progress = effectiveReadingProgress(shelfEntry);
         enrichShelfEntry(shelfEntry, metadata);
         persistCorrectedTags(entry, shelfEntry);
         if (shelfEntry.finishedReading) {
@@ -3227,6 +3237,7 @@ void LibraryView::refresh()
         title = cleanedLocalTitle(title, url);
         const EpubCover::Metadata metadata = EpubCover::metadata(book.path);
         ShelfEntry shelfEntry{url, title, stored.tags, stored.description, stored.keywords, stored.pinned, stored.downranked, stored.finishedReading, stored.openCount, stored.lastOpened, book.progress, QStringLiteral("EPUB"), {}};
+        shelfEntry.progress = effectiveReadingProgress(shelfEntry);
         enrichShelfEntry(shelfEntry, &metadata);
         persistCorrectedTags(stored, shelfEntry);
         if (shelfEntry.finishedReading) {
@@ -3272,6 +3283,31 @@ void LibraryView::refresh()
     publishLocalBooksToCorpus();
 
     const QList<ShelfEntry> allDocuments = pdfs + books;
+
+    QList<ShelfEntry> keepReading;
+    keepReading.reserve(allDocuments.size());
+    for (const ShelfEntry &entry : allDocuments) {
+        if (isKeepReadingEntry(entry)) {
+            keepReading.append(entry);
+        }
+    }
+
+    // lastOpened is the only existing cross-format reading-recency timestamp. Invalid timestamps
+    // (notably Apple Books-only entries) sort after documents opened inside PaperLibrary.
+    std::stable_sort(keepReading.begin(), keepReading.end(), [](const ShelfEntry &left, const ShelfEntry &right) {
+        if (left.lastOpened.isValid() != right.lastOpened.isValid()) {
+            return left.lastOpened.isValid();
+        }
+        if (left.lastOpened != right.lastOpened) {
+            return left.lastOpened > right.lastOpened;
+        }
+        if (left.openCount != right.openCount) {
+            return left.openCount > right.openCount;
+        }
+        return left.title.localeAwareCompare(right.title) < 0;
+    });
+    m_shelfEntries[KeepReadingShelf] = keepReading;
+
     // The Recent tab is a curated "what to read next" feed, so a thumbs-down
     // takes the item out of it entirely (it still lives in its genre shelf,
     // demoted, and stays findable via search to undo the thumbs-down).
@@ -3481,9 +3517,49 @@ QString LibraryView::publicationTypeTitle(const ShelfEntry &entry)
     return titleCasedLabel(rawType);
 }
 
+double LibraryView::effectiveReadingProgress(const ShelfEntry &entry)
+{
+    if (entry.url.isLocalFile()) {
+        const double pathProgress = ReadingProgress::fractionForPath(entry.url.toLocalFile());
+        if (pathProgress >= 0.0) {
+            return pathProgress;
+        }
+    }
+
+    // Title bridging is appropriate for books, whose iCloud/imported/corpus copies commonly have
+    // different paths. Do not title-match arbitrary PDFs: common form/report titles can collide.
+    if (entry.corpusBook || entry.format == QLatin1String("EPUB")) {
+        const double titleProgress = ReadingProgress::fractionForTitle(entry.title);
+        if (titleProgress >= 0.0) {
+            return titleProgress;
+        }
+    }
+
+    return entry.progress;
+}
+
+bool LibraryView::isKeepReadingEntry(const ShelfEntry &entry)
+{
+    if (entry.downranked || entry.finishedReading) {
+        return false;
+    }
+
+    const bool longForm = entry.corpusBook || entry.format == QLatin1String("EPUB");
+    if (!longForm) {
+        return false;
+    }
+
+    const bool partwayThrough = entry.progress > 0.0 && entry.progress < 1.0;
+    const bool repeatedlyOpened = entry.openCount >= 2;
+    return partwayThrough || repeatedlyOpened;
+}
+
 bool LibraryView::isDocumentShelf(Shelf shelf)
 {
-    return shelf == PdfShelf || shelf == BooksShelf || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf || shelf == StarterPackShelf || shelf == FinishedShelf;
+    return shelf == KeepReadingShelf || shelf == PdfShelf || shelf == BooksShelf
+        || shelf == TextbooksShelf || shelf == MedicineShelf || shelf == MndShelf
+        || shelf == WorkShelf || shelf == FictionShelf || shelf == NonfictionShelf
+        || shelf == StarterPackShelf || shelf == FinishedShelf;
 }
 
 QString LibraryView::smartShelfHaystack(const ShelfEntry &entry)
@@ -4199,6 +4275,8 @@ QList<LibraryView::ShelfEntry> LibraryView::loadStarterPackEntries()
 QStandardItemModel *LibraryView::modelForShelf(Shelf shelf) const
 {
     switch (shelf) {
+    case KeepReadingShelf:
+        return m_keepReadingModel;
     case BooksShelf:
         return m_booksModel;
     case TextbooksShelf:
@@ -4294,7 +4372,7 @@ QList<LibraryView::ShelfEntry> LibraryView::displayEntriesForShelf(Shelf shelf) 
         return matches;
     }
 
-    if (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode) {
+    if (shelf == KeepReadingShelf || (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode)) {
         return m_shelfEntries[shelf];
     }
 
@@ -4380,7 +4458,7 @@ LibraryView::Shelf LibraryView::activeShelf() const
     if (index >= 0 && index < m_visibleShelves.size()) {
         return m_visibleShelves.at(index);
     }
-    return PdfShelf;
+    return KeepReadingShelf;
 }
 
 QString LibraryView::searchQuery() const
@@ -4491,7 +4569,7 @@ void LibraryView::rebuildShelves()
     for (int shelf = PdfShelf; shelf < DocumentShelfCount; ++shelf) {
         QStandardItemModel *const model = modelForShelf(static_cast<Shelf>(shelf));
         if (query.isEmpty()) {
-            if (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode) {
+            if (shelf == KeepReadingShelf || (shelf == PdfShelf && m_viewModes[shelf] == FrequentMode)) {
                 populateSections(static_cast<Shelf>(shelf), model, {{QString(), m_shelfEntries[shelf]}});
             } else {
                 populate(static_cast<Shelf>(shelf), model, m_shelfEntries[shelf], m_viewModes[shelf]);
@@ -4808,6 +4886,7 @@ void LibraryView::enrichShelfEntryFromCorpus(ShelfEntry &entry) const
     }
 
     const QModelIndex index = m_paperModel->index(row, 0);
+    entry.corpusBook = m_paperModel->isBookRow(row);
     const QString title = index.data(Qt::DisplayRole).toString().simplified();
     if (!title.isEmpty() && (titleNeedsGeneratedMetadata(entry.title, entry.url) || title.size() > entry.title.simplified().size() + 8)) {
         entry.title = title;
@@ -4955,7 +5034,7 @@ void LibraryView::shelfChanged(int index)
     m_pendingShelfIndex = index;
     const Shelf shelf = activeShelf();
     const bool corpus = usesCorpusList(shelf);
-    m_viewModeButton->setVisible(!corpus);
+    m_viewModeButton->setVisible(!corpus && shelf != KeepReadingShelf);
     m_paperSectionButton->setVisible(corpus);
     syncCorpusSearchButton();
     syncCorpusResultButton();

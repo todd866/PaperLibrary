@@ -43,7 +43,10 @@ the taste, goals, and priorities.
 
 Shelves should be intents, not crude file types.
 
-- `Recent`: things the user actually touched recently.
+- `Keep reading`: long-form reading in progress — books/EPUBs started but
+  unfinished (or opened more than once), newest-read first; excludes one-off
+  ad-hoc PDFs. This is the default landing tab.
+- `History`: everything the user actually opened recently.
 - `Books`: current long-form EPUB reading, not every book-shaped file.
 - `Fiction`: active fiction and series reading.
 - `Non-fiction`: biography, history, social theory, essays, and other long-form
@@ -163,12 +166,17 @@ them or the user configures them.
 
 Recommended public defaults:
 
-- Recent
+- Keep reading
+- History
 - Books
+- Finished
 - Fiction
 - Non-fiction
-- Papers
 - Work
 - Starter Pack
+
+Textbooks and Papers appear only when a corpus is configured; Medicine, MND and
+other domain shelves appear only when the corpus provides a matching focus
+manifest.
 
 Domain shelves can be added later through focus manifests and user config.

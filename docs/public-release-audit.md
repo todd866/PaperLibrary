@@ -1,10 +1,19 @@
 # Public Release Audit
 
 Date: 2026-07-05
-Last updated: 2026-07-05
+Last updated: 2026-07-12
 
-This audit checks the current public export against the public release rules in
-`docs/public-release-rules.md`.
+This audit checks a point-in-time public export against the public release rules
+in `docs/public-release-rules.md`.
+
+> **Update (2026-07-12 export).** Shelf behaviour has moved on since the
+> 2026-07-05 body below. The landing tab is now **Keep reading** (long-form
+> reading in progress); the old **Recent** tab is renamed **History**; a
+> **Finished** shelf ships; and **Textbooks** is now a default *corpus smart
+> shelf* (like Fiction / Non-fiction), shown whenever a Papers corpus is
+> configured — it is no longer focus-manifest-gated. Only **Medicine** and
+> **MND** remain manifest-gated. Where the body below says Textbooks is gated or
+> "no longer a default shelf", read it as superseded by this note.
 
 ## Overall Verdict
 

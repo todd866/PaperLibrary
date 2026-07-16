@@ -4295,6 +4295,23 @@ static bool recordIsBook(const QString &recordKind, const QString &genre, const 
     return recordMatchesBook(text, source, journal);
 }
 
+bool PaperLibraryModel::isBookRow(int row) const
+{
+    if (row < 0 || row >= rowCount()) {
+        return false;
+    }
+
+    const QModelIndex index = this->index(row, 0);
+    const QString haystack = index.data(HaystackRole).toString();
+    const QString source = index.data(SourceRole).toString().toCaseFolded();
+    const QString journal = index.data(JournalRole).toString().toCaseFolded();
+    const QString genre = index.data(GenreRole).toString();
+    const QString recordKind = index.data(RecordKindRole).toString();
+    const QString text = haystack + QLatin1Char('\n') + source;
+
+    return recordIsBook(recordKind, genre, text, source, journal);
+}
+
 bool PaperLibrarySectionedModel::acceptsSourceRow(int sourceRow) const
 {
     if (!m_source || sourceRow < 0 || sourceRow >= m_source->rowCount()) {

@@ -163,6 +163,8 @@ public:
     /** Like rowForLookupTitle but over ALL rows (no blurb requirement): used to find the corpus twin
         of a file-backed feed book so marking it finished can land it on the Finished shelf. */
     int rowForAnyTitle(const QString &title) const;
+    /** True when the catalog row is classified as a book by the same rules used by corpus shelves. */
+    bool isBookRow(int row) const;
     CorpusHealth corpusHealth() const;
     bool hasFullTextSearchIndex() const;
     bool hasSemanticGraph() const;

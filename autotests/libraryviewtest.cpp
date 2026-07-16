@@ -37,6 +37,7 @@
 #include "../shell/libraryview.h"
 #include "../shell/librarystore.h"
 #include "../shell/paperlibrarymodel.h"
+#include "../shell/readingprogress.h"
 
 namespace
 {
@@ -348,6 +349,11 @@ private Q_SLOTS:
     void testEmptyCorpusShelfUsesTile();
     void testRapidCorpusShelfSwitchingDoesNotReload();
     void testGridViewEmitsCurrentTileChangedOnNavigation();
+    void keepReadingIsFirstAndDefault();
+    void keepReadingIncludesProgressedCorpusBook();
+    void keepReadingExcludesOneOffAdHocPdf();
+    void keepReadingRepeatOpenRequiresLongForm();
+    void keepReadingSortsByLastOpened();
 
 private:
     std::unique_ptr<QTemporaryDir> m_dir;
@@ -469,7 +475,8 @@ void LibraryViewTest::testDomainShelvesRequireFocusManifest()
 
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
-    QVERIFY(tabIndexForText(shelves, QStringLiteral("Recent")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("Keep reading")) >= 0);
+    QVERIFY(tabIndexForText(shelves, QStringLiteral("History")) >= 0);
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Books")) >= 0);
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Finished")) >= 0);
     QVERIFY(tabIndexForText(shelves, QStringLiteral("Fiction")) >= 0);
@@ -944,13 +951,17 @@ void LibraryViewTest::testBooksShelfFetchesMoreRowsOnScroll()
     QVERIFY(grid);
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
-    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
-    QVERIFY(booksTab >= 0);
-    shelves->setCurrentIndex(booksTab);
+    // Local document shelves page via m_documentShelfRowLimit; the History (all-recent) shelf holds
+    // every book and is the local paged model (the Books shelf is corpus-backed and batches its own
+    // sectioned model differently).
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     QTRY_VERIFY(grid->model());
+    QTRY_VERIFY(grid->model()->rowCount() > 0);
 
     const int initialRows = grid->model()->rowCount();
-    QVERIFY2(initialRows > 0, "Books shelf should paint an initial tile batch");
+    QVERIFY2(initialRows > 0, "History shelf should paint an initial tile batch");
     QVERIFY2(initialRows < BookCount, qPrintable(QStringLiteral("initial model loaded every book: %1").arg(initialRows)));
     QCOMPARE(grid->model()->property("paperlibraryTotalRows").toInt(), BookCount);
     QVERIFY(grid->model()->property("paperlibraryHasMoreRows").toBool());
@@ -1096,9 +1107,11 @@ void LibraryViewTest::testLocalBookClassificationIgnoresStaleTags()
     QVERIFY(grid);
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
-    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
-    QVERIFY(booksTab >= 0);
-    shelves->setCurrentIndex(booksTab);
+    // The Books shelf is corpus-backed; local classification is carried by the local tile model, so
+    // assert it on the History (all-recent) shelf, which shows every local book with its own tags.
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     QTRY_VERIFY(grid->model());
     QTRY_VERIFY(grid->model()->rowCount() >= 3);
 
@@ -1228,9 +1241,11 @@ void LibraryViewTest::testBookTileDisplayMetadataAvoidsGenericBookOnly()
     QVERIFY(grid);
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
-    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
-    QVERIFY(booksTab >= 0);
-    shelves->setCurrentIndex(booksTab);
+    // The Books shelf is corpus-backed; the local tile display metadata is carried by the local
+    // model, so assert it on the History (all-recent) shelf, which shows every local book tile.
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     QTRY_VERIFY(grid->model());
     QTRY_VERIFY(grid->model()->rowCount() >= 2);
 
@@ -1311,6 +1326,11 @@ void LibraryViewTest::testLocalPdfTileUsesCorpusMetadata()
 
     QListView *grid = view.findChild<QListView *>();
     QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
     QVERIFY(paperModel);
     QTRY_VERIFY(paperModel->isLoaded());
@@ -1348,6 +1368,11 @@ void LibraryViewTest::testTilesSelectOnClickAndOpenOnDoubleClick()
     LibraryView view(&store, nullptr, false);
     QListView *grid = view.findChild<QListView *>();
     QVERIFY(grid);
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     QTRY_VERIFY(grid->model());
     QTRY_COMPARE(grid->model()->rowCount(), 1);
     QTRY_COMPARE(grid->model()->index(0, 0).data(Qt::DisplayRole).toString(), QStringLiteral("recent"));
@@ -1401,9 +1426,11 @@ void LibraryViewTest::testDraggingTileDownDownranksLocalBook()
     grid->resize(680, 440);
     QTabBar *shelves = view.findChild<QTabBar *>();
     QVERIFY(shelves);
-    const int booksTab = tabIndexForText(shelves, QStringLiteral("Books"));
-    QVERIFY(booksTab >= 0);
-    shelves->setCurrentIndex(booksTab);
+    // Drag-to-downrank acts on the local tile model; the History (all-recent) shelf shows the local
+    // book tiles (the Books shelf is corpus-backed and paints its own sectioned model).
+    const int historyTab = tabIndexForText(shelves, QStringLiteral("History"));
+    QVERIFY(historyTab >= 0);
+    shelves->setCurrentIndex(historyTab);
     QTRY_VERIFY(grid->model());
     QTRY_VERIFY(grid->model()->rowCount() >= 2);
 
@@ -1701,7 +1728,7 @@ void LibraryViewTest::testRapidCorpusShelfSwitchingDoesNotReload()
     QTRY_VERIFY(paperModel->isLoaded());
     QSignalSpy loadedSpy(paperModel, &PaperLibraryModel::loaded);
 
-    const int recentTab = tabIndexForText(shelves, QStringLiteral("Recent"));
+    const int recentTab = tabIndexForText(shelves, QStringLiteral("History"));
     const int mndTab = tabIndexForText(shelves, QStringLiteral("MND"));
     const int workTab = tabIndexForText(shelves, QStringLiteral("Work"));
     const int papersTab = tabIndexForText(shelves, QStringLiteral("Papers"));
@@ -1760,6 +1787,154 @@ void LibraryViewTest::testGridViewEmitsCurrentTileChangedOnNavigation()
     grid.pressKey(Qt::Key_Down);
     QVERIFY2(spy.count() >= 1, "arrow-key navigation did not emit currentTileChanged");
     QVERIFY(grid.currentIndex().row() != 2); // the key actually moved the current tile
+}
+
+void LibraryViewTest::keepReadingIsFirstAndDefault()
+{
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    LibraryView view(&store, nullptr, true);
+
+    // QTabBar selects its first tab by default, so Keep reading is the landing shelf.
+    QCOMPARE(view.activeShelf(), LibraryView::KeepReadingShelf);
+    QCOMPARE(view.tabIndexForShelf(LibraryView::KeepReadingShelf), 0);
+    QVERIFY(view.m_grid);
+    QVERIFY(view.modelForShelf(LibraryView::KeepReadingShelf) == view.m_grid->model());
+
+    QTabBar *shelves = view.findChild<QTabBar *>();
+    QVERIFY(shelves);
+    QCOMPARE(shelves->currentIndex(), 0);
+    QCOMPARE(tabIndexForText(shelves, QStringLiteral("Keep reading")), 0);
+}
+
+void LibraryViewTest::keepReadingIncludesProgressedCorpusBook()
+{
+    // A corpus row the librarian marked record_kind:"book" (corpusBookRecordLine, slug
+    // md5-synthetic-corpus-novel). A local PDF whose base name matches that slug resolves to it,
+    // so it is long-form; with genuine 0<progress<1 it must land on Keep reading.
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    QDir(m_dir->path()).mkpath(QStringLiteral("pdfs"));
+    const QString path = m_dir->filePath(QStringLiteral("pdfs/md5-synthetic-corpus-novel.pdf"));
+    QFile pdf(path);
+    QVERIFY(pdf.open(QIODevice::WriteOnly));
+    pdf.write("%PDF-1.4\n");
+    pdf.close();
+
+    const QUrl url = QUrl::fromLocalFile(path);
+    store.recordOpen(url, QDateTime(QDate(2026, 7, 3), QTime(9, 0)));
+    ReadingProgress::record(url, QStringLiteral("A Synthetic Corpus Novel"), 0.35);
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    // The corpus-book flag is set only once the catalog has loaded and re-triggered refresh.
+    QTRY_VERIFY(view.shelfUrls(LibraryView::KeepReadingShelf).contains(url));
+}
+
+void LibraryViewTest::keepReadingExcludesOneOffAdHocPdf()
+{
+    // An arbitrary PDF the corpus has never heard of, opened once, no progress. It must appear on
+    // History (the everything-recent feed) but never on Keep reading -- promoting a tax return or
+    // a form the reader opened twice is exactly the failure Keep reading must avoid.
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    const QString path = m_dir->filePath(QStringLiteral("tax-return-2025.pdf"));
+    QFile pdf(path);
+    QVERIFY(pdf.open(QIODevice::WriteOnly));
+    pdf.write("%PDF-1.4\n");
+    pdf.close();
+
+    const QUrl url = QUrl::fromLocalFile(path);
+    store.recordOpen(url, QDateTime(QDate(2026, 7, 6), QTime(11, 0)));
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QTRY_VERIFY(view.shelfUrls(LibraryView::PdfShelf).contains(url));
+    QVERIFY(!view.shelfUrls(LibraryView::KeepReadingShelf).contains(url));
+}
+
+void LibraryViewTest::keepReadingRepeatOpenRequiresLongForm()
+{
+    // Repeat opens (openCount >= 2) only qualify long-form items. A non-corpus PDF opened twice is
+    // still ad hoc and excluded; a corpus book opened twice with no progress is admitted.
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    auto makePdf = [this](const QString &fileName) {
+        const QString path = m_dir->filePath(fileName);
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile pdf(path);
+        if (!pdf.open(QIODevice::WriteOnly)) {
+            return QUrl();
+        }
+        pdf.write("%PDF-1.4\n");
+        pdf.close();
+        return QUrl::fromLocalFile(path);
+    };
+
+    const QUrl adHoc = makePdf(QStringLiteral("form-1099.pdf"));
+    const QUrl book = makePdf(QStringLiteral("pdfs/md5-synthetic-corpus-novel.pdf"));
+    QVERIFY(adHoc.isValid());
+    QVERIFY(book.isValid());
+    for (int i = 0; i < 2; ++i) {
+        store.recordOpen(adHoc, QDateTime(QDate(2026, 7, 5), QTime(10, 0).addSecs(i)));
+        store.recordOpen(book, QDateTime(QDate(2026, 7, 5), QTime(12, 0).addSecs(i)));
+    }
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    PaperLibraryModel *paperModel = view.findChild<PaperLibraryModel *>();
+    QVERIFY(paperModel);
+    QTRY_VERIFY(paperModel->isLoaded());
+    QTRY_VERIFY(view.shelfUrls(LibraryView::KeepReadingShelf).contains(book));
+    QVERIFY(!view.shelfUrls(LibraryView::KeepReadingShelf).contains(adHoc));
+}
+
+void LibraryViewTest::keepReadingSortsByLastOpened()
+{
+    // Keep reading orders strictly by most-recently-opened. The newer book leads even when the
+    // older one is pinned and has a far higher open count.
+    LibraryStore store(m_dir->filePath(QStringLiteral("store-paperlibraryrc")));
+    auto addEpub = [this, &store](const QString &fileName, const QString &title, int opens, const QDateTime &last) {
+        const QString path = m_dir->filePath(fileName);
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) {
+            return QUrl();
+        }
+        file.write("not a real epub; enough for a local fixture path\n");
+        file.close();
+        const QUrl url = QUrl::fromLocalFile(path);
+        store.setTitle(url, title);
+        store.setTags(url, {QStringLiteral("Book")});
+        for (int i = 0; i < opens - 1; ++i) {
+            store.recordOpen(url, last.addSecs(i - opens));
+        }
+        store.recordOpen(url, last);
+        return url;
+    };
+
+    const QUrl older = addEpub(QStringLiteral("books/Older Pinned Book.epub"), QStringLiteral("Older Pinned Book"), 6,
+                               QDateTime(QDate(2026, 7, 5), QTime(10, 0)));
+    const QUrl newer = addEpub(QStringLiteral("books/Newer Book.epub"), QStringLiteral("Newer Book"), 2,
+                               QDateTime(QDate(2026, 7, 8), QTime(9, 0)));
+    QVERIFY(older.isValid());
+    QVERIFY(newer.isValid());
+    store.setPinned(older, true);
+
+    LibraryView view(&store, nullptr, true);
+    view.refresh();
+
+    // Both are long-form (EPUB) and repeatedly opened, so both qualify; order is by lastOpened.
+    QTRY_VERIFY(view.shelfUrls(LibraryView::KeepReadingShelf).contains(newer));
+    const QList<QUrl> ordered = view.shelfUrls(LibraryView::KeepReadingShelf);
+    QVERIFY(ordered.contains(older));
+    QCOMPARE(ordered.constFirst(), newer);
+    QVERIFY(ordered.indexOf(newer) < ordered.indexOf(older));
 }
 
 QTEST_MAIN(LibraryViewTest)
