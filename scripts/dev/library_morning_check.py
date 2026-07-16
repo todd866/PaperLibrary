@@ -27,7 +27,8 @@ DEFAULT_CORPUS = Path(os.environ.get("PAPERLIBRARY_CORPUS", str(Path.home() / "P
 DEFAULT_REPORT_DIR = REPO_ROOT / "build" / "reports"
 
 SHELVES = (
-    "Recent",
+    "Keep reading",
+    "History",
     "Books",
     "Finished",
     "Fiction",
@@ -755,9 +756,16 @@ def records_for_shelf(shelf: str, corpus: Path, records: dict[str, Record]) -> t
         return "focus manifest", load_focus_records(corpus, shelf, records)
     if shelf == "Starter Pack":
         return "starter pack catalog", starter_pack_records()
-    if shelf == "Recent":
+    if shelf == "History":
         rows = sorted(records.values(), key=rank_recent, reverse=True)
         return "catalog.db recency", rows
+    if shelf == "Keep reading":
+        # Catalog-level approximation of the app's progress-based landing tab:
+        # long-form (bookish) items actually opened, newest-read first; one-off
+        # ad-hoc PDFs are excluded because they are not bookish.
+        rows = [record for record in records.values()
+                if looks_bookish(record) and record.access_count >= 1]
+        return "catalog.db keep-reading (bookish, opened)", sorted(rows, key=rank_recent, reverse=True)
     if shelf == "Papers":
         rows = [record for record in records.values() if looks_paperish(record)]
         return "catalog.db paper ranking", sorted(rows, key=rank_paper, reverse=True)
